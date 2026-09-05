@@ -2344,16 +2344,68 @@ object SchedulerDomain {
                 if (untilMillis > sinceMillis) listOf(TaskTimeRange(sinceMillis, untilMillis)) else emptyList()
             return mergeOccupied(unaskable + assertedRegions)
         }
-        val evidence =
-            lockedIntervals
-                .map {
-                    TaskTimeRange(
-                        maxOf(it.startEpochMillis, sinceMillis),
-                        minOf(it.endEpochMillis, untilMillis),
-                    )
-                }
-                .filter { it.endEpochMillis - it.startEpochMillis >= MIN_INACTIVITY_BAND_MILLIS }
-        return mergeOccupied(evidence + assertedRegions)
+        return mergeOccupied(layerEvidence(lockedIntervals, sinceMillis, untilMillis) + assertedRegions)
+    }
+
+    /**
+     * The EVIDENCE half of one layer: that device kind'''s lock history clipped to the asked window, with the
+     * sub-minute slivers dropped (the seam rule, [MIN_INACTIVITY_BAND_MILLIS]). Its own function because two
+     * readings must agree on it — the hatch [layerRegions] draws, and which part of that hatch
+     * [declaredLayerRegions] dots.
+     */
+    private fun layerEvidence(
+        lockedIntervals: List<TaskTimeRange>,
+        sinceMillis: Long,
+        untilMillis: Long,
+    ): List<TaskTimeRange> =
+        lockedIntervals
+            .map {
+                TaskTimeRange(
+                    maxOf(it.startEpochMillis, sinceMillis),
+                    minOf(it.endEpochMillis, untilMillis),
+                )
+            }
+            .filter { it.endEpochMillis - it.startEpochMillis >= MIN_INACTIVITY_BAND_MILLIS }
+
+    /**
+     * PRD §8 + `docs/scheduler_requirements.md` § *$now line$ 3 modes*: which sub-stretches of one layer's
+     * [regions] the calendar draws **DOTTED** rather than solid — *"the periods where $now line$ mode goes to
+     * 3, the oblique lines of no computer unlocked are dotted if there was at least one computer unlocked with
+     * the app having the 'I'm away' button clicked"*, and the same for the phone's slope.
+     *
+     * A hatch says *no device of this kind was unlocked*. Over a declared-away stretch that sentence is a
+     * CLAIM and not a reading: the machine **stays unlocked** while the button is on — that is the whole
+     * reason the button exists ([declaredAwayRegions]) — so a device of this layer's kind really was sitting
+     * there unlocked. The dots say exactly that and change nothing else: same slope, same span, same bubble
+     * section. Solid = nothing of the kind was unlocked; dotted = one was, and the user declared themselves
+     * away from it, which is what mode 3 is made of.
+     *
+     * So the answer is [declaredAway] MINUS this kind's lock evidence, intersected with the band actually
+     * drawn:
+     *
+     * - the lock evidence wins wherever it overlaps — the button was pressed and the machine then locked or
+     *   went to standby, and over that slice nothing of the kind was unlocked, so the hatch is a reading
+     *   again. It is the SAME evidence [layerRegions] draws (same clipping, same sub-minute seam filter), or
+     *   a standby flicker too short to hatch would still break a dotted band into pieces;
+     * - an ASSERTED region does NOT win. A sleep window, a screen break or a hand-added no-screen period is a
+     *   promise about every screen, and a promise cannot un-unlock the machine the button was pressed on;
+     * - [lockedIntervals] `null` — "no device of this kind could be asked", hence assumed locked throughout
+     *   ([layerRegions]) — dots nothing, for the same reason. That is the PEER layers' case, and a peer
+     *   carries no declaration here anyway (no channel brings one), so the dots stay this device's own.
+     */
+    fun declaredLayerRegions(
+        regions: List<TaskTimeRange>,
+        declaredAway: List<TaskTimeRange>,
+        lockedIntervals: List<TaskTimeRange>?,
+        sinceMillis: Long,
+        untilMillis: Long,
+    ): List<TaskTimeRange> {
+        if (regions.isEmpty() || declaredAway.isEmpty()) return emptyList()
+        // Assumed-locked leaves nothing unlocked to dot (see the docstring's third bullet).
+        val locked = lockedIntervals ?: return emptyList()
+        val unlockedAndDeclared =
+            subtractRegions(mergeOccupied(declaredAway), layerEvidence(locked, sinceMillis, untilMillis))
+        return intersectRegions(regions, unlockedAndDeclared)
     }
 
     /**

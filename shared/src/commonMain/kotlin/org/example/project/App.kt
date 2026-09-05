@@ -1135,31 +1135,50 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
             )
         val layerRecords =
             SchedulerDomain.ActivityLayer.entries.flatMap { layer ->
+                val layerLocked =
+                    when {
+                        layer != ownLayer -> null // no channel carries a peer's lock history
+                        lockHistoryScanned -> lockedIntervals
+                        else -> emptyList() // not asked yet ≠ cannot be asked
+                    }
+                // The "I'm away" stretches belong to THIS device's layer alone — a press on the computer says
+                // nothing about the phone — while everything in [layerAsserted] is a claim about every screen
+                // at once.
+                val layerAway = if (layer == ownLayer) declaredAwayRegions else emptyList()
                 val regions =
                     SchedulerDomain.layerRegions(
-                        lockedIntervals =
-                            when {
-                                layer != ownLayer -> null // no channel carries a peer's lock history
-                                lockHistoryScanned -> lockedIntervals
-                                else -> emptyList() // not asked yet ≠ cannot be asked
-                            },
-                        // The "I'm away" stretches belong to THIS device's layer alone — a press on the
-                        // computer says nothing about the phone — while everything in [layerAsserted] is a
-                        // claim about every screen at once. Asserted rather than evidence so the seam filter
-                        // cannot drop a declaration shorter than a minute: the mode was 3 for it.
-                        assertedRegions =
-                            if (layer == ownLayer) layerAsserted + declaredAwayRegions else layerAsserted,
+                        lockedIntervals = layerLocked,
+                        // Asserted rather than evidence so the seam filter cannot drop a declaration shorter
+                        // than a minute: the mode was 3 for it.
+                        assertedRegions = layerAsserted + layerAway,
+                        sinceMillis = displayFloorMillis,
+                        untilMillis = nowMillis,
+                    )
+                // `docs/scheduler_requirements.md` § *$now line$ 3 modes*: the sub-stretches of this hatch that
+                // a device of the layer's kind was UNLOCKED for, the "I'm away" button being what says nobody
+                // was at it — mode 3. They are drawn DOTTED, so the band is emitted as one record per stretch
+                // of each kind rather than one per merged region. Nothing else about them differs: same title,
+                // same layer, so the hover bubble names the layer once whichever piece the cursor is over (the
+                // time it reads beside it is that piece's, which is the stretch the dots are true of).
+                val declared =
+                    SchedulerDomain.declaredLayerRegions(
+                        regions = regions,
+                        declaredAway = layerAway,
+                        lockedIntervals = layerLocked,
                         sinceMillis = displayFloorMillis,
                         untilMillis = nowMillis,
                     )
                 // PRD §12 "∞ start": the earliest layer region is open-ended into the past when nothing at all
                 // precedes it (an emptied DB) — its drawn start is only the display floor, so it reads "∞".
+                // Asked of the MERGED regions, so splitting a band for the dots cannot move the ∞.
                 val layerOpenStart = SchedulerDomain.derivedBandsOpenStart(regions, earliestEvidenceMillis)
-                regions.map { region ->
+                val solid = SchedulerDomain.subtractRegions(regions, declared)
+                (solid.map { it to false } + declared.map { it to true }).map { (region, isDeclared) ->
                     CalendarRecord(
                         title = layer.calendarLabel,
                         range = region,
                         layer = layer,
+                        layerDeclared = isDeclared,
                         openStart = layerOpenStart != null && region.startEpochMillis == layerOpenStart,
                     )
                 }

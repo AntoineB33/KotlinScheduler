@@ -45,6 +45,19 @@ Global rules that always apply: `CLAUDE.md`.
   (hence `observedNoScreenRegions`' `computerAway`/`phoneAway`). A peer needs no equivalent: its layer is
   already hatched whole ("a device that cannot be asked was locked"), so an away press with every other device
   locked comes out as both layers — which is what makes mode 3 and "a no-screen period" the same set.
+- **A declared stretch is drawn DOTTED, and only the LINE changes** (`SchedulerDomain.declaredLayerRegions` →
+  `CalendarRecord.layerDeclared` → `obliqueHatch(dotted = …)`). PRD §8: *"the periods where $now line$ mode goes
+  to 3, the oblique lines of no computer unlocked are dotted if there was at least one computer unlocked with the
+  app having the I'm away button clicked"*, and the same for the phone's slope. A device of that kind really was
+  **unlocked** there — that is what the button is for — so the hatch is a claim, not a reading. Three rules
+  hold it together, and each has a test in `CalendarLayerTest`: the LOCK EVIDENCE wins where it overlaps (the
+  same clipped, seam-filtered evidence `layerRegions` draws — read through the one `layerEvidence` funnel, or a
+  sub-minute standby flicker slices a dotted band into hairlines); an ASSERTED region does NOT (a sleep window
+  or a break is a promise about every screen and cannot un-unlock the machine the button was pressed on); and
+  `null` — the peer's assumed-locked layer — dots nothing. `App.kt` emits one record per stretch of each kind,
+  same title and same layer — so the bubble still names the layer ONCE (the time beside it reads the hovered
+  piece), the both-layers/no-screen identity is untouched (**the dots are a drawing, not a classification**),
+  and the ∞-start is asked of the MERGED regions, so splitting a band can never move it.
 - Layers are non-interactive overlays: they displace nothing and register no pointer input. A layer is
   *named* by the hover bubble anyway — its section rides whatever the cursor is over, or the bottom-most
   hover pickup where that is nothing.

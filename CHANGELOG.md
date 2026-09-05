@@ -11,6 +11,35 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### A mode-3 layer is hatched with DOTTED lines — 2026-09-05
+
+`shared` (`domain/SchedulerDomain.kt`, `ui/CalendarUi.kt`, `App.kt`) + `CalendarLayerTest`, PRD §8,
+`docs/invariants/calendar.md`, `docs/MANUAL_TESTING.md`, ADR 0002.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy and no DB migration.**
+
+New spec sentence: *"the periods where $now line$ mode goes to 3, the oblique lines of no computer unlocked are
+dotted if there was at least one computer unlocked with the app having the 'I'm away' button clicked. Same
+thing for the oblique lines of no phone unlocked."*
+
+Since 2026-09-05 the "I'm away" button hatches its own device kind's layer (ADR 0002), which is what makes a
+mode-3 stretch carry both layers and read as a no-screen period. It also made the calendar draw *"no computer
+unlocked"* over a stretch where a computer was demonstrably unlocked — the user had to leave one running to
+press the button on it. The dots say which of the two it is without changing anything else: same slope, same
+spacing, same colour, same span, same bubble section, so `intersect(layerA, layerB)` is still exactly a
+no-screen period. **The dots are a drawing, not a classification.**
+
+`SchedulerDomain.declaredLayerRegions` decides the sub-stretches — the declaration MINUS this kind's lock
+evidence, intersected with the band drawn — and `App.kt` emits one layer record per stretch of each kind
+(`CalendarRecord.layerDeclared` → `obliqueHatch(dotted = …)`). Two rules inside it:
+
+- the **lock evidence wins** where it overlaps (the button survives a lock — only an unlock clears it — so a
+  declaration routinely runs on into a real standby, and nothing is unlocked there). It reads the same
+  `layerEvidence` funnel `layerRegions` draws from, clipping and sub-minute seam filter included, or a standby
+  flicker too short to hatch would still slice a dotted band into hairlines of solid line;
+- an **asserted region does not** — a sleep window, a screen break or a hand-added no-screen period is a promise
+  about every screen, and a promise cannot un-unlock the machine the button was pressed on. `null` (a peer's
+  assumed-locked layer) dots nothing, and a peer carries no declaration anyway: no channel brings one.
+
 ### A period the now-line DRAGS obstructs nothing — 2026-09-05
 
 `shared` (`domain/SchedulerDomain.kt`) + `DraggedPoseNoIdlingTest` (new), `BreaksAndSlidingPrioritiesTest`,

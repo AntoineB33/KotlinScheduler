@@ -107,6 +107,40 @@ evidence": a screen break is not time the user was absent for, and a declared ab
 Runtime state, like the flag itself — never persisted, never synced. After a restart the layer falls back to
 whatever the OS history says.
 
+### …and the lines over it are DOTTED — 2026-09-05
+
+Hatching the declaration made the calendar agree with the mode, and immediately made it say something slightly
+false: *"no computer unlocked"* drawn over a stretch where a computer was demonstrably **unlocked** — the user
+had to leave one running to press the button on it. Both halves are wanted. The stretch is a no-screen period
+(nobody is AT that screen, which is what the layer means and what §9/§15 read it for), and the reason it is one
+is not the reason every other band is one. So the requirement separates them in the drawing:
+
+> the periods where $now line$ mode goes to 3, the oblique lines of no computer unlocked are dotted if there
+> was at least one computer unlocked with the app having the "I'm away" button clicked. Same thing for the
+> oblique lines of no phone unlocked.
+
+`SchedulerDomain.declaredLayerRegions` answers which sub-stretches those are and `App.kt` emits one
+`CalendarRecord` per stretch of each kind, so the split reaches the drawing as ordinary layer bands
+(`layerDeclared` → `obliqueHatch(dotted = …)`).
+
+Three decisions in it, and the rejected alternative for each:
+
+- **Only the LINE changes** — same slope, same spacing, same colour, same span, same bubble section. A second
+  colour or a second slope reads as a THIRD layer, and there are two; the dots are a footnote on one band, not a
+  new fact beside it. The both-layers identity (`intersect(layerA, layerB)` = a no-screen period) is therefore
+  untouched, which is the property the scheduler and the record bank stand on: **the dots are a drawing, not a
+  classification.**
+- **The lock evidence wins where it overlaps.** The button survives a lock (only an unlock clears it, §15), so a
+  declaration routinely runs on into a genuine standby — and over that slice nothing was unlocked, so the hatch
+  is a reading again and the dots stop. It is read through the same `layerEvidence` funnel `layerRegions`
+  draws from, clipping and sub-minute seam filter included: rebuilding the evidence beside it would let a
+  standby flicker too short to hatch still slice a dotted band into hairlines of solid line, which is the exact
+  bug the seam filter exists to prevent, arrived at by a second copy of the rule.
+- **An asserted region does not win.** A sleep window, a screen break or a hand-added no-screen period is a
+  promise about every screen; a promise cannot un-unlock the machine the button was pressed on. Evidence can.
+  (`null` — the peer's "cannot be asked, so assumed locked" — dots nothing for the same reason, and a peer
+  carries no declaration here anyway: no channel brings one.)
+
 ## A device that cannot be asked WAS LOCKED
 
 `null` from the seam ⇒ the layer hatches the **whole asked past**, `[displayFloor, now]`. The user's

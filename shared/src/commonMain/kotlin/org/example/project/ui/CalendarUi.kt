@@ -245,6 +245,15 @@ data class CalendarRecord(
      */
     val layer: SchedulerDomain.ActivityLayer? = null,
     /**
+     * PRD §8 + `docs/scheduler_requirements.md` § *$now line$ 3 modes*: for a [layer] region, whether the
+     * hatch stands on the **"I'm away" button** rather than on a locked screen — a device of that layer's kind
+     * was sitting there UNLOCKED and the user had declared themselves away from it, which is what a mode-3
+     * period is made of. Same slope, same span, same bubble section; drawn DOTTED.
+     * `SchedulerDomain.declaredLayerRegions` decides which sub-stretches those are, and `App.kt` emits one
+     * record per stretch of each kind — so a declaration that starts inside a locked stretch splits the band.
+     */
+    val layerDeclared: Boolean = false,
+    /**
      * PRD §8/§9 no-screen period: a user-authored "No screen" panel, drawn as a decorative hatched block
      * (a pattern over the real panels). Off-screen tasks schedule inside it; on-screen tasks never do.
      */
@@ -500,6 +509,8 @@ data class PlacedRecord(
     val inactivity: Boolean = false,
     /** PRD §8: one region of one decorative layer ("no computer/phone unlocked"). See [CalendarRecord.layer]. */
     val layer: SchedulerDomain.ActivityLayer? = null,
+    /** PRD §8: this [layer] region is the "I'm away" button's, drawn dotted. See [CalendarRecord.layerDeclared]. */
+    val layerDeclared: Boolean = false,
     /** PRD §8/§9 no-screen period: a user-authored "No screen" panel, rendered as a hatched block. */
     val noScreen: Boolean = false,
     /** For a [sleep] band: its enclosing "No screen" window (>= the sleep range). See [CalendarRecord.noScreenRange]. */
@@ -635,6 +646,7 @@ fun recordsForDay(
             sleep = record.sleep,
             inactivity = record.inactivity,
             layer = record.layer,
+            layerDeclared = record.layerDeclared,
             noScreen = record.noScreen,
             noScreenRange = record.noScreenRange,
             openStart = record.openStart,
@@ -4651,6 +4663,7 @@ private fun DayColumn(
                     .obliqueHatch(
                         CalColors.muted,
                         reversed = band.layer == SchedulerDomain.ActivityLayer.NoPhoneUnlocked,
+                        dotted = band.layerDeclared,
                     ),
             )
         }
@@ -5828,16 +5841,32 @@ private fun Modifier.greyPeriodMarks(color: Color = CalColors.muted): Modifier =
  * PRD §8 decorative panels: an oblique-line hatch. [reversed] flips the slope — the no-screen pattern
  * draws "/" (bottom-left → top-right); the sleep pattern draws "\" (top-left → bottom-right), so a sleep
  * window (which is also a no-screen period) reads as the two crossed.
+ *
+ * [dotted] breaks each line into dashes without touching its slope, spacing or colour: PRD §8 +
+ * `docs/scheduler_requirements.md` § *$now line$ 3 modes* — over a mode-3 period a device of the layer's kind
+ * really was UNLOCKED (with the "I'm away" button on), so the hatch there is the user's declaration rather
+ * than a locked screen. Only the LINE changes, because it is the same layer saying the same thing about the
+ * same stretch; a second colour or a second slope would read as a third layer.
  */
-private fun Modifier.obliqueHatch(color: Color, reversed: Boolean): Modifier =
+private fun Modifier.obliqueHatch(color: Color, reversed: Boolean, dotted: Boolean = false): Modifier =
     this.drawBehind {
         val step = 10.dp.toPx()
         val stroke = 1.dp.toPx()
+        // Dash and gap in the same unit as the stroke, so the dotting reads the same at every zoom (the band's
+        // height changes, the line's texture does not).
+        val effect =
+            if (dotted) PathEffect.dashPathEffect(floatArrayOf(1.5.dp.toPx(), 2.5.dp.toPx())) else null
         var x = -size.height
         while (x < size.width) {
             val start = if (reversed) Offset(x, 0f) else Offset(x, size.height)
             val end = if (reversed) Offset(x + size.height, size.height) else Offset(x + size.height, 0f)
-            drawLine(color = color.copy(alpha = 0.35f), start = start, end = end, strokeWidth = stroke)
+            drawLine(
+                color = color.copy(alpha = 0.35f),
+                start = start,
+                end = end,
+                strokeWidth = stroke,
+                pathEffect = effect,
+            )
             x += step
         }
     }

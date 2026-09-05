@@ -273,6 +273,19 @@ rows, and re-derive right after each reconcile.
 - [ ] **Live tail.** Lock the desktop / walk away with the app open → the Inactivity band grows live
       behind the now-line (`live-inactivity-tail` note); come back → it stops growing and stays until a
       derive retires it.
+- [ ] **A declared absence hatches its layer, DOTTED (PRD §8).** With the machine **unlocked**, press
+      **I'm away** and leave it a couple of minutes → that stretch behind the now-line carries **both**
+      oblique-line layers (it is a mode-3 period, so it is a no-screen period), and the "/" *no computer
+      unlocked* lines over it are **dotted**: a computer is sitting there unlocked, so the hatch is your
+      declaration and not a locked screen. Same slope, same spacing, same colour, same hover bubble
+      ("No computer unlocked") — only the line differs. The "\\" *no phone unlocked* slope over the same
+      stretch stays **solid** (no phone declared anything; a peer that cannot be asked was locked).
+- [ ] **…and a real lock inside it goes back to solid.** Leave the button on and let the screen turn off /
+      the machine reach standby for a few minutes (on a Modern-Standby machine `Win+L` is what the power log
+      records), then unlock — which clears the button. Relaunch if the layer has not refreshed (the OS scan
+      runs at launch on a coarse bucket): the slice the machine was actually off for must be drawn **solid**
+      inside the same band, the declared slices around it dotted. Nothing else moves — no panel is displaced
+      and the band's span is unchanged.
 - [ ] **Peer coverage removes the band.** Desktop and phone signed into account 1, phone foregrounded
       while the desktop is closed → after each side has reconciled (make an edit on each, or press Sync to
       force it), the desktop-closed window shows **no** band (the phone covered it). A window where **both**
