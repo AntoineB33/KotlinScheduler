@@ -11,6 +11,25 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### Creating a task no longer expands its cell — 2026-09-06
+
+`shared` (`state/SchedulerReducer.kt`) + `DefaultSubtreeTest`, PRD §4, `docs/invariants/task-tree.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy and no DB migration.**
+
+Anomaly: with the default sub-tree switch on, every task typed into a cell unfolded the template under it.
+`endEditSession` force-added the seeded cell to `SchedulerState.expanded` ("show what was just created rather
+than leaving it folded away"), so the row the user had just written jumped down the screen behind a block of
+rows they had not — on every single creation.
+
+Creating a task is not asking to see the template. The force-expand is gone; `applySetCellTitle` already drops
+a cell from `expanded` where it **mints** the sub-list, so a created cell is simply left collapsed and nothing
+puts it back. The gestures that mean to open it are unaffected: the expand arrow, `Tab` into the child, and
+§13's **"add default sub-tree"** — which is the *asking*, and still expands every cell it walked.
+
+One consequence, and it is the honest one: clicking the arrow mid-session (a PRD §4 *Forced Exit*) is now the
+session's "Edit" unit **plus** the toggle's own unit, exactly as a forced exit followed by any other expand
+arrow already was. It used to be one unit only because the graft had already answered the click.
+
 ### A mode-3 layer is hatched with DOTTED lines — 2026-09-05
 
 `shared` (`domain/SchedulerDomain.kt`, `ui/CalendarUi.kt`, `App.kt`) + `CalendarLayerTest`, PRD §8,

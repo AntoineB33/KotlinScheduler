@@ -1196,14 +1196,14 @@ object SchedulerReducer {
         // keystroke (each one re-runs the naming) and after the cleanup, so a cell abandoned empty is gone
         // before anything could be grafted under it. It rides the session's single "Edit" unit, so one
         // Ctrl+Z takes the seeded sub-tree back with the title that pulled it in.
+        // The seeded cell is left COLLAPSED. Creating a task is not asking to see the template unfold under
+        // it: the row the user just typed would jump down the screen behind a block of rows they did not
+        // write, on every single creation. [applySetCellTitle] already dropped the cell from
+        // [SchedulerState.expanded] where it minted the sub-list, so there is nothing to do here — only the
+        // gestures that mean to open it (the arrow, Tab into the child, "add default sub-tree") do.
         val seeded =
-            if (session == null) {
-                cleaned
-            } else {
-                val grafted = graftDefaultSubtree(cleaned, session.cellId, session.treeBefore.tasks.keys)
-                // Show what was just created rather than leaving it folded away behind a collapsed cell.
-                if (grafted === cleaned) cleaned else grafted.copy(expanded = grafted.expanded + session.cellId)
-            }
+            if (session == null) cleaned
+            else graftDefaultSubtree(cleaned, session.cellId, session.treeBefore.tasks.keys)
         val before = session?.treeBefore ?: seeded.captureTree()
         val after = seeded.captureTree()
         val committed =
@@ -1228,9 +1228,9 @@ object SchedulerReducer {
      * empty placeholder, and the template would only turn up after the next click elsewhere had ended the
      * session for it.
      *
-     * The graft expands the cell it seeded, so the toggle itself is applied only where the forced exit did
-     * not already leave the cell in the state the click asked for — and never on a cell the post-edit cleanup
-     * has just removed.
+     * The graft leaves what it seeded COLLAPSED, so the click that forced the exit is what opens it — the
+     * toggle is applied wherever the forced exit did not already leave the cell in the state the click asked
+     * for, and never on a cell the post-edit cleanup has just removed.
      */
     private fun reduceToggleExpand(state: SchedulerState, cellId: CellId): SchedulerState {
         if (state.editSession == null) return commitDelta(state, ToggleExpandDelta(cellId))
@@ -4095,9 +4095,9 @@ private fun applySetCellTitle(
             // *Deletion*, which takes its task's sub-list with it) keeps its entry, and the next task typed
             // into that same cell would unfold onto nothing but its bare placeholder. The entry goes stale
             // exactly here, where the new sub-list is created, so it is dropped exactly here. The only things
-            // that open a new sub-list are then the ones that mean to: the default-subtree graft (which
-            // re-adds the cell in [endEditSession] once it has rows to show), "add default sub-tree", Tab
-            // into the child, and the user's own click on the arrow.
+            // that open a new sub-list are then the ones that mean to: "add default sub-tree", Tab into the
+            // child, and the user's own click on the arrow. The automatic default-subtree graft is NOT one of
+            // them — creating a task leaves its cell collapsed, template or no template.
             expanded = if (mintedSubList) working.expanded - cellId else working.expanded,
         )
 

@@ -286,14 +286,37 @@ class DefaultSubtreeTest {
 
         s = SchedulerReducer.reduce(s, SchedulerIntent.ExitEdit(EditExitNavigation.Down))
         assertEquals(listOf("Plan", "Do"), childTitles(s, cell))
-        // The seeded sub-tree is shown rather than folded away behind a collapsed cell.
-        assertTrue(cell in s.expanded)
+        // Creating a task is not asking to see the template unfold under it: the cell stays COLLAPSED, so
+        // the row just typed keeps its place instead of jumping down behind rows the user did not write.
+        assertFalse(cell in s.expanded, "creating a task must not expand its cell")
 
         // The whole session is ONE unit, so one Ctrl+Z takes the title and everything it pulled in.
         assertEquals(1, s.histories.forCategory(HistoryCategory.Main).units.size)
         val undone = SchedulerReducer.reduce(s, SchedulerIntent.Undo)
         assertNull(undone.cells[cell]!!.taskId)
         assertEquals(emptyList(), childTitles(undone, cell))
+    }
+
+    @Test
+    fun creating_a_task_never_expands_its_cell_even_when_the_template_seeds_rows() {
+        // The anomaly: with the default sub-tree on, every task typed into a cell unfolded the template
+        // under it. Neither of the two creation paths — the SetCellTitle primitive and a whole edit session
+        // — may add the cell to the expansion set.
+        val s0 = withTemplate(listOf(node("dst/0", "Plan"), node("dst/1", "Do")))
+        val cell = firstCell(s0)
+
+        val typed = SchedulerReducer.reduce(s0, SchedulerIntent.SetCellTitle(cell, "Project"))
+        assertEquals(listOf("Plan", "Do"), childTitles(typed, cell))
+        assertFalse(cell in typed.expanded)
+
+        var s = SchedulerReducer.reduce(s0, SchedulerIntent.BeginEdit(cell, initialText = "Project"))
+        s = SchedulerReducer.reduce(s, SchedulerIntent.ExitEdit(EditExitNavigation.Down))
+        assertEquals(listOf("Plan", "Do"), childTitles(s, cell))
+        assertFalse(cell in s.expanded)
+
+        // And the arrow still opens it afterwards — nothing about the cell is left un-expandable.
+        s = SchedulerReducer.reduce(s, SchedulerIntent.ToggleExpand(cell))
+        assertTrue(cell in s.expanded)
     }
 
     @Test
@@ -309,8 +332,9 @@ class DefaultSubtreeTest {
         assertNull(s.editSession, "asking for the sub-tree ends the session")
         assertEquals(listOf("Plan", "Do"), childTitles(s, cell))
         assertTrue(cell in s.expanded, "the click asked for the sub-tree — it must be open")
-        // Still one Ctrl+Z: the graft rode the session's single "Edit" unit, the toggle added nothing.
-        assertEquals(1, s.histories.forCategory(HistoryCategory.Main).units.size)
+        // The graft rode the session's single "Edit" unit; the toggle is the click's own unit on top of it,
+        // exactly as a forced exit followed by any other expand arrow is.
+        assertEquals(2, s.histories.forCategory(HistoryCategory.Main).units.size)
     }
 
     @Test
@@ -329,7 +353,8 @@ class DefaultSubtreeTest {
 
     @Test
     fun collapsing_the_cell_being_edited_still_collapses_it() {
-        // The graft force-expands what it seeded; a click asking for the opposite must still win.
+        // The forced exit seeds and leaves the cell collapsed, so the first click opens it; the second one,
+        // after re-entering Edit Mode, must close it again rather than re-open what is already open.
         val s0 = withTemplate(listOf(node("dst/0", "Plan")))
         val cell = firstCell(s0)
         var s = SchedulerReducer.reduce(s0, SchedulerIntent.BeginEdit(cell, initialText = "Project"))

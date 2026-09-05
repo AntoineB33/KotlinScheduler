@@ -35,7 +35,8 @@ Global rules that always apply: `CLAUDE.md`.
 - **Expansion is keyed by the CELL but the sub-list belongs to the TASK**, so a cell's `expanded` entry goes
   stale the moment it is given a different task's (or a brand-new, empty) sub-list. `applySetCellTitle` drops
   the cell where it **mints** that sub-list — a freshly minted sub-list is never shown expanded. A rename mints
-  nothing and keeps its children on screen; the graft re-adds the cell in `endEditSession` once it has rows.
+  nothing and keeps its children on screen. Nothing puts the cell back: **creating a task never expands it**,
+  the default-subtree graft included (below).
 - **A Change Task menu row's PATH is walked over the cells, never over `Task.childTaskIds`**
   (`shortestTaskTreePaths` — one BFS, so the first path reached is the shortest, and each LIST is entered
   once). That denormalized field only tracks freshly-typed children, so a task that arrived by a move, a
@@ -348,7 +349,13 @@ until it is applied to a real cell.
   re-seeded.
 - **Asking for a sub-tree while a cell is being edited ends that session first** (`ToggleExpand` is a PRD §4
   Forced Exit, like clicking another cell). Otherwise the arrow opens the just-named task onto its bare
-  placeholder. The toggle itself is skipped when the graft's auto-expand already answered the click.
+  placeholder. The seeding happens in the forced exit, the *opening* in the toggle that follows it — two
+  history units, as a forced exit followed by any other expand arrow already is.
+- **The graft leaves the cell it seeded COLLAPSED.** Creating a task is not asking to see the template unfold
+  under it: the row just typed would jump down the screen behind a block of rows the user did not write, on
+  every single creation. `applySetCellTitle` already dropped the cell from `expanded` where it minted the
+  sub-list, so `endEditSession` adds nothing back — only the gestures that *mean* to open it do (the arrow,
+  Tab into the child, "add default sub-tree", which is the asking and therefore still expands).
 - **The graft drives `applySetCellTitle` / `applyAssignTaskId`**, so occurrences, `childTaskIds`, the title
   index and auto-expansion stay owned by the code that already owns them. Never a second copy of those rules.
 - **A seeded row must never seed in turn** — that is an unbounded cascade, not a deeper template. The graft
