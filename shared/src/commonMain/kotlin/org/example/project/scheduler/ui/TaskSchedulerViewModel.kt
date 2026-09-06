@@ -251,18 +251,40 @@ class TaskSchedulerViewModel(
         snapshotSubscriber?.setAccount(syncEngine?.realtimeAuth()?.first)
     }
 
+    /**
+     * The app's one way to change the state: reduce [intent] against the current state and publish the
+     * result.
+     *
+     * **Read-modify-write, published by compare-and-set.** Every UI dispatch runs on the main thread, but the
+     * expensive re-plans do not any more — [org.example.project.scheduler.engine.SchedulerEngine] reduces
+     * `RefreshSchedule`/`ExtendSchedule` on a background dispatcher, because the fill inside them costs tens
+     * of milliseconds and used to spend every one of them on the frame loop. Two threads therefore reduce
+     * against `_state`, and a plain `_state.value = next` would let the slow one write a plan derived from a
+     * state the fast one has already moved past — silently reverting the keystroke that moved it.
+     * [MutableStateFlow.compareAndSet] closes that: the loser sees the winner's state and re-reduces against
+     * it. A re-plan is idempotent in the state it reads, so re-running it is correct, and it terminates
+     * because each retry is caused by a commit that actually happened.
+     *
+     * Retries are counted (`reduce.contended` in the perf overlay) rather than bounded: a bound would have to
+     * choose between dropping the intent and clobbering the winner, and both are wrong. If that counter is
+     * ever more than a trickle, the re-plan is being asked for far too often — which is a rule-change problem
+     * upstream (CLAUDE.md: *time passing must never re-plan*), not something to fix here.
+     */
     fun dispatch(intent: SchedulerIntent) {
         // Perf: timed per intent CLASS, not as one lump — "the reducer costs 30 ms/s" says nothing, while
         // "RefreshSchedule costs 30 ms/s and fires 8x a second" names both the intent and the sender. The
         // simple name is the intent's own, so a keystroke (UpdateEditText) and a tick (RefreshSchedule) are
         // never averaged together.
         val label = if (Perf.enabled) "reduce." + (intent::class.simpleName ?: "?") else ""
-        val current = _state.value
-        val next = Perf.measure(label) { SchedulerReducer.reduce(current, intent) }
-        // No-op intents (e.g. a RefreshSchedule tick still within the deadline) return the same
-        // instance; skip the state push and persist so the timer doesn't churn storage.
-        if (next === current) return
-        _state.value = next
+        while (true) {
+            val current = _state.value
+            val next = Perf.measure(label) { SchedulerReducer.reduce(current, intent) }
+            // No-op intents (e.g. a RefreshSchedule tick still within the deadline) return the same
+            // instance; skip the state push and persist so the timer doesn't churn storage.
+            if (next === current) return
+            if (_state.compareAndSet(current, next)) break
+            Perf.count("reduce.contended")
+        }
         scheduleSave(syncable = intent.syncsToServer())
     }
 

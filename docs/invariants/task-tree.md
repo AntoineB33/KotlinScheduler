@@ -74,8 +74,9 @@ Global rules that always apply: `CLAUDE.md`.
 
 ### Copying a cell
 
-→ ADR 0012. One format for the tree's Ctrl+C / Ctrl+X and both contextual-menu entries: `renderCopiedNodes`
-writes it, `parseTreeText` reads it, and nothing else parses a clipboard.
+→ ADR 0012. Two shapes, **one reader**: the readable sub-tree text `renderCopiedNodes` writes (Ctrl+X and
+the menu's "deep copy") and the bare **task-id reference** `taskIdReferenceText` writes (Ctrl+C and the menu's
+"copy task id (ctrl c)"). `parseTreeText` reads both, and nothing else parses a clipboard.
 
 - **The clipboard text is for a PERSON to read**, not only for the app to parse: a tab-indented title line per
   task, its fields as named `- <field>: <value>` lines one level deeper, the task text **verbatim** in its own
@@ -89,6 +90,17 @@ writes it, `parseTreeText` reads it, and nothing else parses a clipboard.
 - **The priority-weight TABLE of every sub-list the copy walks travels with it** — the parent node carries the
   sub-list's weight columns, each child carries its own value row. A copy that restored the rows without the
   header would re-normalize every percentage at the destination.
+- **The task-id reference is the id and nothing else** — one `OmniApp task id: task/user/41` line per task
+  (`TASK_ID_REFERENCE_PREFIX`), deliberately a sentence no other application writes, so a paste can tell it from
+  text the user copied elsewhere. Three rules hold it together. The shape is decided **before** the ids are read
+  (`isTaskIdReferenceText`): a payload the app plainly wrote but whose id it never mints is a **no-op**, never a
+  task *titled* after the reference line, which is what falling through to the title-tree parse made of it. Such a
+  node may only **Mirror** (`CopiedNode.reference`) — Restore would rebuild the task under the blank title that
+  deletes and Fresh would mint an untitled clone, so an unknown or unassignable id changes nothing at all. And a
+  title that reads like one is **escaped** (`escapeTitleField`), exactly as a title that reads like an attribute
+  line is.
+- **The three copy switches do not reach it.** They say what a copy of a *task* carries; an identity has no
+  fields to leave out (and `copyIncludeIds` off would leave nothing to write at all).
 - **It carries the task id too**, so a paste lands on the SAME task, not a clone. Three identities
   (`PasteIdentity`): the id names a live *titled* task this cell may hold ⇒ **mirror** it (a sub-list belongs to
   the task id, so its own sub-tree shows and the clipboard's children/fields are never written over it); the id is
@@ -108,16 +120,17 @@ writes it, `parseTreeText` reads it, and nothing else parses a clipboard.
 - **The menu and Ctrl+C must agree about what "the cell" is**: a right-click INSIDE a multi-selection copies the
   whole block (`contextMenuCopyTargets`), exactly as Ctrl+C does; outside one, that cell alone. Copying only the
   cell under the cursor while a dozen sat selected is what shipped and was wrong.
-- **The three gestures divide by how much, and nothing else**: the menu's "copy" is the cell alone (depth 1),
-  "deep copy" is the window's number, **Ctrl+C is the ENTIRE sub-tree** (`FULL_SUBTREE_DEPTH`) and **Ctrl+X is
-  that copy plus the §4 deletion** of the same cells (one history unit, "Cut" — which is what frees the ids a
-  later Ctrl+V restores). Do not re-point the chord at the account depth: a number set for one deep copy would
-  then silently truncate every later Ctrl+C.
+- **The gestures divide by WHAT and by how much, and nothing else**: the menu's **"copy task id (ctrl c)"** and
+  **Ctrl+C are one gesture** — the identity alone; "deep copy" is the tasks themselves down to the window's
+  number (1 = the cells alone, which is what the old menu "copy" was); and **Ctrl+X is the ENTIRE sub-tree**
+  (`FULL_SUBTREE_DEPTH`) **plus the §4 deletion** of the same cells (one history unit, "Cut" — which is what
+  frees the ids a later Ctrl+V restores). Do not re-point Ctrl+X at the account depth: a number set for one deep
+  copy would then silently truncate every later cut.
 - **The account's `deepCopyMaxDepth`** (default/reset 20, persisted + synced, not an Undo/Redo unit) is the
   **deep-copy window's** number — the window opens on it and writes it back when it copies.
 - **What a copy carries is the account's too** — `CopyOptions`: `copyIncludeIds`, `copyPriorityTables`,
   `copyIncludeText` (all default on, persisted + synced, not Undo/Redo units), the deep-copy window's three
-  switches. They govern **every** copy, the menu's "copy" and Ctrl+C/Ctrl+X included; scoped to the window they
+  switches. They govern **every** copy of a task, Ctrl+X included; scoped to the window they
   would be unreachable from the everyday gesture.
   - Tables off ⇒ the weight lines are replaced by `- priority in its sub-list: <n> %`, `cellShare` stored as the
     node's **single weight** (so the paste path is untouched and the shares rebuild themselves), rounded at copy

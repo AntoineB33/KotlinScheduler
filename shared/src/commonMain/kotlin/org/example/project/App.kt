@@ -271,6 +271,11 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                     vm = vm,
                     clock = clock,
                     scope = engineScope,
+                    // [engineScope] is the composition's, i.e. the frame loop. Everything the engine does
+                    // there is a cheap edge except the fill inside a re-plan, which is 25-80 ms and used to
+                    // drop four frames every time a rule change settled; that one job goes to a background
+                    // dispatcher (see SchedulerEngine.planDispatcher).
+                    planDispatcher = Dispatchers.Default,
                     tz = tz,
                     sleepGapStore = store as? DeviceSleepGapStore,
                     sleepScanCheckpoint = store as? SleepScanCheckpointStore,

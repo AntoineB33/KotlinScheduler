@@ -1,0 +1,140 @@
+package org.example.project
+
+import kotlin.coroutines.CoroutineContext
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import org.example.project.scheduler.domain.SchedulerDomain
+import org.example.project.scheduler.engine.SchedulerEngine
+import org.example.project.scheduler.platform.DeviceKind
+import org.example.project.scheduler.state.SchedulerIntent
+import org.example.project.scheduler.ui.TaskSchedulerViewModel
+import org.example.project.time.AppClock
+
+/**
+ * CLAUDE.md hot path: **the plan is the one derivation allowed to be expensive** — 25-80 ms on a real
+ * account ([PerfBenchmarkTest]) — and both production hosts run the engine on a main-thread scope (the
+ * composition's on desktop, the foreground service's on Android). Spending those milliseconds there costs
+ * four dropped frames every time a rule change settles, which is exactly when the user is typing.
+ *
+ * So the two expensive plan intents — and ONLY those two — are reduced on
+ * [SchedulerEngine]'s `planDispatcher`. Nothing else moves: the same intents go through the same
+ * [org.example.project.scheduler.state.SchedulerReducer], so there is still one definition of what a re-plan
+ * is. These tests pin the routing, and [PlanConcurrencyTest] pins what the routing makes possible (two
+ * threads reducing at once).
+ */
+class PlanOffTheFrameLoopTest {
+
+    private val T0 = 1_700_000_000_000L
+    private val DEBOUNCE_MILLIS = 1_000L
+
+    /** Counts the coroutine dispatches routed through it, then hands them to [delegate] unchanged. */
+    private class RecordingDispatcher(private val delegate: CoroutineDispatcher) : CoroutineDispatcher() {
+        var dispatches = 0
+            private set
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            dispatches++
+            delegate.dispatch(context, block)
+        }
+    }
+
+    private fun engine(
+        vm: TaskSchedulerViewModel,
+        scope: CoroutineScope,
+        currentTime: () -> Long,
+        planDispatcher: CoroutineDispatcher?,
+    ) = SchedulerEngine(
+        vm = vm,
+        clock = object : AppClock {
+            override fun nowMillis(): Long = T0 + currentTime()
+        },
+        scope = scope,
+        planDispatcher = planDispatcher,
+        deviceKind = DeviceKind.Desktop,
+        screenActive = { true },
+    )
+
+    /** A titled task with the production screen breaks — enough for a fill to lay something down. */
+    private fun seedAccount(vm: TaskSchedulerViewModel) {
+        val cell = vm.state.value.lists[vm.state.value.rootListId]!!.cellIds.first()
+        vm.dispatch(SchedulerIntent.SetCellTitle(cell, "Task A"))
+        val id = vm.state.value.tasks.keys.first()
+        vm.dispatch(SchedulerIntent.SetTaskMinimumTime(id, 45))
+    }
+
+    @Test
+    fun the_engines_re_plan_is_reduced_on_the_plan_dispatcher_and_still_lands() = runTest {
+        val scheduler = testScheduler
+        val plan = RecordingDispatcher(StandardTestDispatcher(scheduler))
+        val vm = TaskSchedulerViewModel(store = null, saveDispatcher = Dispatchers.Default)
+        val engine = engine(vm, backgroundScope, { scheduler.currentTime }, plan)
+        engine.start()
+        seedAccount(vm)
+
+        // The rule-change watcher's debounce, then its fill.
+        advanceTimeBy(DEBOUNCE_MILLIS + 1)
+        runCurrent()
+
+        assertTrue(
+            plan.dispatches > 0,
+            "the re-plan was reduced on the caller's thread — the fill is back on the frame loop",
+        )
+        assertTrue(
+            vm.state.value.panels.isNotEmpty(),
+            "the re-plan went off-thread and never came back: no plan was committed",
+        )
+    }
+
+    /**
+     * The default is `null` — reduce inline, exactly as before this seam existed — so a host that has no
+     * background dispatcher to give (a test, a headless shell) is not silently made asynchronous.
+     */
+    @Test
+    fun with_no_plan_dispatcher_the_re_plan_is_reduced_inline() = runTest {
+        val scheduler = testScheduler
+        val vm = TaskSchedulerViewModel(store = null, saveDispatcher = Dispatchers.Default)
+        val engine = engine(vm, backgroundScope, { scheduler.currentTime }, planDispatcher = null)
+        engine.start()
+        seedAccount(vm)
+
+        advanceTimeBy(DEBOUNCE_MILLIS + 1)
+        runCurrent()
+
+        assertTrue(vm.state.value.panels.isNotEmpty(), "the inline path must still plan")
+    }
+
+    /**
+     * The routing must not change WHAT is planned. Same account, same clock, same horizon: the plan the
+     * engine commits through its dispatcher is the plan the reducer computes on the spot.
+     */
+    @Test
+    fun going_off_thread_does_not_change_the_plan() = runTest {
+        val scheduler = testScheduler
+        val vm = TaskSchedulerViewModel(store = null, saveDispatcher = Dispatchers.Default)
+        val engine = engine(vm, backgroundScope, { scheduler.currentTime }, StandardTestDispatcher(scheduler))
+        engine.start()
+        seedAccount(vm)
+        val seeded = vm.state.value
+
+        advanceTimeBy(DEBOUNCE_MILLIS + 1)
+        runCurrent()
+
+        val now = T0 + scheduler.currentTime
+        val direct =
+            SchedulerDomain.fillSchedule(
+                seeded,
+                now,
+                horizonMillis = SchedulerDomain.scheduleHorizonEndMillis(now, null),
+            )
+        assertEquals(direct, vm.state.value.panels)
+    }
+}

@@ -739,9 +739,11 @@ private fun approxEq(a: Float, b: Float): Boolean = kotlin.math.abs(a - b) < 1e-
  * by [calendarBlockKey].
  */
 fun overlapLayout(blocks: List<PlacedRecord>): Map<String, List<PanelSlice>> =
-    // O(distinct boundaries x blocks), run once per DayColumn per composition and three times over
-    // (blocks, the live drag slices, the side markers) — so this is the calendar cost that grows fastest
-    // with what is on screen, and the one worth watching when a busy week feels heavier than a quiet one.
+    // O(distinct boundaries x blocks), asked three times per DayColumn (blocks, the live drag slices, the
+    // side markers) — so this is the calendar cost that grows fastest with what is on screen, and the one
+    // worth watching when a busy week feels heavier than a quiet one. Each call site caches it on its block
+    // list (`remember`), so a column that recomposes without its blocks changing pays nothing; measured at
+    // 0.08 ms for a typical day and 1.2 ms for 100 blocks (`PerfBenchmarkTest`).
     Perf.measure("calendar.overlapLayout") { overlapLayoutOf(blocks) }
 
 private fun overlapLayoutOf(blocks: List<PlacedRecord>): Map<String, List<PanelSlice>> {
@@ -4440,7 +4442,11 @@ private fun DayColumn(
         // PRD §8 Overlap Mode: split each block into horizontal slices so overlapping panels share the
         // column width (only over the overlapping sub-range). A non-overlapping block yields one
         // full-width slice = the original look.
-        val layout = overlapLayout(effRecords)
+        // Cached on the records themselves: this column recomposes for every state change App's body sees
+        // (a keystroke in the task tree included), and the slicing is a pure function of the blocks — so
+        // recomputing it is work bought and thrown away. The key is the block list, which is exactly the
+        // input [overlapLayout] reads, so a cached answer can never be a stale one.
+        val layout = remember(effRecords) { overlapLayout(effRecords) }
         effRecords.forEach { record ->
             val key = calendarBlockKey(record)
             // Culled AFTER [overlapLayout] has seen the whole day: a block's width comes from what it
@@ -4499,7 +4505,7 @@ private fun DayColumn(
         // PRD §8 Overlap Mode: draggable vertical edges between overlapping panels (re-divide width).
         // Overlaid above the slices at each shared boundary; a horizontal drag moves weight between the
         // two adjacent panels (the others' shares stay fixed), committed on release.
-        val handles = weightHandles(effRecords)
+        val handles = remember(effRecords) { weightHandles(effRecords) }
         if (handles.isNotEmpty() && !previewActive) {
             BoxWithConstraints(Modifier.fillMaxSize()) {
                 val colWidth = maxWidth
@@ -4582,7 +4588,7 @@ private fun DayColumn(
         // (the dragged one substituted to its preview position), sliced so overlaps share width side by
         // side as the drag happens. Purely visual; the resting slices underneath hold the gesture.
         if (previewActive) {
-            val liveLayout = overlapLayout(liveRecords)
+            val liveLayout = remember(liveRecords) { overlapLayout(liveRecords) }
             BoxWithConstraints(Modifier.fillMaxSize()) {
                 val colWidth = maxWidth
                 liveRecords.forEach { rec ->
@@ -4748,7 +4754,7 @@ private fun DayColumn(
         // nothing is on screen the wrapping subcomposition is skipped outright.
         val visibleScreenBreaks = screenBreakMarkers.filter { onScreen(it.startHour, it.endHour) }
         if (visibleScreenBreaks.isNotEmpty()) {
-            val sideLayout = overlapLayout(screenBreakMarkers)
+            val sideLayout = remember(screenBreakMarkers) { overlapLayout(screenBreakMarkers) }
             // PRD §8: a screen break is drawn on top of every panel and band (only the reminder tags go
             // above it), so whatever sits under it is otherwise hidden — the grey periods and the layers
             // ([contextOverlays]), plus, rarely (the fill

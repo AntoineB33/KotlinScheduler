@@ -5518,6 +5518,14 @@ object SchedulerDomain {
         val categories: List<String> = emptyList(),
         val scheduleUnit: List<ScheduleUnitEntry> = emptyList(),
         val text: String = "",
+        /**
+         * PRD §13 **"copy task id"**: this node is a bare **reference** to a task — the id and nothing else,
+         * the shape `Ctrl+C` and the cell menu write ([TASK_ID_REFERENCE_PREFIX]). It says nothing about a
+         * title, a field or a child, so the only thing a paste can make of it is a **mirror**: an id naming
+         * no live titled task, or one the target cell cannot hold, is a no-op rather than a task rebuilt
+         * under the blank title that deletes (PRD §4).
+         */
+        val reference: Boolean = false,
     )
 
     /** PRD §4 default priority-weight row/column header — omitted from the serialized text. */
@@ -5532,10 +5540,19 @@ object SchedulerDomain {
     const val COPIED_TASKS_SECTION_HEADER: String = "Copied tasks:"
 
     /**
+     * PRD §4/§13 **"copy task id (ctrl c)"**: the whole of that clipboard shape — this prefix and the task
+     * id, one line per task, and nothing else. It is a sentence no other application writes, which is the
+     * point: a paste can tell it apart from text the user copied elsewhere, so the chord and the menu entry
+     * can hand a cell an identity with no window and no confirmation. A title that happens to read like one
+     * is escaped ([escapeTitleField]), exactly as a title that reads like an attribute line is.
+     */
+    const val TASK_ID_REFERENCE_PREFIX: String = "OmniApp task id: "
+
+    /**
      * PRD §13 "deep copy": the depth a fresh account starts at, and the value the window's **reset** button
      * returns to. A depth of 1 is the cell alone (what the menu's plain "copy" takes), 2 is the cell and its
      * children. The live value is [SchedulerState.deepCopyMaxDepth] — one number for the whole account, which
-     * the deep-copy window edits and §4's Ctrl+C / Ctrl+X then copy by without asking.
+     * the deep-copy window edits and §4's Ctrl+X then copies by without asking.
      */
     const val DEEP_COPY_DEFAULT_DEPTH: Int = 20
 
@@ -5543,9 +5560,9 @@ object SchedulerDomain {
     val DEEP_COPY_DEPTH_RANGE: IntRange = 1..999
 
     /**
-     * PRD §4 `Ctrl+C` / `Ctrl+X`: the whole sub-tree, however deep it runs. The account's
+     * PRD §4 `Ctrl+X`: the whole sub-tree, however deep it runs. The account's
      * [SchedulerState.deepCopyMaxDepth] is the **deep-copy window's** number — the chord asks nobody and
-     * cuts nothing off.
+     * cuts nothing off. (`Ctrl+C` no longer copies a sub-tree at all: see [taskIdReferenceText].)
      */
     const val FULL_SUBTREE_DEPTH: Int = Int.MAX_VALUE
 
@@ -5553,8 +5570,9 @@ object SchedulerDomain {
      * PRD §13 deep-copy window: **what** a copy carries, beside how deep it goes. Three switches, one
      * account-wide answer each ([SchedulerState.copyIncludeIds], [SchedulerState.copyPriorityTables],
      * [SchedulerState.copyIncludeText]) — the window edits them and every copy in the app then obeys them,
-     * exactly as the depth setting already worked. Editing them in the window and finding `Ctrl+C` still
-     * carrying what they turned off is the drift the one-answer-per-account rule exists to prevent.
+     * exactly as the depth setting already worked. Editing them in the window and finding `Ctrl+X` still
+     * carrying what they turned off is the drift the one-answer-per-account rule exists to prevent. They say
+     * what a copy of a TASK carries, so "copy task id" ([taskIdReferenceText]) obeys none of them.
      *
      * - [includeIds] off ⇒ no `- id:` line. The copy is then indistinguishable from text the app did not
      *   write, which is the point: it pastes back as **new** tasks (and, PRD §7, seeds the default sub-tree
@@ -5670,13 +5688,13 @@ object SchedulerDomain {
     }
 
     /**
-     * PRD §13 cell contextual menu "copy" / "deep copy": the cells' tasks serialized to the same text
+     * PRD §13 cell contextual menu "deep copy": the cells' tasks serialized to the same text
      * [copyTreeText] produces — so they paste back (Ctrl+V) with their schedule unit, their text, their
      * no-screen switch, their minimum time and their weight row restored.
      *
-     * [maxDepth] is how many levels are taken, each cell itself counting as the first: 1 is "copy" (the
-     * cells alone), the deep-copy window's own number is anything above, and [FULL_SUBTREE_DEPTH] is §4's
-     * Ctrl+C. Empty when nothing in [cellIds] holds a titled task, or when [maxDepth] is below 1 (there is
+     * [maxDepth] is how many levels are taken, each cell itself counting as the first: 1 is the cells alone
+     * (what the menu's "copy" took before it became "copy task id"), the deep-copy window's own number is
+     * anything above, and [FULL_SUBTREE_DEPTH] is §4's Ctrl+X. Empty when nothing in [cellIds] holds a titled task, or when [maxDepth] is below 1 (there is
      * then nothing to copy).
      *
      * [options] defaults to the account's three switches — what the deep-copy window last asked for.
@@ -5695,7 +5713,23 @@ object SchedulerDomain {
     }
 
     /**
-     * PRD §13: the cells a right-click's "copy" / "deep copy" acts on. Right-clicking **inside** a
+     * PRD §4/§13 **"copy task id"** — the cell menu's entry and `Ctrl+C`, which are one gesture: [cellIds]'
+     * tasks as the bare [TASK_ID_REFERENCE_PREFIX] reference lines [parseTreeText] reads back. One line per
+     * DISTINCT task, in the cells' own order, so a block that mirrors one task twice names it once. Empty
+     * when nothing in [cellIds] holds a task the app itself minted — the copy is then a no-op.
+     *
+     * The deep-copy window's three switches deliberately do **not** apply: they say what a copy of a *task*
+     * carries, and this copy is the identity alone (`copyIncludeIds` off would leave nothing to write).
+     */
+    fun taskIdReferenceText(state: SchedulerState, cellIds: List<CellId>): String =
+        cellIds.filter { isPopulated(state, it) }
+            .mapNotNull { state.cells[it]?.taskId }
+            .filter { isUserTaskId(it) }
+            .distinct()
+            .joinToString("\n") { TASK_ID_REFERENCE_PREFIX + it.value }
+
+    /**
+     * PRD §13: the cells a right-click's "copy task id" / "deep copy" acts on. Right-clicking **inside** a
      * multi-selection copies the whole block — the very block §4's Ctrl+C takes, so the menu and the chord
      * never disagree — while a right-click on a cell outside the selection copies that cell alone.
      */
@@ -5774,11 +5808,11 @@ object SchedulerDomain {
     }
 
     /**
-     * PRD §4 Copy: the selected cells' subtrees serialized to the app's clipboard text (see
+     * PRD §4 Cut: the selected cells' subtrees serialized to the app's clipboard text (see
      * [renderCopiedNodes] for the shape). Uses the consecutive selection block when there is one, otherwise
      * the main selection. Empty when nothing populated is selected.
      *
-     * Ctrl+C copies the **entire** sub-tree and asks nothing: [maxDepth] defaults to [FULL_SUBTREE_DEPTH].
+     * Ctrl+X takes the **entire** sub-tree and asks nothing: [maxDepth] defaults to [FULL_SUBTREE_DEPTH].
      * The account's [SchedulerState.deepCopyMaxDepth] belongs to the deep-copy window — the chord is the
      * gesture for "all of it", and the window is the one that cuts a copy short. *What* each node carries
      * is still the account's ([CopyOptions.from]), so the window's three switches govern the chord too.
@@ -5792,7 +5826,8 @@ object SchedulerDomain {
 
     /**
      * The cells §4's Ctrl+C / Ctrl+X act on: the consecutive selection block when there is one, otherwise
-     * the main selection alone. The cut needs the same list the copy took, so both read it from here.
+     * the main selection alone. The id copy, the cut and the menu all need the same list, so they read it
+     * from here.
      */
     fun copyTreeTargets(state: SchedulerState, selection: SchedulerSelection): List<CellId> =
         orderedActiveSelectionInList(state, selection)?.second
@@ -5934,11 +5969,38 @@ object SchedulerDomain {
     fun parseTreeText(text: String): List<CopiedNode>? {
         if (text.isBlank()) return null
         val lines = text.replace("\r\n", "\n").replace('\r', '\n').split('\n')
+        // PRD §4/§13 "copy task id" first: a payload of bare id references is not a tree at all, and its
+        // nodes carry no title the tree parse below could build one from. The shape is decided BEFORE it is
+        // read, so a reference naming an id the app never mints is a no-op — never a task titled after the
+        // reference line, which is what falling through to the title-tree parse would have made of it.
+        if (isTaskIdReferenceText(lines)) return parseTaskIdReferences(lines)
         // A form-feed section line is the pre-1.6.0 shape (tree + title-keyed appendices). Nothing writes
         // it any more, but a clipboard filled by an older build must still paste.
         if (lines.any { it == COPY_SECTION_SEPARATOR }) return parseLegacyTreeText(lines)
         return parseReadableTreeText(lines)
     }
+
+    /**
+     * PRD §4/§13: is [lines] the **"copy task id"** shape at all — every non-blank line a
+     * [TASK_ID_REFERENCE_PREFIX] line, and at least one of them? Asked before the ids are read, so that a
+     * payload the app plainly wrote is answered by [parseTaskIdReferences] alone and never falls through to
+     * the title-tree parse below (which would turn a malformed one into a task *titled* after it).
+     */
+    private fun isTaskIdReferenceText(lines: List<String>): Boolean {
+        val nonBlank = lines.map { it.trim() }.filter { it.isNotEmpty() }
+        return nonBlank.isNotEmpty() && nonBlank.all { it.startsWith(TASK_ID_REFERENCE_PREFIX) }
+    }
+
+    /**
+     * PRD §4/§13 **"copy task id"**: one bare reference node per line — and null on an id [isUserTaskId]
+     * refuses, which keeps a paste from ever pointing a cell at `task/root` / `task/main`.
+     */
+    private fun parseTaskIdReferences(lines: List<String>): List<CopiedNode>? =
+        lines.map { it.trim() }.filter { it.isNotEmpty() }.map { line ->
+            val taskId = TaskId(line.removePrefix(TASK_ID_REFERENCE_PREFIX).trim())
+            if (!isUserTaskId(taskId)) return null
+            CopiedNode(title = "", children = emptyList(), taskId = taskId, reference = true)
+        }
 
     private fun parseReadableTreeText(lines: List<String>): List<CopiedNode>? {
         val headerAt = lines.indexOfLast { it.trim() == COPIED_TASKS_SECTION_HEADER }
@@ -6189,7 +6251,13 @@ object SchedulerDomain {
      */
     private fun escapeTitleField(s: String): String {
         val escaped = escapeField(s)
-        return if (escaped.startsWith(ATTR_MARKER) || escaped == COPIED_TASKS_SECTION_HEADER) "\\$escaped" else escaped
+        // A title that reads like an attribute line, like the summary header, or like a "copy task id"
+        // reference is escaped — the three shapes the parser would otherwise read instead of a title.
+        val ambiguous =
+            escaped.startsWith(ATTR_MARKER) ||
+                escaped == COPIED_TASKS_SECTION_HEADER ||
+                escaped.startsWith(TASK_ID_REFERENCE_PREFIX)
+        return if (ambiguous) "\\$escaped" else escaped
     }
 
     /** Escapes a tab-separated field (a title, a schedule-unit step name) onto one line. */

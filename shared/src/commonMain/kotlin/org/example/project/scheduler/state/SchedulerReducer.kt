@@ -914,15 +914,25 @@ object SchedulerReducer {
         return commitPanels(next, next.panels + panel, label = "Add reminder")
     }
 
+    /**
+     * PRD §4/§13 **Copy (Ctrl+C)**: the **task id** of the cells the chord acts on, in the bare reference
+     * shape (ADR 0012) — the very text the §13 menu's "copy task id (ctrl c)" writes, the two being one
+     * gesture. Not the sub-tree: [reduceCutSelection] below still takes that, because a cut has to carry
+     * back everything it deleted, and the deep-copy window is where a sub-tree copy is asked for.
+     */
     private fun reduceCopySelection(state: SchedulerState): SchedulerState {
         if (state.editSession != null) return state
-        val text = SchedulerDomain.copyTreeText(state, state.selection)
+        val text =
+            SchedulerDomain.taskIdReferenceText(
+                state,
+                SchedulerDomain.copyTreeTargets(state, state.selection),
+            )
         if (text.isEmpty()) return state
         return state.copy(clipboard = text.split('\n'))
     }
 
     /**
-     * PRD §4/§13 Cut (Ctrl+X): the whole-sub-tree copy [reduceCopySelection] takes, and then those same cells are
+     * PRD §4/§13 Cut (Ctrl+X): the whole sub-tree under the cells the chord acts on, and then those same cells are
      * emptied — the PRD §4 deletion, blank title and all, so the cut sub-tree's ids are freed and a paste
      * can rebuild it under them. Both halves ride [reduceEmptySelected]'s single history unit.
      */
@@ -2587,6 +2597,9 @@ private fun pasteTreeAtCell(
  * [Fresh] — no id in the clipboard (a plain title tree, or a pre-1.6.0 payload), or one the tree cannot
  * honour (it would duplicate a task inside one sub-tree — [SchedulerDomain.canAssignTaskId]): a new task is
  * minted with the copied content, exactly as paste always did.
+ *
+ * A PRD §13 **"copy task id"** payload ([SchedulerDomain.CopiedNode.reference]) is the one shape that may
+ * only be [Mirror]: it carries no title and no field, so there is nothing for the other two to build.
  */
 private enum class PasteIdentity { Mirror, Restore, Fresh }
 
@@ -2618,6 +2631,11 @@ private fun pasteNodeInto(
                 else PasteIdentity.Fresh
             else -> PasteIdentity.Restore
         }
+    // PRD §13 "copy task id": a bare reference carries an identity and nothing else, so the one thing it
+    // can mean is "point this cell at that task". An id naming no live titled task, or one this cell cannot
+    // hold, is a no-op — Restore would rebuild the task under the blank title that deletes, and Fresh would
+    // mint an untitled clone of nothing.
+    if (node.reference && identity != PasteIdentity.Mirror) return state
     var working = state
     val taskId =
         when (identity) {
@@ -2636,9 +2654,12 @@ private fun pasteNodeInto(
     // Links the task under its new parent (childTaskIds) and merges the occurrence — the same primitive the
     // "change task" menu and the default-subtree graft drive, rather than a second copy of those rules.
     working = applyAssignTaskId(working, cellId, taskId)
-    // Restore this cell's priority-weight row (PRD §4/§5). The row belongs to the CELL, so a mirror gets it too.
-    working.cells[cellId]?.let { c ->
-        working = working.copy(cells = working.cells + (cellId to c.copy(priorityWeights = node.rowWeights)))
+    // Restore this cell's priority-weight row (PRD §4/§5). The row belongs to the CELL, so a mirror gets it
+    // too — but a bare id reference says nothing about a weight, so the cell keeps the row it already had.
+    if (!node.reference) {
+        working.cells[cellId]?.let { c ->
+            working = working.copy(cells = working.cells + (cellId to c.copy(priorityWeights = node.rowWeights)))
+        }
     }
     // A mirror is the task that is already there: its own fields and its own sub-tree win.
     if (identity == PasteIdentity.Mirror) return working

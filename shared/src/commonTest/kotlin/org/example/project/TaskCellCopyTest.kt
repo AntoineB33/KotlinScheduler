@@ -661,6 +661,161 @@ class TaskCellCopyTest {
         assertEquals(3, reloaded.deepCopyMaxDepth)
     }
 
+    // ----- PRD §4/§13 "copy task id (ctrl c)": the chord and the menu entry -----------------------
+
+    @Test
+    fun ctrl_c_copies_the_task_id_alone_in_a_shape_nothing_else_writes() {
+        // PRD §4/§13: Ctrl+C is now the identity, not the sub-tree — one line no other application writes,
+        // so a paste can tell it from text the user copied somewhere else.
+        var s = stateWithTwoBranches()
+        val cA = s.lists[s.rootListId]!!.cellIds[0]
+        val aTask = s.cells[cA]!!.taskId!!
+        s = click(s, cA)
+
+        val text = SchedulerDomain.taskIdReferenceText(s, SchedulerDomain.copyTreeTargets(s, s.selection))
+        assertEquals(SchedulerDomain.TASK_ID_REFERENCE_PREFIX + aTask.value, text)
+        assertTrue(!text.contains("minimum time"), text)
+        assertTrue(!text.contains("A1"), text)
+        // The intent writes that very text to the app's clipboard.
+        assertEquals(text.split('\n'), SchedulerReducer.reduce(s, SchedulerIntent.CopySelection).clipboard)
+        // Ctrl+X is unchanged: a cut has to carry back everything it deleted.
+        assertEquals(
+            SchedulerDomain.copyTreeText(s, s.selection).split('\n'),
+            SchedulerReducer.reduce(s, SchedulerIntent.CutSelection).clipboard,
+        )
+    }
+
+    @Test
+    fun a_copied_task_id_parses_back_to_a_bare_reference() {
+        val node =
+            SchedulerDomain.parseTreeText(SchedulerDomain.TASK_ID_REFERENCE_PREFIX + "task/user/7")!!.single()
+        assertEquals(org.example.project.scheduler.model.TaskId("task/user/7"), node.taskId)
+        assertTrue(node.reference)
+        assertEquals("", node.title)
+        assertTrue(node.children.isEmpty())
+        // Only the id shape the app itself mints — never the tree's own root/main ids.
+        assertEquals(null, SchedulerDomain.parseTreeText(SchedulerDomain.TASK_ID_REFERENCE_PREFIX + "task/root"))
+        assertEquals(null, SchedulerDomain.parseTreeText(SchedulerDomain.TASK_ID_REFERENCE_PREFIX + "hello"))
+    }
+
+    @Test
+    fun a_pasted_task_id_points_the_cell_at_that_task() {
+        // PRD §13: the whole purpose of the format — pasted onto a cell it puts the task id there, which is
+        // the mirror the sub-list-belongs-to-the-task-id rule already means.
+        var s = stateWithTwoBranches()
+        val cA = s.lists[s.rootListId]!!.cellIds[0]
+        val aTask = s.cells[cA]!!.taskId!!
+        s = click(s, cA)
+        val text = SchedulerDomain.taskIdReferenceText(s, SchedulerDomain.copyTreeTargets(s, s.selection))
+
+        val cX = s.lists[s.rootListId]!!.cellIds[1]
+        val underX = s.lists[s.tasks[s.cells[cX]!!.taskId!!]!!.childListId!!]!!.cellIds.last()
+        s = click(s, underX)
+        val tasksBefore = s.tasks.size
+        s = SchedulerReducer.reduce(s, SchedulerIntent.PasteTree(text))
+
+        assertEquals(aTask, s.cells[underX]!!.taskId)
+        assertEquals(tasksBefore, s.tasks.size, "a reference creates no task")
+        assertEquals("A", s.tasks[aTask]!!.title)
+        assertEquals(setOf(cA, underX), s.tasks[aTask]!!.occurrences.toSet())
+        // The sub-list belongs to the task id, so A's own children show under the new cell too.
+        assertEquals(listOf("A1"), childTitles(s, aTask))
+    }
+
+    @Test
+    fun a_task_id_reference_that_cannot_be_mirrored_is_a_no_op() {
+        // A reference carries no title and no field, so Restore and Fresh have nothing to build: an id the
+        // cell cannot hold, or one naming no live task, must leave the tree exactly as it was rather than
+        // mint a blank-titled husk (a blank title is what DELETES, PRD §4).
+        val base = stateWithTwoBranches()
+        val cA = base.lists[base.rootListId]!!.cellIds[0]
+        val aTask = base.cells[cA]!!.taskId!!
+        val cX = base.lists[base.rootListId]!!.cellIds[1]
+        val xTask = base.cells[cX]!!.taskId!!
+        val s = click(base, cX)
+
+        // A already sits in this very sub-list, so it may not sit in it twice.
+        val duplicated =
+            SchedulerReducer.reduce(
+                s,
+                SchedulerIntent.PasteTree(SchedulerDomain.TASK_ID_REFERENCE_PREFIX + aTask.value),
+            )
+        assertEquals(xTask, duplicated.cells[cX]!!.taskId)
+        assertEquals(s.tasks.size, duplicated.tasks.size)
+        assertEquals(setOf(cA), duplicated.tasks[aTask]!!.occurrences.toSet())
+
+        // An id naming no task at all.
+        val unknown =
+            SchedulerReducer.reduce(
+                s,
+                SchedulerIntent.PasteTree(SchedulerDomain.TASK_ID_REFERENCE_PREFIX + "task/user/999"),
+            )
+        assertEquals(xTask, unknown.cells[cX]!!.taskId)
+        assertEquals(s.tasks.size, unknown.tasks.size)
+    }
+
+    @Test
+    fun the_menu_entry_and_the_chord_write_the_same_ids_for_a_block() {
+        // PRD §13: right-clicking inside a multi-selection takes the whole block, exactly as Ctrl+C does —
+        // one line per DISTINCT task, in the list's order — and pasted back they mirror every one of them.
+        var s = SchedulerState.empty()
+        val root = s.rootListId
+        val cA = s.lists[root]!!.cellIds[0]
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(cA, "A"))
+        val cB = s.lists[root]!!.cellIds[1]
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(cB, "B"))
+        val cC = s.lists[root]!!.cellIds[2]
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(cC, "C"))
+        val aTask = s.cells[cA]!!.taskId!!
+        val bTask = s.cells[cB]!!.taskId!!
+        val visible = SchedulerDomain.selectableVisibleOrder(s)
+        s = SchedulerReducer.reduce(
+            s,
+            SchedulerIntent.ClickCell(cellId = cA, ctrl = false, shift = false, visibleOrder = visible),
+        )
+        s = SchedulerReducer.reduce(
+            s,
+            SchedulerIntent.ClickCell(cellId = cB, ctrl = false, shift = true, visibleOrder = visible),
+        )
+
+        val menuTargets = SchedulerDomain.contextMenuCopyTargets(s, s.selection, cB)
+        assertEquals(listOf(cA, cB), menuTargets)
+        val text = SchedulerDomain.taskIdReferenceText(s, menuTargets)
+        assertEquals(
+            listOf(
+                SchedulerDomain.TASK_ID_REFERENCE_PREFIX + aTask.value,
+                SchedulerDomain.TASK_ID_REFERENCE_PREFIX + bTask.value,
+            ),
+            text.split('\n'),
+        )
+        assertEquals(text, SchedulerDomain.taskIdReferenceText(s, SchedulerDomain.copyTreeTargets(s, s.selection)))
+
+        // Pasted under C, both come back as mirrors, side by side.
+        val underC = s.lists[s.tasks[s.cells[cC]!!.taskId!!]!!.childListId!!]!!.cellIds.first()
+        s = click(s, underC)
+        val tasksBefore = s.tasks.size
+        s = SchedulerReducer.reduce(s, SchedulerIntent.PasteTree(text))
+        assertEquals(listOf("A", "B"), childTitles(s, s.cells[cC]!!.taskId!!))
+        assertEquals(tasksBefore, s.tasks.size, "mirrors create no task")
+    }
+
+    @Test
+    fun a_title_that_reads_like_a_task_id_reference_still_travels_as_a_title() {
+        // The format's one ambiguity, closed the way the attribute lines already close theirs: the title is
+        // escaped on the way out, so a copied sub-tree is never read back as a bare id reference.
+        var s = SchedulerState.empty()
+        val cA = s.lists[s.rootListId]!!.cellIds[0]
+        val looksLikeOne = SchedulerDomain.TASK_ID_REFERENCE_PREFIX + "task/user/3"
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(cA, looksLikeOne))
+        val text = SchedulerDomain.copyCellsText(s, listOf(cA), maxDepth = 1)
+        assertTrue(!text.startsWith(SchedulerDomain.TASK_ID_REFERENCE_PREFIX), text)
+
+        val node = SchedulerDomain.parseTreeText(text)!!.single()
+        assertTrue(!node.reference)
+        assertEquals(looksLikeOne, node.title)
+        assertEquals(s.cells[cA]!!.taskId, node.taskId)
+    }
+
     private fun rootTitles(state: SchedulerState): List<String> =
         state.lists[state.rootListId]!!.cellIds
             .mapNotNull { state.cells[it]?.taskId?.let { id -> state.tasks[id]?.title } }

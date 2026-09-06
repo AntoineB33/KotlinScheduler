@@ -26,6 +26,68 @@ is simply big), distinct from persisted-DB FORMAT compatibility (ADR 0007).
 
 See the `timesim-large-account-ui-overload` note.
 
+## The plan is reduced off the frame loop, and what that costs (2026-09-06)
+
+`PerfBenchmarkTest` puts one `fillSchedule` at **25 ms for 6 tasks and 80 ms for 50** — by a wide margin the
+most expensive thing the app computes, and deliberately so: it runs on a debounced rule change, an hourly
+staleness bound and a horizon roll, never on a tick, which is the rule the rest of this ADR exists to protect.
+
+What was missed is *where* it ran. `SchedulerEngine`'s scope is a **main-thread** scope on both hosts — on
+desktop `rememberCoroutineScope()`, i.e. the composition's, and on Android the foreground service's
+`Dispatchers.Main`. That is the right home for nearly everything the engine does, because nearly everything it
+does is a cheap edge (a cue, a notification, a lock flip). It was the wrong home for the one thing that is not.
+So every re-plan spent 25-80 ms on the frame loop — four dropped frames, landing exactly 1 s after the user
+stopped typing, which is when the rule-change debounce fires.
+
+### Why not move the engine
+
+Moving the whole engine to `Dispatchers.Default` would have taken the tray icon, the notification sink, the
+alarm ring and the platform activity listener off the main thread with it, for no benefit — none of them is
+expensive, and some of them are AWT. One dispatcher is named for one job instead: `planDispatcher`, used by
+`dispatchPlan` for `RefreshSchedule` and `ExtendSchedule` and by nothing else. It defaults to `null` (reduce
+inline), so a headless host or a virtual-time test is never made asynchronous behind its back.
+
+The rule does not move with it. The same intents go through the same `SchedulerReducer`, so there is still one
+definition of what a re-plan is — which is the point, because the in-reducer re-plans (`ForceTaskSwitch`,
+`ForceTaskStart`, `SetSleepSchedule`, `RemoveRecordPeriod`) must stay synchronous: they are direct answers to a
+press and have to be in the state before it returns.
+
+### The price: two threads on one state
+
+`TaskSchedulerViewModel.dispatch` was a read-modify-write (`val current = _state.value` … `_state.value = next`)
+that was safe only because everything reduced on one thread. It is not any more. A 60 ms plan that snapshots
+`current`, then has a keystroke commit under it, then assigns, **reverts the keystroke** — a second after it was
+typed, with no error and no pattern the user can describe. It is the exact shape of the lost-ack and
+startup-reconcile clobbers in ADR 0007, and it would have been diagnosed as one of those.
+
+So the publish is `MutableStateFlow.compareAndSet` and the loser re-reduces against the winner's state. This is
+correct rather than merely lucky: a re-plan is a pure function of the state it reads, so re-running it against a
+newer state is exactly what should have happened, and the loop terminates because every retry is caused by a
+commit that actually occurred. The retries are **counted, not bounded** (`reduce.contended`) — a bound would
+have to choose between dropping the intent (a calendar that no longer matches the tree until the hourly bound)
+and clobbering the winner (the bug), and both are worse than a second derivation. `PlanConcurrencyTest` runs the
+real race on real threads and fails if the race did not happen.
+
+### What was NOT changed, and why
+
+The same report that prompted this named three other bottlenecks. Measured:
+
+- `encodeSnapshot` — 2.2 ms, already on `Dispatchers.Default` (never the UI thread), already memoized per
+  history unit. Nothing to fix.
+- `App`'s ~45 body derivations — **0.7 ms per recomposition, all of them together.** Memoizing them would buy a
+  twentieth of a frame in exchange for `remember` keys that must be exactly the derivation's inputs forever
+  after; get one key wrong and the display shows a stale past, which is the failure this whole ADR is about.
+  Not worth it at that price. (The interesting question there is not the arithmetic but whether fresh list
+  instances defeat Compose's skipping of the calendar subtree — that is a *recomposition* measurement, which the
+  in-app overlay takes and a headless benchmark cannot.)
+- `overlapLayout` — 0.24 ms for a typical day, 1.2 ms for 100 blocks, asked three times per `DayColumn`. Cheap
+  enough not to matter and cheap enough to cache, so it is `remember`ed on its block list. That is a tidy-up,
+  not a fix.
+
+The general lesson, now in `docs/PERFORMANCE.md`: a per-call cost is not a bottleneck until it is multiplied by
+a rate and placed on a thread that owes somebody a frame. A benchmark table ranks costs; only the overlay's
+ms-per-second ranking, or the thread the call sits on, turns one into a diagnosis.
+
 ## A continuously moving now-line is a LAYOUT cost, not a tick cost (2026-09-05)
 
 **Symptom.** Zoomed far in, the now-line advanced in visible jerks instead of gliding. The question behind the

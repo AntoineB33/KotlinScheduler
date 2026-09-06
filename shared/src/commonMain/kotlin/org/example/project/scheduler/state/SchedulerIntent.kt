@@ -919,15 +919,18 @@ sealed interface SchedulerIntent {
     data class ReplaceTaskTitles(val titles: Map<TaskId, String>) : SchedulerIntent
 
     /**
-     * PRD §4 Copy (Ctrl+C): serialize the selected cells' subtrees — **whole**, however deep they run — to the
-     * (system) clipboard. The §13 deep-copy window's maximum depth is that window's own; the chord asks nobody
-     * and truncates nothing. What each task carries is still the account's three copy switches.
+     * PRD §4/§13 Copy (Ctrl+C): write the selected cells' **task ids** to the (system) clipboard, in the bare
+     * reference shape ([org.example.project.scheduler.domain.SchedulerDomain.TASK_ID_REFERENCE_PREFIX]) that
+     * a paste turns back into "point that cell at this task". It is the same gesture as the §13 cell menu's
+     * **"copy task id (ctrl c)"**, and it carries no title, no field and no child — a copy of a *task* is
+     * what "deep copy" is for.
      */
     data object CopySelection : SchedulerIntent
 
     /**
-     * PRD §4/§13 Cut (Ctrl+X): the same whole-sub-tree copy [CopySelection] takes, then the selected cells are
-     * emptied — one history unit, so a single Ctrl+Z puts the cut sub-tree back.
+     * PRD §4/§13 Cut (Ctrl+X): the **whole sub-tree** under the selected cells — the copy [CopySelection] used
+     * to take — and then those cells emptied, one history unit, so a single Ctrl+Z puts the cut sub-tree back.
+     * Unlike Ctrl+C it still carries the tasks themselves: a cut has to be able to put back what it deleted.
      */
     data object CutSelection : SchedulerIntent
 

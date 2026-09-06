@@ -10,6 +10,9 @@ import org.example.project.scheduler.persistence.SchedulerStateCodec
 import org.example.project.scheduler.state.SchedulerIntent
 import org.example.project.scheduler.state.SchedulerReducer
 import org.example.project.scheduler.state.SchedulerState
+import org.example.project.ui.PlacedRecord
+import org.example.project.ui.overlapLayout
+import org.example.project.ui.weightHandles
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.time.TimeSource
@@ -72,6 +75,23 @@ class PerfBenchmarkTest {
                 add(TaskTimeRange(dayStart + h * hour, dayStart + h * hour + 55 * 60_000L))
             }
         }
+    }
+
+    /**
+     * [count] blocks spread across one day, overlapping in pairs — the shape a busy calendar column has, and
+     * the input `overlapLayout` slices. A day with more blocks than hours is what makes the slicing grow.
+     */
+    private fun dayBlocks(count: Int): List<PlacedRecord> = (0 until count).map { i ->
+        val start = ((i % 24) + (i / 24) * 0.13f).coerceIn(0f, 23f)
+        PlacedRecord(
+            title = "block $i",
+            startHour = start,
+            endHour = (start + 1.7f).coerceAtMost(24f),
+            scheduled = false,
+            manual = true,
+            entryId = "block $i",
+            entryIds = listOf("block $i"),
+        )
     }
 
     /** Median of [times] repetitions of [block] — median, not mean, so one JIT or GC outlier cannot set it. */
@@ -197,6 +217,13 @@ class PerfBenchmarkTest {
         rows += "sleepPanels 7d" to
             medianNanos { SchedulerDomain.sleepPanels(state.sleep, now, visibleEnd, tz) }
         rows += "absoluteTaskPriorities" to medianNanos { SchedulerDomain.absoluteTaskPriorities(state) }
+
+        // The calendar's own per-column cost. Asked three times per DayColumn and cached on the block list
+        // there, so what this measures is the price of a day whose blocks actually CHANGED — the number that
+        // matters is how it grows with the count, not the constant.
+        rows += "overlapLayout 18 blocks" to medianNanos(times = 15) { overlapLayout(dayBlocks(18)) }
+        rows += "overlapLayout 100 blocks" to medianNanos(times = 15) { overlapLayout(dayBlocks(100)) }
+        rows += "weightHandles 18 blocks" to medianNanos(times = 15) { weightHandles(dayBlocks(18)) }
 
         // The persistence path — what one save costs, which is what the typing debounce pays.
         val filled = state.copy(panels = SchedulerDomain.fillSchedule(state, now, tz, horizonMillis = now + 7 * day))

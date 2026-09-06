@@ -221,6 +221,12 @@ more than that.
   (`SCHEDULE_STALENESS_MILLIS` = 1 h, a bound re-armed by `requestReschedule`, not a tick) and the **task-tree
   blend cursor** (ADR 0008).
 - The signature excludes records deliberately, so `RemoveRecordPeriod` refills inside its own reducer.
+- **The engine's re-plans are dispatched ASYNCHRONOUSLY** (`SchedulerEngine.dispatchPlan` →
+  `planDispatcher`): the fill is 25-80 ms and the engine's scope is the main thread on both hosts. The rule
+  does not move — same intent, same reducer — but nothing may read the new plan straight off
+  `vm.state.value` after asking for one. The in-reducer re-plans (`ForceTaskSwitch`, `ForceTaskStart`,
+  `SetSleepSchedule`, `RemoveRecordPeriod`, the no-screen strip) stay synchronous: they answer a press.
+  See `docs/invariants/display-hot-path.md` for the compare-and-set this makes necessary.
 
 ---
 

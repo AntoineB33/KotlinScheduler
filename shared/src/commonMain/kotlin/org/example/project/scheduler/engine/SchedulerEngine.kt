@@ -1,6 +1,7 @@
 package org.example.project.scheduler.engine
 
 import kotlin.time.Instant
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -301,6 +302,22 @@ class SchedulerEngine(
     private val vm: TaskSchedulerViewModel,
     private val clock: AppClock,
     private val scope: CoroutineScope,
+    /**
+     * Where the two EXPENSIVE re-plans are reduced ([dispatchPlan]) — `null` reduces them inline on [scope]
+     * like every other dispatch.
+     *
+     * [scope] is a main-thread scope on both hosts (the composition's on desktop, the service's on Android),
+     * because nearly everything this engine does is a cheap edge that belongs there. The fill inside
+     * `RefreshSchedule`/`ExtendSchedule` is the exception: it is 25–80 ms on a real account (see
+     * `PerfBenchmarkTest`), which is four visible frames spent on the frame loop every time a rule change
+     * settles. Handing just those two to [Dispatchers.Default] takes them off it; the rest of the engine —
+     * the cue sweep, the notifications, the tray and audio seams — stays exactly where it was, which is the
+     * point of naming one dispatcher for one job instead of moving the whole engine.
+     *
+     * The default is `null` so tests keep reducing on their own (virtual-time) scheduler and nothing about
+     * their ordering changes; the two production hosts pass [Dispatchers.Default].
+     */
+    private val planDispatcher: CoroutineDispatcher? = null,
     private val tz: TimeZone = TimeZone.currentSystemDefault(),
     // PRD §15: what kind of device this is — only the phone speaks the "pause finished" cue. Injectable for tests.
     private val deviceKind: DeviceKind = currentDeviceKind(),
@@ -1689,8 +1706,32 @@ class SchedulerEngine(
      */
     private fun requestReschedule(now: Long = clock.nowMillis()) {
         lastRescheduleMillis = now
-        if (vm.state.value.automaticSchedule) vm.dispatch(SchedulerIntent.RefreshSchedule(now))
+        if (vm.state.value.automaticSchedule) dispatchPlan(SchedulerIntent.RefreshSchedule(now))
         else pendingReschedule = true
+    }
+
+    /**
+     * Dispatch one of the two expensive plan intents ([SchedulerIntent.RefreshSchedule] /
+     * [SchedulerIntent.ExtendSchedule]) on [planDispatcher] instead of on the caller's thread.
+     *
+     * Nothing about the RULE moves: this reduces the very same intent through the very same
+     * [org.example.project.scheduler.state.SchedulerReducer], so there is still exactly one place that knows
+     * what a re-plan is (CLAUDE.md *one rule, one funnel*). All that changes is the thread the fill burns its
+     * 25–80 ms on, and — since it is now concurrent with the UI's own dispatches — the publish is a
+     * compare-and-set (see [TaskSchedulerViewModel.dispatch]), so a keystroke landing mid-fill makes the plan
+     * re-derive against that keystroke rather than reverting it.
+     *
+     * It becomes ASYNCHRONOUS here, which is why only the engine's own triggers use it: the reducer's
+     * in-line re-plans (`ForceTaskSwitch`, `ForceTaskStart`, a sleep-schedule edit) are direct answers to a
+     * press and must land in the state before the press returns.
+     */
+    private fun dispatchPlan(intent: SchedulerIntent) {
+        val dispatcher = planDispatcher
+        if (dispatcher == null) {
+            vm.dispatch(intent)
+            return
+        }
+        scope.launch { withContext(dispatcher) { vm.dispatch(intent) } }
     }
 
     /**
@@ -2082,7 +2123,7 @@ class SchedulerEngine(
             lastRefillMillis = clock.nowMillis()
             // An EXTENSION, not a re-plan: the horizon rolling forward is not a rule change, so the plan
             // already on screen is kept and only its tail is materialized.
-            if (vm.state.value.automaticSchedule) vm.dispatch(SchedulerIntent.ExtendSchedule(clock.nowMillis()))
+            if (vm.state.value.automaticSchedule) dispatchPlan(SchedulerIntent.ExtendSchedule(clock.nowMillis()))
             else pendingReschedule = true
         }
     }
@@ -2103,7 +2144,7 @@ class SchedulerEngine(
             if (SchedulerDomain.horizonRefillDueMillis(vm.state.value.panels, now, horizon) > now) return@collect
             // Navigating the calendar shows more days; it does not change any scheduling rule, so this too
             // extends the plan's tail rather than re-planning it.
-            if (vm.state.value.automaticSchedule) vm.dispatch(SchedulerIntent.ExtendSchedule(now))
+            if (vm.state.value.automaticSchedule) dispatchPlan(SchedulerIntent.ExtendSchedule(now))
             else pendingReschedule = true
         }
     }
@@ -2115,7 +2156,7 @@ class SchedulerEngine(
                 pendingReschedule = false
                 val now = clock.nowMillis()
                 lastRescheduleMillis = now
-                vm.dispatch(SchedulerIntent.RefreshSchedule(now))
+                dispatchPlan(SchedulerIntent.RefreshSchedule(now))
             }
         }
     }

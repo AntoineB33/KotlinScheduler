@@ -12,6 +12,21 @@ Global rules that always apply: `CLAUDE.md`.
 - **Anything recomputed on every `nowMillis` tick must be bounded by the visible window, never O(total
   history).** Under sim the now-line ticks ~20×/s; an O(history) recompute pegs the UI thread and the window
   is created but never shown — which looks exactly like "the app won't open".
+- **THE PLAN IS NEVER REDUCED ON THE FRAME LOOP.** One `fillSchedule` is 25-80 ms on a real account
+  (`PerfBenchmarkTest`, and it grows with the task count), and both hosts run the engine on a main-thread
+  scope — the composition's on desktop, the foreground service's on Android — because everything else it does
+  is a cheap edge that belongs there. So `SchedulerEngine` reduces its two expensive plan intents
+  (`RefreshSchedule`, `ExtendSchedule`) on `planDispatcher` (`Dispatchers.Default`) and nothing else moves:
+  same intent, same reducer, one definition of a re-plan.
+  - **Only the engine's own triggers may go off-thread.** The reducer's in-line re-plans — `ForceTaskSwitch`,
+    `ForceTaskStart`, a sleep-schedule edit, a removed record — are direct answers to a press and must be in
+    the state before it returns.
+  - **Two threads therefore reduce against `SchedulerState`, so `dispatch` publishes by COMPARE-AND-SET** and
+    re-reduces when it loses. A plain assignment lets a 60 ms plan publish a state derived from before the
+    keystroke that landed inside it — the keystroke silently reverts, seconds after it was typed, and reads
+    exactly like the sync clobbers in ADR 0007. `PlanConcurrencyTest` is that guard; `reduce.contended` in the
+    overlay counts the retries, and more than a trickle of them means the re-plan is being asked for far too
+    often, which is a rule-change bug upstream and not something to fix at the publish.
 - **THE DISPLAY IS NOT POLLED. It is re-derived when the SET OF RULES says the picture changes**
   (`SchedulerDomain.displayResampleDelayMillis`), and the drawn line is not one of the things derived from
   it. The scheduler returns a set of rules and everything `App`'s body builds is read out of it, so the
@@ -55,6 +70,11 @@ Global rules that always apply: `CLAUDE.md`.
 - **The cull window is QUANTIZED (`visibleHourWindow`), and must stay so.** Culling makes composition a
   function of the scroll; read unquantized, it would recompose every column on every scrolled pixel and cost
   more than it saves. The day-rows are still *placed* by the layout-phase `offset { … }` read of `offsetPx`.
+- **The calendar's per-column derivations are cached on their inputs.** `overlapLayout` / `weightHandles` are
+  pure functions of a day's blocks and are asked three times per `DayColumn`, while the column recomposes for
+  every state change `App`'s body sees — a keystroke in the task tree included. Each site is
+  `remember(blocks)`, so an unrelated recomposition pays nothing. Keep the key the block list itself: keyed on
+  anything narrower, a cached slicing outlives the blocks it describes.
 - **Cull the EMISSION, never the list.** `overlapLayout` widths, the reminder/alarm stacking sweeps,
   hit-testing, the contextual menu and the drag snap set all still see the whole day — a partner scrolled out
   of view must still narrow the block on screen. A block mid-gesture is exempt: its slices hold the gesture.

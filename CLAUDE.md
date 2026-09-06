@@ -76,6 +76,13 @@ form; the file named after each one carries the whole rule and the reasons.
   parser, a second row implementation, a second reading of the lock history. Before adding a code path that
   answers a question the app already answers, find the existing one and route through it. A funnel with an
   exception list is not a funnel.
+- **`SchedulerState` is reduced by more than one thread, so `dispatch` publishes by compare-and-set.** The
+  engine reduces its two expensive re-plans off the frame loop (`display-hot-path.md`); a new call site that
+  assigns `_state.value` directly, or a second off-thread reducer that does not re-derive on a lost race, puts
+  back the bug where a 60 ms plan silently reverts the keystroke typed inside it.
+- **A cost is not a bottleneck until it is multiplied by a rate and put on a thread that owes a frame.**
+  `PerfBenchmarkTest` ranks per-call costs; only the overlay's ms/s ranking (or the thread the call sits on)
+  turns one into a diagnosis. `docs/PERFORMANCE.md` § *What the table is and is not*.
 - **Derived state is stripped from the wire and never triggers a sync push** — see the table below, which is
   the whole of the classification.
 - **Test against a large, realistic DB**, not an emptied one. An empty account hides every cost and several

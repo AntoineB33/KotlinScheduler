@@ -413,7 +413,8 @@ internal fun CellListSection(
     onOpenTaskEdit: (TaskId) -> Unit,
     /** PRD §5: the ✎ on a row of the categories drop-down — opens that category's own window. */
     onOpenCategoryEdit: (org.example.project.scheduler.model.CategoryId) -> Unit,
-    onCopyCell: (CellId) -> Unit,
+    /** PRD §13 "copy task id (ctrl c)" — the cell menu's entry, which is §4's Ctrl+C by another gesture. */
+    onCopyTaskIdCell: (CellId) -> Unit,
     onDeepCopyCell: (CellId) -> Unit,
     moveDragActive: Boolean,
     moveDropTarget: MoveDropTarget?,
@@ -516,7 +517,7 @@ internal fun CellListSection(
                     ?.let { taskId ->
                         TaskCellMenuActions(
                             // PRD §13 "start this task now": the plan puts this task at the now-line. It names
-                            // ONE task however many cells are selected — unlike "copy", "start *this* task"
+                            // ONE task however many cells are selected — unlike "copy task id", "start *this* task"
                             // has no meaning for a block — and only a schedulable leaf can be asked for.
                             onStartNow =
                                 if (SchedulerDomain.isLeafTask(state, taskId)) {
@@ -529,7 +530,7 @@ internal fun CellListSection(
                             // window today. Same entry, same name and the same RevealCell primitive the
                             // calendar panel's menu uses.
                             onGoToTaskTree = onGoToTaskTree?.let { go -> { go(taskId) } },
-                            onCopy = { onCopyCell(cellId) },
+                            onCopyTaskId = { onCopyTaskIdCell(cellId) },
                             onDeepCopy = { onDeepCopyCell(cellId) },
                             onCollapseSubtrees =
                                 if (hasChildren) {
@@ -537,7 +538,7 @@ internal fun CellListSection(
                                 } else {
                                     null
                                 },
-                            // PRD §7/§13: the template on demand. Like "copy", it acts on the whole block
+                            // PRD §7/§13: the template on demand. Like "copy task id", it acts on the whole block
                             // when the right-click lands inside a multi-selection.
                             onAddDefaultSubtree =
                                 if (state.defaultSubtreeIsEmpty) {
@@ -672,7 +673,7 @@ internal fun CellListSection(
                 onToggleMinTimeEdit = onToggleMinTimeEdit,
                 onOpenTaskEdit = onOpenTaskEdit,
                 onOpenCategoryEdit = onOpenCategoryEdit,
-                onCopyCell = onCopyCell,
+                onCopyTaskIdCell = onCopyTaskIdCell,
                 onDeepCopyCell = onDeepCopyCell,
                 moveDragActive = moveDragActive,
                 moveDropTarget = moveDropTarget,
@@ -2696,10 +2697,10 @@ internal fun TaskRow(
                         )
                     }
                     DropdownMenuItem(
-                        text = { Text("copy") },
+                        text = { Text("copy task id (ctrl c)") },
                         onClick = {
                             contextMenuOpen = false
-                            cellMenu.onCopy()
+                            cellMenu.onCopyTaskId()
                         },
                     )
                     DropdownMenuItem(
@@ -3043,7 +3044,12 @@ internal class TaskCellMenuActions(
      * order rather than the tree's.
      */
     val onGoToTaskTree: (() -> Unit)?,
-    val onCopy: () -> Unit,
+    /**
+     * PRD §4/§13 **"copy task id (ctrl c)"** — the task id alone, in the reference shape a paste turns back
+     * into "point this cell at that task". It is Ctrl+C's own gesture, named in the row so the chord is
+     * discoverable; there is no menu entry for a sub-tree copy any more, which is what "deep copy" is for.
+     */
+    val onCopyTaskId: () -> Unit,
     val onDeepCopy: () -> Unit,
     val onCollapseSubtrees: (() -> Unit)?,
     val onAddDefaultSubtree: (() -> Unit)?,

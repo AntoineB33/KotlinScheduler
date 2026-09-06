@@ -2,9 +2,11 @@
 
 **Status:** active. **Invariant summary:** see `CLAUDE.md` → *Copying a cell*.
 
-One format serves every copy — the tree's `Ctrl+C` / `Ctrl+X` (PRD §4) and the cell contextual menu's **copy** /
-**deep copy** (PRD §13). `SchedulerDomain.renderCopiedNodes` writes it, `SchedulerDomain.parseTreeText` reads it,
-and `SchedulerReducer.reducePasteTree` is the only consumer of the parse.
+One format serves every copy of a **task** — the tree's `Ctrl+X` (PRD §4) and the cell contextual menu's **deep
+copy** (PRD §13). `SchedulerDomain.renderCopiedNodes` writes it, `SchedulerDomain.parseTreeText` reads it, and
+`SchedulerReducer.reducePasteTree` is the only consumer of the parse. Since 2026-09-06 a second, far smaller
+shape rides the same reader — the **task-id reference** `Ctrl+C` and the menu's "copy task id (ctrl c)" write
+(last section).
 
 ## What a copy carries
 
@@ -182,6 +184,8 @@ divide cleanly by **how much**, and nothing else:
 | menu **deep copy** | the window's number of levels |
 | `Ctrl+C` / `Ctrl+X` | the **entire** sub-tree (`SchedulerDomain.FULL_SUBTREE_DEPTH`) |
 
+(`Ctrl+C`'s row was superseded on 2026-09-06 — see the last section. `Ctrl+X` is unchanged.)
+
 A depth that silently truncated the chord is the failure this avoids: a user who set the window to 3 for one copy
 would afterwards lose everything below level 3 on every `Ctrl+C`, with nothing on screen saying so. The account's
 `deepCopyMaxDepth` is now purely the deep-copy window's own number.
@@ -204,8 +208,9 @@ title filter can exclude matching tasks (and their copied descendants) from the 
 Three decisions there are load-bearing:
 
 - **They are the account's, exactly like the depth.** The window edits them and writes them back on copy; every
-  copy in the app — the menu's "copy", `Ctrl+C`, `Ctrl+X` — then obeys them. Scoped to the window alone they would
-  be nearly unreachable, since `Ctrl+C` is the everyday gesture; and two sets of answers for "what does a copy
+  copy of a task in the app — the menu's "deep copy" and `Ctrl+X` (and, until 2026-09-06, the menu's "copy" and
+  `Ctrl+C`) — then obeys them. Scoped to the window alone they would be nearly unreachable, the chords being the
+  everyday gesture; and two sets of answers for "what does a copy
   carry" is exactly the drift the one-answer-per-account rule already exists to prevent. Cancelling changes
   nothing, as it does for the depth.
 - **The percentage is stored as the node's single weight**, not as a fourth field. `copiedSubtree` writes
@@ -305,3 +310,38 @@ mutating would meet that same task again where it is mirrored, find it no longer
 had just laid down — the cascade the graft avoids by calling the primitives directly, arriving by another
 route. And it visits each **task id** once: a sub-list belongs to the id, so seeding it once is seeding every
 occurrence of it, and the id set doubles as the cycle guard.
+
+## The chord copies the IDENTITY, not the task
+
+2026-09-06, from the spec. `Ctrl+C` and the cell menu's **copy** both wrote a whole sub-tree, and the everyday
+thing the user actually wanted from a cell — *this task, over there* — had no gesture at all: it meant copying a
+sub-tree and relying on the paste to notice the `- id:` line inside it. So the menu's **copy** row is now
+**"copy task id (ctrl c)"**, `Ctrl+C` is that same gesture, and both write nothing but the identity:
+
+```
+OmniApp task id: task/user/41
+```
+
+One line per selected cell (distinct tasks only, in the cells' order). The prefix is a sentence no other
+application writes, which is the whole requirement the spec put on it: a paste has to be able to tell this text
+apart from something the user copied out of a chat, with no window and no confirmation in between.
+
+`SchedulerDomain.taskIdReferenceText` writes it and `parseTreeText` reads it, so the one-parser rule is intact.
+Three consequences are load-bearing:
+
+- **The shape is decided before the ids are read** (`isTaskIdReferenceText`, then `parseTaskIdReferences`). A
+  payload whose every line carries the prefix *is* this format, so an id the app never mints — `task/root`, a
+  typo — is a **no-op**. The first cut let it fall through to the ordinary title-tree parse, which pasted a task
+  **titled** `OmniApp task id: task/root`; the test that caught it is
+  `a_copied_task_id_parses_back_to_a_bare_reference`.
+- **A reference may only [Mirror]** (`CopiedNode.reference`). It carries no title and no field, so `Restore`
+  would rebuild the task under the blank title that *deletes* (PRD §4) and `Fresh` would mint an untitled clone
+  of nothing. An id naming no live titled task, or one `canAssignTaskId` refuses, therefore changes nothing —
+  `a_task_id_reference_that_cannot_be_mirrored_is_a_no_op`.
+- **The three copy switches do not apply.** They answer "what does a copy of a task carry"; this copy is the
+  identity alone, and `copyIncludeIds` off would leave it with nothing to write.
+
+**`Ctrl+X` is deliberately left alone**: a cut has to be able to put back everything it deleted, which an id
+alone cannot, so it still takes the entire sub-tree and still frees the ids a later `Ctrl+V` restores. The
+consequence to accept is that the only *non-destructive* whole-sub-tree copy is now "deep copy" (with its
+unlimited switch) — the window that was always the place a sub-tree copy is asked for.

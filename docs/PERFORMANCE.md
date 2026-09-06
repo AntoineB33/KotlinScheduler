@@ -57,6 +57,15 @@ above that means a state read in that scope is being written by something other 
 `reduce.<IntentName>` is timed per intent class, deliberately. "The reducer costs 30 ms/s" says nothing;
 "`RefreshSchedule` costs 30 ms/s and fires eight times a second" names both the cost and its sender.
 
+`reduce.RefreshSchedule` and `reduce.ExtendSchedule` are the two the engine reduces on a background
+dispatcher (`docs/invariants/display-hot-path.md`), so their milliseconds are the only ones in that list that
+are **not** frames. Everything else there is.
+
+`reduce.contended` counts the compare-and-set retries that off-thread reduction makes possible — a re-plan
+that lost the publish to a keystroke and re-derived against it. A trickle is the mechanism working. A stream
+of them means something is asking for a re-plan far too often; look at what is moving `schedulingSignature`,
+not at the publish.
+
 ### Leak detection
 
 The **gauges** (`state.panels`, `state.historyUnits`, `engine.activeSessions`, …) are the honest leak signal,
@@ -86,6 +95,22 @@ something no gauge covers — add one.
 `benchmark_report` times each heavy derivation separately, median of repeated runs after a warm-up, and
 **asserts nothing about duration** — a wall-clock budget on an unknown machine is a flaky test. Its value is
 the comparison between two runs of itself, before and after a change.
+
+### What the table is and is not
+
+Every row is **one call**. The table ranks derivations by what one costs, and a cost only becomes a
+performance problem when multiplied by a rate and landed on a thread that owes somebody a frame — which is
+why the overlay ranks by ms **per second** and this does not. Two rows illustrate the difference:
+
+- `fillSchedule` is the most expensive thing in the app (25-80 ms, growing with the task count) and it is
+  allowed to be: it runs on a debounced rule change, an hourly bound, and a horizon roll — never on a tick.
+  It earned a fix anyway, because until 2026-09-06 it ran on the frame loop.
+- `encodeSnapshot` runs on every save, i.e. on the 400 ms typing debounce — but on `Dispatchers.Default`,
+  never on the UI thread, and the history it walks is memoized per unit (`SchedulerStateCodec.encodedDeltaOf`),
+  so it is flat in the size of the Undo/Redo stack rather than linear in it.
+
+Reading a row as a bottleneck without asking "how often, and on which thread" is how a 0.2 ms function ends
+up ranked above a 60 ms one.
 
 `display_derivation_cost_follows_the_visible_window_not_total_history` is a real gate. It asks the same
 visible week of the same account twice, once with a week of stored history behind it and once with a year,

@@ -476,17 +476,30 @@ internal fun TaskTreeView(
                     onIntent(SchedulerIntent.SelectAllVisibleCells)
                     return@onPreviewKeyEvent true
                 }
-                // PRD §4: Ctrl+C copies the ENTIRE sub-tree under the selection and asks nothing — the
-                // account's deep-copy depth belongs to the window, not to the chord. What each task
-                // carries is still the window's three switches. Ctrl+X copies the same text and then
-                // empties those very cells.
-                if (mod && (event.key == Key.C || event.key == Key.X)) {
+                // PRD §4/§13: Ctrl+C copies the selected cells' **task ids**, in the bare reference shape
+                // — the very text the cell menu's "copy task id (ctrl c)" writes, the two being one gesture.
+                // Pasted onto a cell it points that cell at the task, and it is deliberately unmistakable
+                // for text copied from anywhere else.
+                if (mod && event.key == Key.C) {
+                    val text =
+                        SchedulerDomain.taskIdReferenceText(
+                            state,
+                            SchedulerDomain.copyTreeTargets(state, state.selection),
+                        )
+                    if (text.isNotEmpty()) {
+                        onIntent(SchedulerIntent.CopySelection)
+                        writeSystemClipboardText(text)
+                    }
+                    return@onPreviewKeyEvent true
+                }
+                // PRD §4: Ctrl+X is unchanged — the ENTIRE sub-tree under the selection (the account's
+                // deep-copy depth belongs to the window, not to the chord; what each task carries is still
+                // the window's three switches), and then those very cells emptied. A cut has to carry back
+                // everything it deleted, which an id alone cannot.
+                if (mod && event.key == Key.X) {
                     val text = SchedulerDomain.copyTreeText(state, state.selection)
                     if (text.isNotEmpty()) {
-                        onIntent(
-                            if (event.key == Key.X) SchedulerIntent.CutSelection
-                            else SchedulerIntent.CopySelection,
-                        )
+                        onIntent(SchedulerIntent.CutSelection)
                         writeSystemClipboardText(text)
                     }
                     return@onPreviewKeyEvent true
@@ -627,12 +640,13 @@ internal fun TaskTreeView(
                 },
                 onOpenTaskEdit = { taskId -> onSetEditTask(taskId) },
                 onOpenCategoryEdit = { categoryId -> onSetEditCategory(categoryId) },
-                // PRD §13 "copy": the cell's own task, with no children, in the same readable format
-                // Ctrl+V pastes back. Right-clicking inside a multi-selection copies the whole block, so
-                // the menu and Ctrl+C never disagree about what "the cell" means.
-                onCopyCell = { cellId ->
+                // PRD §13 "copy task id (ctrl c)": the cell's task id alone, in the shape a Ctrl+V turns
+                // back into "point that cell at this task". Right-clicking inside a multi-selection takes
+                // the whole block, so the menu and Ctrl+C never disagree about what "the cell" means — and
+                // they write the same text, because they are the same gesture.
+                onCopyTaskIdCell = { cellId ->
                     val targets = SchedulerDomain.contextMenuCopyTargets(state, state.selection, cellId)
-                    val text = SchedulerDomain.copyCellsText(state, targets, maxDepth = 1)
+                    val text = SchedulerDomain.taskIdReferenceText(state, targets)
                     if (text.isNotEmpty()) writeSystemClipboardText(text)
                 },
                 // PRD §13 "deep copy": asks for the maximum depth first — the copy happens from its window.

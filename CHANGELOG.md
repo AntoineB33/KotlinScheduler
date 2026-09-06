@@ -11,6 +11,64 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### The plan is reduced off the frame loop (ADR 0009) — 2026-09-06
+
+`SchedulerEngine` (`planDispatcher`, `dispatchPlan`), `TaskSchedulerViewModel.dispatch` (compare-and-set),
+`App.kt` + `SchedulerHolder` (both pass `Dispatchers.Default`), `CalendarUi` (`remember` around the four
+per-column `overlapLayout`/`weightHandles` calls), new `PlanOffTheFrameLoopTest` (3) and `PlanConcurrencyTest`
+(2), three new `PerfBenchmarkTest` rows, `docs/invariants/display-hot-path.md`,
+`docs/invariants/scheduler.md`, `docs/PERFORMANCE.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy and no DB migration.**
+
+One `fillSchedule` measures **25-80 ms** (`PerfBenchmarkTest`, growing with the task count) and both hosts run
+the engine on a **main-thread** scope — the composition's on desktop, the foreground service's on Android — so
+every re-plan spent four visible frames on the frame loop, at exactly the moment the user had stopped typing
+and the 1 s rule-change debounce fired. The engine now reduces its two expensive plan intents
+(`RefreshSchedule`, `ExtendSchedule`) on a `planDispatcher`. Nothing about the *rule* moves: the same intents
+go through the same reducer, so there is still one definition of a re-plan. The in-reducer re-plans
+(`ForceTaskSwitch`, `ForceTaskStart`, `SetSleepSchedule`, `RemoveRecordPeriod`, the no-screen strip) stay
+synchronous — they answer a press and must land before it returns — and `planDispatcher` defaults to `null`
+(reduce inline), so every existing test keeps its ordering.
+
+That makes two threads read-modify-write `SchedulerState`, which is why `dispatch` now publishes with
+`MutableStateFlow.compareAndSet` and re-reduces when it loses. Without it a 60 ms plan would publish a state
+snapshotted from *before* a keystroke that landed inside it, and the keystroke would vanish a second after it
+was typed — indistinguishable from the sync clobbers in ADR 0007, and it would have been blamed on them.
+Retries are counted (`reduce.contended`), not bounded: a bound has to choose between dropping the intent and
+clobbering the winner and both are wrong.
+
+Separately, the calendar's per-column `overlapLayout` / `weightHandles` are now `remember`ed on their block
+lists. They are small (0.24 ms for a typical day, 1.2 ms for 100 blocks) but were recomputed three times per
+`DayColumn` on every recomposition `App`'s body causes, a task-tree keystroke included.
+
+**Two of the four items in the report that prompted this were already handled** and are recorded here so they
+are not "fixed" again: `encodeSnapshot` (2.2 ms) already runs on `Dispatchers.Default`, never on the UI
+thread, and its history walk is already memoized per unit; and the `App` body's ~45 display derivations
+measure **0.7 ms per recomposition** in total, so memoizing them would trade a documented staleness risk
+(`docs/invariants/display-hot-path.md`) for a fraction of one frame. The lesson is in `docs/PERFORMANCE.md`
+under *What the table is and is not*: a per-call cost is not a bottleneck until it is multiplied by a rate and
+placed on a thread that owes somebody a frame.
+
+### Ctrl+C and the cell menu copy the TASK ID (PRD §4/§13, ADR 0012) — 2026-09-06
+
+`SchedulerDomain.taskIdReferenceText` / `TASK_ID_REFERENCE_PREFIX` / `CopiedNode.reference`, `parseTreeText`,
+`SchedulerReducer` (`reduceCopySelection`, `pasteNodeInto`), `TaskTreeView`, `TaskSchedulerScreen`,
+six new `TaskCellCopyTest` cases, PRD §4/§13, `docs/invariants/task-tree.md`, ADR 0012.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy and no DB migration.**
+
+The cell contextual menu's **"copy"** row is now **"copy task id (ctrl c)"**, and `Ctrl+C` is the same gesture.
+Both write the identity and nothing else — one `OmniApp task id: task/user/41` line per selected cell, a
+sentence no other application writes — and pasting it onto a cell **puts that task id there** (the ordinary
+mirror: the task's own sub-list is what shows under it). A reference the tree cannot honour is a **no-op**, not
+a blank-titled husk: the shape is settled before the ids are read, so a malformed one cannot fall through to
+the title-tree parse and paste a task *titled* after the reference line, and such a node may only ever Mirror.
+A title that reads like a reference is escaped, as an attribute-like title already was.
+
+**`Ctrl+X` is unchanged** — still the entire sub-tree plus the §4 deletion, because a cut must be able to put
+back everything it deleted. The consequence: the only non-destructive whole-sub-tree copy is now **"deep copy"**
+(unlimited switch on), which is the window a sub-tree copy was always asked for. The three copy switches govern
+the sub-tree copies only; an identity has no fields to leave out.
+
 ### The priority solve ADDS where no factor can reach — 2026-09-06
 
 `RelativePriorityDomain.setChainsShare` split into `scaleChainsShare` + `shiftChainsShare` (+ `maxShiftFor`),

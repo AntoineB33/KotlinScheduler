@@ -2888,21 +2888,14 @@ class SchedulerReducerTest {
             SchedulerIntent.ClickCell(cellId = visible[1], ctrl = false, shift = true, visibleOrder = visible),
         )
         s = SchedulerReducer.reduce(s, SchedulerIntent.CopySelection)
-        // PRD §4/§13: a title line per task, each followed by its own named attribute lines — the
-        // task's id first, so pasting the text back lands on that very task. Then, after a blank line,
-        // the "Copied tasks:" summary — ADR 0012: the clipboard text is for a PERSON to read, so the tree
-        // is followed by a flat list of every task the copy carried.
+        // PRD §4/§13: Ctrl+C writes the selected cells' TASK IDS — one bare reference line each, in the
+        // list's order (ADR 0012). The whole sub-tree is what Ctrl+X and the deep-copy window take.
         val idA = s.cells[visible[0]]!!.taskId!!.value
         val idB = s.cells[visible[1]]!!.taskId!!.value
         assertEquals(
             listOf(
-                "A", "\t- id: $idA", "\t- minimum time: 45 min",
-                "B", "\t- id: $idB", "\t- minimum time: 45 min",
-                "",
-                SchedulerDomain.COPIED_TASKS_SECTION_HEADER,
-                "- A: minimum time: 45 min, id: $idA",
-                "- B: minimum time: 45 min, id: $idB",
-                "",
+                SchedulerDomain.TASK_ID_REFERENCE_PREFIX + idA,
+                SchedulerDomain.TASK_ID_REFERENCE_PREFIX + idB,
             ),
             s.clipboard,
         )
@@ -2913,6 +2906,10 @@ class SchedulerReducerTest {
         )
         s = SchedulerReducer.reduce(s, SchedulerIntent.CopySelection)
         val idC = s.cells[visible[2]]!!.taskId!!.value
+        assertEquals(listOf(SchedulerDomain.TASK_ID_REFERENCE_PREFIX + idC), s.clipboard)
+
+        // The sub-tree text is still what Ctrl+X puts there — the readable format, id line and all.
+        val cut = SchedulerReducer.reduce(s, SchedulerIntent.CutSelection)
         assertEquals(
             listOf(
                 "C", "\t- id: $idC", "\t- minimum time: 45 min",
@@ -2921,7 +2918,7 @@ class SchedulerReducerTest {
                 "- C: minimum time: 45 min, id: $idC",
                 "",
             ),
-            s.clipboard,
+            cut.clipboard,
         )
     }
 
