@@ -11,6 +11,27 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### A right-click selects the cell it lands on — 2026-09-06
+
+`TaskSchedulerScreen.kt` (`contextMenuModifier` gains `key` + `onSelect`; `TaskRow`'s
+`selectOnSecondaryPress`, and its `selectionPointerModifier` now returns on a secondary press),
+`docs/PRD_TaskScheduler.md` §13, `docs/invariants/task-tree.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy and no DB migration.**
+
+Right-clicking a cell opened its §13 menu without selecting it, so the menu named a cell the tree still drew as
+unselected — and with another cell as the sole selection, the entries that act on "the cell" and the block the
+user could see disagreed. The press now runs the ordinary `ClickCell` intent (no ctrl, no shift, no
+`forceClearMulti`) before the menu opens, which is what makes both cases fall out of the one existing rule: a
+cell outside the selection becomes the new main selection alone, a cell inside a multi-selection keeps the
+block and only moves *main*, which is exactly what `contextMenuCopyTargets` then copies.
+
+It fires from `contextMenuModifier` because that is the handler certainly reached — it is dispatched first and
+consumes the press — and the percentage column, which consumes the press itself, carries its own `onSelect`.
+The paired half is the early return in `selectionPointerModifier`: a right-click must not run the left-button
+machinery, whose deferred single-click reset would have collapsed the multi-selection 300 ms after the menu
+opened over it. Cells with no menu of their own (empty placeholders, root/main) select too — the rule is about
+the click, not the menu — so `contextMenuModifier` no longer returns a no-op merely because `enabled` is false.
+
 ### The plan is reduced off the frame loop (ADR 0009) — 2026-09-06
 
 `SchedulerEngine` (`planDispatcher`, `dispatchPlan`), `TaskSchedulerViewModel.dispatch` (compare-and-set),

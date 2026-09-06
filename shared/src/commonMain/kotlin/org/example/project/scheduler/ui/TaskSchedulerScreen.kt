@@ -2514,6 +2514,18 @@ internal fun TaskRow(
 
     val currentCanMoveFromCell by rememberUpdatedState(canMoveFromCell)
 
+    // PRD §3/§13: a right-click SELECTS the cell it lands on — the menu it opens acts on "the cell", so the
+    // cell it names has to be the selected one. It goes through the ordinary ClickCell intent with neither
+    // modifier and no forced reset, which is exactly what makes the two cases the user asked for fall out of
+    // the existing rule: a right-click on a cell OUTSIDE the selection (the sole-other-cell case) becomes the
+    // new main selection on its own, while one INSIDE a multi-selection keeps the block and only moves main
+    // onto the clicked cell — the same block `contextMenuCopyTargets` then copies.
+    //
+    // Read through [rememberUpdatedState] because the lambda is captured by a cellId-keyed gesture: the
+    // captured instance must never call the click handler a recomposition has since replaced.
+    val currentOnClick by rememberUpdatedState(onClick)
+    val selectOnSecondaryPress = { currentOnClick(cellId, false, false, false) }
+
     @OptIn(ExperimentalComposeUiApi::class)
     fun selectionPointerModifier(): Modifier {
         if (!selectable || isEditing) return Modifier
@@ -2539,6 +2551,12 @@ internal fun TaskRow(
 
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
+                    // A right-click belongs to the contextual menu's gesture, which selects the cell
+                    // itself ([contextMenuModifier] answers the same press first and consumes it). None
+                    // of the left-button machinery below may run on it: not the drag-select, not the
+                    // drag-move, and above all not the deferred single-click reset, which would collapse
+                    // the very multi-selection the menu was opened to act on.
+                    if (currentEvent.buttons.isSecondaryPressed) return@awaitEachGesture
                     down.consume()
                     // PRD §4: a double-click only opens Edit Mode when it lands on the title — pressing the
                     // percentage, the minimum time or the row's empty tail still selects and still
@@ -2656,7 +2674,13 @@ internal fun TaskRow(
                 .background(cellBackground)
                 .then(cellBorder)
                 .then(selectionPointerModifier())
-                .then(contextMenuModifier(hasContextMenu) { contextMenuOpen = true })
+                .then(
+                    contextMenuModifier(
+                        enabled = hasContextMenu,
+                        key = cellId,
+                        onSelect = selectOnSecondaryPress,
+                    ) { contextMenuOpen = true },
+                )
                 .padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -2908,7 +2932,15 @@ internal fun TaskRow(
                                         indication = null,
                                         onClick = onTogglePriorityWeights,
                                     )
-                                    .then(contextMenuModifier(true) { priorityMenuOpen = true })
+                                    // The press stops here, so this column has to select the cell on its
+                                    // own — the row's handler never sees it.
+                                    .then(
+                                        contextMenuModifier(
+                                            enabled = true,
+                                            key = cellId,
+                                            onSelect = selectOnSecondaryPress,
+                                        ) { priorityMenuOpen = true },
+                                    )
                             } else {
                                 Modifier
                             }
@@ -2995,8 +3027,8 @@ internal fun TaskRow(
  * on the row, the two-option one on the priority-percentage column (PRD §5), and the "go to task" one on an
  * **id row of Edit Mode's Tasks menu** (PRD §4, via `org.example.project.ui.EditMenuRowActions`). Returns a
  * no-op modifier
- * when [enabled] is false (cells with no menu — empty / root-main; rows with no menu), so only eligible
- * targets react. [onOpen]
+ * when [enabled] is false and there is no [onSelect] either (rows with no menu and nothing to select), so
+ * only eligible targets react. [onOpen]
  * flips the local menu-visible flag. The press is consumed, which both keeps the freshly opened menu from
  * being dismissed by its own click and stops the row's handler re-opening the cell menu underneath the
  * percentage's (children are dispatched to first, so the inner menu wins that column) — and, on a menu row,
@@ -3005,10 +3037,23 @@ internal fun TaskRow(
 @OptIn(ExperimentalComposeUiApi::class)
 internal fun contextMenuModifier(
     enabled: Boolean,
+    /**
+     * Identity of the thing the gesture speaks for — the cell id on a task row. The captured lambdas are
+     * only re-captured when this changes, so a composition slot reused for another cell must say so or the
+     * gesture keeps opening (and selecting) the cell that slot used to hold.
+     */
+    key: Any? = Unit,
+    /**
+     * PRD §13: what a right-click SELECTS before the menu opens, or null where a secondary press selects
+     * nothing (the calendar's panels, the edit-mode menu rows). This runs even when [enabled] is false, so a
+     * cell with no menu of its own — an empty placeholder, the root/main cell — is still selected by a
+     * right-click; the rule is about the click, not about the menu.
+     */
+    onSelect: (() -> Unit)? = null,
     onOpen: () -> Unit,
 ): Modifier {
-    if (!enabled) return Modifier
-    return Modifier.pointerInput(Unit) {
+    if (!enabled && onSelect == null) return Modifier
+    return Modifier.pointerInput(key, enabled, onSelect == null) {
         awaitPointerEventScope {
             while (true) {
                 var press = awaitPointerEvent()
@@ -3016,11 +3061,15 @@ internal fun contextMenuModifier(
                     press = awaitPointerEvent()
                 }
                 // A right-click the percentage column already answered arrives here with its changes
-                // consumed: that column's menu REPLACES the cell's, so the row must let it pass.
+                // consumed: that column's menu REPLACES the cell's, so the row must let it pass. (That
+                // column selects the cell itself, so nothing is lost by stopping here.)
                 if (press.buttons.isSecondaryPressed && press.changes.none { it.isConsumed }) {
                     // Consume so the freshly opened menu isn't dismissed by this same click.
                     press.changes.forEach { it.consume() }
-                    onOpen()
+                    // Selection FIRST: the menu's entries read the selection when they are built, so a
+                    // menu opened over a stale one would offer the wrong block to copy.
+                    onSelect?.invoke()
+                    if (enabled) onOpen()
                 }
             }
         }

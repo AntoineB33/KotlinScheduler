@@ -117,6 +117,14 @@ the menu's "deep copy") and the bare **task-id reference** `taskIdReferenceText`
   title, or an indent jump ⇒ `null` ⇒ the reducer returns the state unchanged. A plain tab-indented title tree
   still pastes, with its min-times left null.
 - The pre-1.6.0 form-feed shape is still **read** (a clipboard outlives a rebuild), never written.
+- **A right-click SELECTS, through the ordinary `ClickCell`** (no ctrl, no shift, no `forceClearMulti`) — one
+  rule, so the outside-the-selection case collapses onto the clicked cell and the inside-a-multi-selection case
+  keeps the block, with no second selection path to drift. It fires from `contextMenuModifier` (the one handler
+  that certainly sees the press: it is dispatched first and CONSUMES it), **before** `onOpen` — the menu's
+  entries read the selection as they are built, so a menu opened over a stale one offers the wrong block. The
+  percentage column consumes the press itself, so it carries its own `onSelect`; and `selectionPointerModifier`
+  must **return on a secondary press** — its deferred single-click reset would otherwise collapse, 300 ms later,
+  the very multi-selection the menu was opened to act on.
 - **The menu and Ctrl+C must agree about what "the cell" is**: a right-click INSIDE a multi-selection copies the
   whole block (`contextMenuCopyTargets`), exactly as Ctrl+C does; outside one, that cell alone. Copying only the
   cell under the cursor while a dozen sat selected is what shipped and was wrong.
