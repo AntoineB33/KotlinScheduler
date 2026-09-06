@@ -229,14 +229,56 @@ class TimerTest {
     }
 
     @Test
-    fun an_idle_timers_countdown_is_its_duration_and_no_countdown_edit_moves_it() {
-        // The idle row is not counting down: the number it shows is durationSeconds, and the duration field
-        // beside it in the window is what edits that. Writing here as well would be two fields for one number.
+    fun editing_an_idle_timers_countdown_banks_it_and_the_row_reads_resume() {
+        // The countdown is dialled in BEFORE the start as readily as during the run: the amount is banked,
+        // which is precisely a PAUSED row - so the window's Start button becomes Resume and the run begins
+        // from what was typed rather than from the duration.
         val idle = timer(durationSeconds = 300)
-        assertEquals(idle, TimerDomain.withCountdownField(idle, TimerDomain.TimerField.MINUTES, 2, now))
-        assertEquals(idle, TimerDomain.withCountdownField(idle, TimerDomain.TimerField.SECONDS, 2, now))
-        assertEquals(idle, TimerDomain.nudged(idle, 10 * second, now))
-        assertEquals(idle, TimerDomain.withRemaining(idle, 90 * second, now))
+
+        val minutes = TimerDomain.withCountdownField(idle, TimerDomain.TimerField.MINUTES, 2, now)
+        assertTrue(minutes.paused, "a countdown set up before the start is a held one")
+        assertEquals(2 * minute, minutes.remainingMillis)
+        assertEquals(now + 2 * minute, TimerDomain.started(minutes, now).endsAtMillis, "Resume runs the 2:00")
+
+        // The DURATION is a setting and the field beside the countdown is what edits it, so it is untouched -
+        // and Reset still goes back to it. That is what keeps the two numbers one each rather than two for one.
+        assertEquals(300, minutes.durationSeconds)
+        assertTrue(TimerDomain.reset(minutes).idle)
+        assertEquals(5 * minute, TimerDomain.reset(minutes).remainingAtMillis(now))
+
+        // Each field still shifts by its own unit, idle or not.
+        val hours = TimerDomain.withCountdownField(idle, TimerDomain.TimerField.HOURS, 1, now)
+        assertEquals(hour + 5 * minute, hours.remainingMillis)
+
+        // And the seconds, which stop a RUNNING row, have nothing to stop here - they just bank the snap.
+        val seconds = TimerDomain.withCountdownField(idle, TimerDomain.TimerField.SECONDS, 30, now)
+        assertTrue(seconds.paused)
+        assertEquals(5 * minute + 30 * second, seconds.remainingMillis)
+    }
+
+    @Test
+    fun the_nudge_buttons_work_before_the_start_too() {
+        val idle = timer(durationSeconds = 300)
+        val plus = TimerDomain.nudged(idle, 10 * second, now)
+        assertTrue(plus.paused)
+        assertEquals(5 * minute + 10 * second, plus.remainingMillis)
+        // Nudged back down, it is HELD at the full duration rather than idle again: a row that has been
+        // dialled in stays held whatever the number lands on (a paused row is written in its own currency,
+        // always), and Reset is what puts it back to idle. Resuming 5:00 and starting 5:00 run the same run.
+        val back = TimerDomain.nudged(plus, -10 * second, now)
+        assertTrue(back.paused)
+        assertEquals(5 * minute, back.remainingMillis)
+        assertTrue(TimerDomain.reset(back).idle)
+    }
+
+    @Test
+    fun an_edit_that_changes_nothing_leaves_an_idle_row_idle() {
+        // Retyping the number the row was already showing must not turn Start into Resume: nothing moved.
+        val idle = timer(durationSeconds = 300)
+        assertEquals(idle, TimerDomain.withCountdownField(idle, TimerDomain.TimerField.MINUTES, 5, now))
+        assertEquals(idle, TimerDomain.withCountdownField(idle, TimerDomain.TimerField.SECONDS, 0, now))
+        assertEquals(idle, TimerDomain.nudged(idle, 0L, now))
+        assertEquals(idle, TimerDomain.withRemaining(idle, 5 * minute, now))
     }
 
     @Test
@@ -445,11 +487,11 @@ class TimerTest {
         assertTrue(
             s === SchedulerReducer.reduce(
                 s,
-                SchedulerIntent.SetTimerCountdownField("timer-0", TimerDomain.TimerField.MINUTES, 2, now),
+                SchedulerIntent.SetTimerCountdownField("timer-0", TimerDomain.TimerField.MINUTES, 5, now),
             ),
-            "an idle row has no countdown to move",
+            "an idle row retyped as the 5:00 it already showed has not moved",
         )
-        assertTrue(s === SchedulerReducer.reduce(s, SchedulerIntent.NudgeTimerRemaining("timer-0", 10 * second, now)))
+        assertTrue(s === SchedulerReducer.reduce(s, SchedulerIntent.NudgeTimerRemaining("timer-0", 0L, now)))
         assertTrue(
             s === SchedulerReducer.reduce(
                 s,
@@ -486,6 +528,32 @@ class TimerTest {
         assertEquals(now + 3 * minute - 10 * second, nudged.timers[0].endsAtMillis)
         assertTrue(nudged.timers[0].running)
         assertTrue(nudged.timers[1].idle)
+    }
+
+    @Test
+    fun a_countdown_edit_before_the_start_makes_the_row_resumable_through_the_reducer() {
+        val s0 = SchedulerReducer.reduce(SchedulerState.empty(), SchedulerIntent.SetTimers(listOf(timer())))
+        val dialled = SchedulerReducer.reduce(
+            s0,
+            SchedulerIntent.SetTimerCountdownField("timer-0", TimerDomain.TimerField.MINUTES, 2, now),
+        )
+        assertTrue(dialled.timers.single().paused, "the window's Start reads Resume from here on")
+        assertEquals(2 * minute, dialled.timers.single().remainingMillis)
+        assertEquals(300, dialled.timers.single().durationSeconds, "the duration setting is untouched")
+
+        // The +/- buttons move it before the start as well.
+        val nudged = SchedulerReducer.reduce(
+            dialled,
+            SchedulerIntent.NudgeTimerRemaining("timer-0", 10 * second, now),
+        )
+        assertEquals(2 * minute + 10 * second, nudged.timers.single().remainingMillis)
+
+        // Resume runs what was dialled in; Reset still goes back to the duration.
+        val started = SchedulerReducer.reduce(nudged, SchedulerIntent.StartTimer("timer-0", now + hour))
+        assertEquals(now + hour + 2 * minute + 10 * second, started.timers.single().endsAtMillis)
+        val reset = SchedulerReducer.reduce(started, SchedulerIntent.ResetTimer("timer-0"))
+        assertTrue(reset.timers.single().idle)
+        assertEquals(5 * minute, reset.timers.single().remainingAtMillis(now))
     }
 
     @Test

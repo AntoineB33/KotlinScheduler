@@ -67,7 +67,8 @@ import org.example.project.scheduler.model.TimerEntry
  * **run-state** writes go through their own callbacks rather than through [onTimersChange], so editing a row's
  * settings while it counts down cannot disturb the instant it is due at — and, the other way round, the
  * countdown is three input fields plus six ± second buttons ([onSetTimerCountdownField] /
- * [onNudgeTimerRemaining]) so the time left can be changed at any moment without touching the row's settings.
+ * [onNudgeTimerRemaining]) so the time left can be changed at any moment — before the start as much as during
+ * it — without touching the row's settings.
  * Only one of those writes ever stops the countdown, and deliberately: typing into the **seconds**, the digit
  * that is itself reading down.
  *
@@ -509,10 +510,13 @@ private fun TimerRowEditor(
     // holding it keep reading down throughout, which is exactly what "editing the hours does not stop the
     // minutes and seconds" looks like on screen. Display-only Compose state, like the window's own clock.
     var draft by remember(row.id) { mutableStateOf<Pair<TimerDomain.TimerField, String>?>(null) }
-    // A countdown can only be edited where there is one: an idle row is not counting down, and the number it
-    // shows is its duration — which is the field beside it, and editing that same number twice over is what
-    // this must not become.
-    val countdownEditable = running || paused
+    // The countdown is editable in all three states, the idle one included: setting up how long this run is
+    // to be BEFORE pressing the button is the ordinary way to use a timer, and it is not the same question as
+    // the Duration beside it (that one is the row's setting, what Reset goes back to and what a start from
+    // idle takes). An idle row edited here is holding a countdown it has not started — which is a PAUSED row,
+    // so the button below says Resume. The only thing that cannot be edited is a row whose entry has not
+    // landed yet, in the instant between adding it and the push.
+    val countdownEditable = entry != null
 
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -541,9 +545,9 @@ private fun TimerRowEditor(
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             // The countdown, as three INPUTS: derived from the end instant and the now-line, never stored, but
-            // writable at any moment while the timer has something to count down. Each field moves the due
-            // instant by its OWN unit, so typing into the hours leaves the minutes and seconds reading down
-            // underneath it. Emphasised while it is actually running so a paused row reads as held rather
+            // writable at any moment — before the start as much as during it. Each field moves the countdown
+            // by its OWN unit, so typing into the hours leaves the minutes and seconds reading down
+            // underneath it. Emphasised while it is actually running so a held row reads as held rather
             // than stuck.
             TimerDomain.TimerField.entries.forEachIndexed { index, field ->
                 if (index != 0) {
@@ -574,10 +578,12 @@ private fun TimerRowEditor(
                 TimerActionChip(text = "Pause", onClick = onPause)
             } else {
                 // Resuming and starting are the same button: one continues from what a pause banked, the
-                // other from the full duration, and TimerDomain.started is what tells them apart.
+                // other from the full duration, and TimerDomain.started is what tells them apart. A countdown
+                // edited before the start banks exactly that way, so it reads Resume from then on — the row
+                // is no longer at its duration, and saying Start would be saying the duration is what runs.
                 TimerActionChip(
                     text = if (paused) "Resume" else "Start",
-                    enabled = parseDurationSeconds(row.durationText) != null,
+                    enabled = paused || parseDurationSeconds(row.durationText) != null,
                     onClick = onStart,
                 )
             }
@@ -586,7 +592,8 @@ private fun TimerRowEditor(
         }
         // PRD §18: the seconds, moved WITHOUT stopping the countdown. Typing into the seconds field cannot do
         // that — the digit is itself reading down, so a typed value only sticks if the row stops — which is
-        // precisely why these sit beside it.
+        // precisely why these sit beside it. They work before the start too, where there is nothing to stop:
+        // they are then simply how the run about to be started is dialled in a few seconds at a time.
         Row(verticalAlignment = Alignment.CenterVertically) {
             NUDGE_SECONDS.forEachIndexed { index, seconds ->
                 if (index != 0) Spacer(Modifier.width(4.dp))

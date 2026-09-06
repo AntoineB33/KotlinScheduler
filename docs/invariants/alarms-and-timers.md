@@ -64,6 +64,8 @@ arming loop, a second sweep, a second ring path or a second notification funnel.
   exist.** The seconds are the digit that is itself reading down, so a value typed into a running timer would
   be consumed by the very next tick; there is no way to *set* it while it moves. So that edit **pauses** the
   row (Pause becomes Resume) and snaps the countdown to the whole second typed, which is what makes it stick.
+  Only a **running** row is stopped by it — a paused or idle one has no countdown to stop and simply banks the
+  snapped value, through the same primitive as every other write.
   `NudgeTimerRemaining` — `−10s / −5s / −1s / +1s / +5s / +10s`, `TimerDomain.nudged` — is how the seconds move
   **without** stopping, and it is the only reason both exist. Do not make the seconds field silently
   non-stopping (the value would not stick) and do not drop the buttons (the seconds would be unreachable while
@@ -71,9 +73,18 @@ arming loop, a second sweep, a second ring path or a second notification funnel.
 - **Each write goes through `withRemaining`, in the state's OWN currency.** A **running** row's time left is
   `endsAtMillis`, so it moves and the row **stays running**; a **paused** row's is the banked `remainingMillis`,
   so that is rewritten and the row **stays paused**. Neither ever writes the other's field, which is what keeps
-  the three-state invariant true without `healed` catching it. An **idle** row is returned unchanged and the
-  fields are `readOnly` there: its countdown *is* its `durationSeconds`, which the Duration field beside it
-  edits, and two fields writing one number by two routes is the drift this codebase keeps deleting.
+  the three-state invariant true without `healed` catching it.
+- **An IDLE row's countdown is editable too, and editing it makes the row PAUSED — which is why the button
+  then reads *Resume*.** Setting up how long this run is to be before pressing anything is the ordinary way to
+  use a timer, and a countdown dialled in but not started *is* a held one: there is no fourth state to invent
+  for it, and *Start* would be claiming the duration is what runs when it is not. The ± buttons work there for
+  the same reason. **The two numbers stay one each**: `durationSeconds` is the *setting* the Duration field
+  beside the countdown edits, it is what `reset` returns to and what a start from a genuinely idle row takes,
+  and no countdown edit ever writes it — two fields writing one number by two routes is the drift this
+  codebase keeps deleting. The one exception is an idle row retyped as the number it was already showing: it
+  banks nothing and stays idle, so a value retyped as it was never turns *Start* into *Resume*. A **paused**
+  row is not normalised back the other way — nudged onto its duration exactly it stays held, because a paused
+  row is always written in its own currency.
 - **The row holds ONE DRAFT, naming the field it belongs to** (`draft`, seeded on focus and dropped by
   `onFocusChanged` — only if it is still that field's, since Compose may report the gain before the loss). One,
   because only one field can hold the focus; and a draft at all because the live countdown changes four times a

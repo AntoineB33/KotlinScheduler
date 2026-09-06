@@ -11,6 +11,30 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### A timer's countdown is editable before it is started — 2026-09-06
+
+`TimerDomain.withRemaining` (an idle row banks instead of returning unchanged) + `withCountdownField` (the
+idle guard dropped; only a *running* row is stopped by a typed seconds value), `AlarmWindow.kt`
+(`countdownEditable` is now "the row exists" rather than "it is running or paused"; *Resume* is enabled on a
+paused row whatever the Duration field says), `SchedulerIntent` docs, `TimerTest` (three domain tests
+rewritten/added, one reducer test added, the no-op test re-pointed at an edit that really changes nothing),
+`docs/PRD_TaskScheduler.md` §18, `docs/invariants/alarms-and-timers.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy and no DB migration.**
+
+Dialling in how long *this* run is to be before pressing anything is the ordinary way to use a timer, and the
+three countdown fields and the ± buttons were inert until it was running. They are live in all three states
+now. An idle row edited here **banks the amount and so becomes paused** — no fourth state was invented for it,
+because a countdown set up but not started *is* a held one — which is why the button then reads **Resume**:
+what is about to run is no longer the Duration, so *Start* would be misnaming it.
+
+The Duration stays the row's one setting: no countdown edit writes it, `reset` still returns to it, and a start
+from a genuinely idle row still takes it — the "two fields writing one number by two routes" that the old
+read-only idle row was avoiding is avoided by keeping the two numbers apart, not by refusing the edit. Two
+edges fall out of `withRemaining` being the single primitive: an idle row retyped as the number it already
+showed banks nothing and stays idle (so *Start* only becomes *Resume* once something really moved), and a
+paused row is never normalised back to idle by a nudge that lands on its duration, because a paused row is
+always written in its own currency.
+
 ### A right-click selects the cell it lands on — 2026-09-06
 
 `TaskSchedulerScreen.kt` (`contextMenuModifier` gains `key` + `onSelect`; `TaskRow`'s

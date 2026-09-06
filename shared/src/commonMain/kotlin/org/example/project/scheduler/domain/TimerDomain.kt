@@ -6,7 +6,8 @@ import org.example.project.scheduler.model.TimerEntry
  * PRD §18 Timers: the pure arithmetic behind the Alarms window's **Timers** section — when a running
  * [TimerEntry] is due, which timers a moving clock ran past, the three transitions a timer row can make
  * (start/resume, pause, reset) and the countdown's own writes — [withCountdownField] for the three typed
- * components and [nudged] for the ± second buttons, both over the [withRemaining] primitive.
+ * components and [nudged] for the ± second buttons, both over the [withRemaining] primitive, and both usable
+ * **before** the timer is started as well as while it runs.
  *
  * The counterpart of [AlarmDomain], and deliberately much smaller: an alarm's boundary has to be derived from
  * the local calendar on every day it rings, whereas a timer's boundary IS its stored
@@ -156,7 +157,8 @@ object TimerDomain {
      * stops the countdown and snaps it to the whole second the user typed, which is what makes the value
      * stick; the ± buttons ([nudged]) are how the seconds are moved **without** stopping.
      *
-     * An **idle** row is returned unchanged, for the reason [withRemaining] gives.
+     * An **idle** row is edited too — the countdown is set up *before* the start, which is what the row's
+     * button then saying **Resume** rather than *Start* means. [withRemaining] is where that is decided.
      */
     fun withCountdownField(
         entry: TimerEntry,
@@ -164,16 +166,18 @@ object TimerDomain {
         value: Int,
         nowMillis: Long,
     ): TimerEntry {
-        if (entry.idle) return entry
         val remaining = entry.remainingAtMillis(nowMillis)
         val shown = countdownOf(remaining)
         if (field == TimerField.SECONDS) {
             val snapped = shown.copy(seconds = value).millis
                 .coerceIn(0L, TimerEntry.MAX_TIMER_SECONDS.toLong() * 1_000L)
-            return if (entry.endsAtMillis == null && entry.remainingMillis == snapped) {
-                entry
-            } else {
+            // Only a RUNNING row is stopped here (that stop is what makes a typed seconds value stick). A
+            // paused or idle one has no countdown to stop, so it banks the snapped value like any other
+            // write, through the one primitive.
+            return if (entry.running) {
                 entry.copy(endsAtMillis = null, remainingMillis = snapped)
+            } else {
+                withRemaining(entry, snapped, nowMillis)
             }
         }
         val delta = (value - shown.component(field)).toLong() * field.unitMillis
@@ -186,7 +190,8 @@ object TimerDomain {
      * moved without the stop [withCountdownField] makes for a typed seconds value.
      *
      * A running row stays running and simply becomes due that much sooner or later; a paused one stays paused
-     * with the new amount banked; an idle one is unchanged ([withRemaining]). Driving a running timer below
+     * with the new amount banked; an idle one banks the new amount too and so becomes a **paused** row, ready
+     * to be resumed at what the buttons made of it ([withRemaining]). Driving a running timer below
      * zero leaves it due **now**, so it rings — the honest answer to "take ten more seconds off a countdown
      * with three left", and the same clamp every other write here goes through.
      */
@@ -215,16 +220,21 @@ object TimerDomain {
     }
 
     /**
-     * PRD §18 Timers: put [remainingMillis] on the clock **without changing which of the three states the row
-     * is in** — the primitive under [withCountdownField] and [nudged], and the one place the run fields are
-     * written for a countdown edit.
+     * PRD §18 Timers: put [remainingMillis] on the clock — the primitive under [withCountdownField] and
+     * [nudged], and the one place the run fields are written for a countdown edit.
      *
-     * The two states that have something to count down answer it in their own currency, which is the whole of
-     * the rule: a **running** timer's time left is derived from [TimerEntry.endsAtMillis], so it is moved by
-     * moving that instant to `nowMillis + remaining`; a **paused** one's is the banked
-     * [TimerEntry.remainingMillis], so it is moved by writing it. An **idle** row is returned unchanged: it is
-     * not counting down at all, and the number it shows is its [TimerEntry.durationSeconds] — a *setting*, and
-     * the field beside it in the window is what edits that.
+     * Each state answers in its own currency, which is the whole of the rule: a **running** timer's time left
+     * is derived from [TimerEntry.endsAtMillis], so it is moved by moving that instant to
+     * `nowMillis + remaining` and the row stays running; a **paused** one's is the banked
+     * [TimerEntry.remainingMillis], so it is moved by writing it and the row stays paused. Neither ever writes
+     * the other's field, which is what keeps the three-state invariant true here without [healed] catching it.
+     *
+     * An **idle** row banks it too, and so **becomes paused** — a countdown set up before the start is exactly
+     * a held one, which is why the window's button then reads *Resume*. The single exception is an edit that
+     * lands back on the number the idle row was already showing, its
+     * [TimerEntry.durationSeconds]: nothing changed, so nothing is banked and the row stays idle (its *Start*
+     * does not turn into a *Resume* for a value retyped as it was). The duration itself is untouched either
+     * way — it is a *setting*, the field beside the countdown edits it, and [reset] still goes back to it.
      *
      * [nowMillis] is passed in rather than read, like [started] and [paused], so this stays a pure function of
      * its inputs. The value is clamped into `0..`[TimerEntry.MAX_TIMER_SECONDS].
@@ -234,7 +244,8 @@ object TimerDomain {
         return when {
             entry.running -> entry.copy(endsAtMillis = nowMillis + remaining)
             entry.paused -> entry.copy(remainingMillis = remaining)
-            else -> entry
+            remaining == entry.durationMillis -> entry
+            else -> entry.copy(remainingMillis = remaining)
         }
     }
 

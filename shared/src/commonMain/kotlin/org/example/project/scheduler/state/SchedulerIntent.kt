@@ -528,7 +528,8 @@ sealed interface SchedulerIntent {
     ) : SchedulerIntent
 
     /**
-     * PRD §18 Timers: start one timer, or resume it from where a [PauseTimer] left it — it becomes due at
+     * PRD §18 Timers: start one timer, or resume it from where a [PauseTimer] left it (or from a countdown
+     * dialled in before it was ever started) — it becomes due at
      * [nowMillis] plus whatever is left. [nowMillis] is passed in rather than read, so the reducer stays a
      * pure function of its inputs. A no-op when the timer is unknown or already running.
      */
@@ -557,15 +558,18 @@ sealed interface SchedulerIntent {
 
     /**
      * PRD §18 Timers: set one component of a timer's countdown — what each of the Alarms window's three
-     * countdown fields dispatches, so the time left can be changed at any moment without stopping and
-     * restarting the countdown.
+     * countdown fields dispatches, so the time left can be changed at any moment, **before the start as much
+     * as during the run**, without stopping and restarting the countdown.
      *
      * The edit is a **shift by that component's own delta**, which is what leaves the finer components
      * running: typing into the hours leaves the minutes and seconds reading down, typing into the minutes
      * leaves the seconds reading down. [TimerDomain.TimerField.SECONDS] is the exception and **pauses** the
      * row — the seconds are the digit that is itself moving, so a typed value could not otherwise stick.
-     * [TimerDomain.withCountdownField] is the whole rule; an idle row is unchanged, its countdown being the
-     * duration that [SetTimers] edits.
+     * [TimerDomain.withCountdownField] is the whole rule. An **idle** row is edited too: it banks the amount
+     * and so becomes **paused**, which is what makes the window's button read *Resume* — a countdown dialled
+     * in before the start is a held one. Its [org.example.project.scheduler.model.TimerEntry.durationSeconds]
+     * is untouched (that setting is [SetTimers]', and [ResetTimer] still goes back to it), and an edit that
+     * lands back on the duration the idle row already showed changes nothing at all.
      *
      * Together with [NudgeTimerRemaining] this is the exact counterpart of [SetTimers]' rule the other way
      * round: that one carries the settings and never disturbs the due instant, these move the due instant and
@@ -587,8 +591,9 @@ sealed interface SchedulerIntent {
      *
      * They exist because [SetTimerCountdownField] deliberately **stops** a running timer when the seconds are
      * typed into: this is how the seconds are moved without stopping it. A running row stays running and just
-     * becomes due sooner or later; a paused one stays paused with the new amount banked; an idle one is
-     * unchanged. See [TimerDomain.nudged]. A no-op when the timer is unknown or nothing moved.
+     * becomes due sooner or later; a paused one stays paused with the new amount banked; an idle one banks the
+     * new amount as well and so becomes paused, exactly as a typed component does. See [TimerDomain.nudged].
+     * A no-op when the timer is unknown or nothing moved.
      */
     data class NudgeTimerRemaining(
         val id: String,
