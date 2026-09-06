@@ -31,6 +31,23 @@ object DebugFlags {
     var TIME_SIMULATION: Boolean = false
 
     /**
+     * Turns the performance recorder on ([org.example.project.perf.Perf.enabled]) and shows the
+     * [org.example.project.ui.PerfOverlay] — frame rate, process CPU/heap, and every instrumented section
+     * ranked by milliseconds spent per wall-clock second.
+     *
+     * **Independent of [TIME_SIMULATION]**, deliberately: the thing worth profiling is the app on the real
+     * clock with the real account, and the sim clock's 20 Hz now-line makes every hot-path cost look
+     * ~20x worse than a user ever sees it. Turn both on only to reproduce a *known* per-tick cost quickly.
+     *
+     * Set once at startup from the platform entry point (`omniapp.perf` system property on desktop; the
+     * `/scripts/perf-profile.bat` launcher passes it) and never changed afterwards, so
+     * [org.example.project.perf.Perf]'s instrumented sites need no barrier. Off in every release build:
+     * `createDistributable` sets no properties, and the recorder's own cost when off is one static boolean
+     * read per site.
+     */
+    var PERF: Boolean = false
+
+    /**
      * Debug-only retiming of the screen breaks, keyed by [org.example.project.scheduler.model.ScreenBreak.key]
      * — `"look_away"` / `"5min_break"` / `"15min_break"`. **All three breaks are tweakable**, independently and
      * partially: a key absent from the map (or a `null` field in its [ScreenBreakOverride]) keeps that break's

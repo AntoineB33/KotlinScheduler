@@ -47,6 +47,10 @@ tasks.withType<JavaExec>().configureEach {
     // `-Pomniapp.timeSim=false`. The packaged release (createDistributable, not a JavaExec) never sets it,
     // so main() reads it absent and ships with the debug tooling off.
     systemProperty("omniapp.timeSim", (project.findProperty("omniapp.timeSim") as String?) ?: "true")
+    // The performance recorder + overlay (`-Pomniapp.perf=true`; scripts/perf-profile.bat passes it).
+    // Defaults OFF even on the dev `run` task — unlike the sim panel, the recorder samples the frame clock
+    // and forces periodic collections, so it must be asked for rather than ride along with every dev run.
+    systemProperty("omniapp.perf", (project.findProperty("omniapp.perf") as String?) ?: "false")
     // Debug fast-break override for testing the pause-cue voice message (`-Pomniapp.breakDurationMs`,
     // `-Pomniapp.breakIntervalMs`, `-Pomniapp.breakPauseThresholdMs`); forwarded only when set, so the app
     // defaults to production break timings. This unprefixed trio retimes the 5-min pose only — the older

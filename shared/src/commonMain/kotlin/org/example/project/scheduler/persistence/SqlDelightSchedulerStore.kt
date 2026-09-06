@@ -1,5 +1,6 @@
 package org.example.project.scheduler.persistence
 
+import org.example.project.perf.Perf
 import org.example.project.scheduler.persistence.db.SchedulerDatabase
 
 /**
@@ -82,7 +83,7 @@ class SqlDelightSchedulerStore(private val database: SchedulerDatabase) :
      * can happen to a history list - an append, a redo branch discarding the tail, the cap evicting the head
      * - and it degrades safely, because a run that fails to align is simply rewritten.
      */
-    override fun save(snapshot: PersistedSnapshot) {
+    override fun save(snapshot: PersistedSnapshot) = Perf.measure("persist.save") {
         val account = activeAccountId()
         database.transaction {
             queries.upsertAppState(account_id = account, payload = snapshot.statePayload)

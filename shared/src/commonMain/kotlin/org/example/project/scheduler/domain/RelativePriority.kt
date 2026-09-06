@@ -24,6 +24,16 @@ import kotlin.math.abs
  * bisection — the priority is non-decreasing in it. Only *roughly*, because a cell cannot always take the
  * share the factor asks of it (an only child holds 100% of its parent however its weight is set), which is
  * why the solve measures the scaled tree instead of trusting the closed form.
+ *
+ * **A factor is the preferred move, not the only one.** Multiplying keeps every ratio the user set, so it
+ * is tried first and kept whenever it lands. But a factor can only scale what is already there: a cell left
+ * at **0** in a weight column stays at 0 in it however large the factor grows, so its share is capped at the
+ * absolute weight of the columns it does carry a value in — 10 % of the release account's root list, where
+ * every cell but two sat at 0 in a first column worth 90 % of it. When no factor lands, the solve therefore
+ * falls back to adding **one common term** to every weight value of the same unpinned cells. That is what
+ * lifts a cell into a column it was absent from, and because the term reaches every column it removes the
+ * ceiling rather than merely raising it: after an addition the cell has a value everywhere, so every later
+ * re-establishment is an ordinary factor again.
  */
 object RelativePriorityDomain {
 
@@ -270,15 +280,39 @@ object RelativePriorityDomain {
         pinned: Set<CellId> = emptySet(),
     ): SchedulerState {
         if (chains.isEmpty()) return state
-        // A cell shared by two chains is scaled once; a cell with no share at all cannot be scaled into one.
-        val onChains = chains.flatten().distinct().filter { cellShare(state, it) > 0.0 }
-        val movable = onChains.filter { it !in pinned }
+        val onChains = chains.flatten().distinct()
+        if (onChains.none { it !in pinned }) return state
+        val scaled = scaleChainsShare(state, chains, onChains, target, pinned)
+        val scaledMiss = abs(chainsProduct(scaled, chains) - target)
+        if (scaledMiss <= EPSILON) return scaled
+        // No factor lands. Add instead — and keep whichever of the two got closer, so the fallback can only
+        // ever improve on the factor and never undo it.
+        val shifted = shiftChainsShare(state, chains, onChains, target, pinned)
+        return if (abs(chainsProduct(shifted, chains) - target) < scaledMiss) shifted else scaled
+    }
+
+    /**
+     * Stage one: one common **factor** over the percentages of the unpinned cells on [chains], the rest of
+     * each sub-list keeping its own proportions. This is the whole of "they all equally change", and it is
+     * what the app does whenever it can — it is the only move that leaves every ratio the user set intact.
+     */
+    private fun scaleChainsShare(
+        state: SchedulerState,
+        chains: List<List<CellId>>,
+        onChains: List<CellId>,
+        target: Double,
+        pinned: Set<CellId>,
+    ): SchedulerState {
+        // A cell shared by two chains is scaled once; a cell with no share at all cannot be scaled into one
+        // — that cell is exactly what [shiftChainsShare] exists for.
+        val scalable = onChains.filter { cellShare(state, it) > 0.0 }
+        val movable = scalable.filter { it !in pinned }
         if (movable.isEmpty()) return state
         // Grouped by sub-list: the cells of one list share a denominator, so they are solved together (a
         // chain never holds two cells of one list, but two chains may). A **pinned** cell of such a list is
         // solved too, with its CURRENT share as the target: holding a percentage while a sibling grows is
         // not "leave the weight alone", it is "raise the weight enough to keep the share".
-        val byList = onChains
+        val byList = scalable
             .groupBy { state.cells[it]!!.parentListId }
             .filterValues { cellIds -> cellIds.any { it in movable } }
 
@@ -305,6 +339,106 @@ object RelativePriorityDomain {
         val factor = solveMonotone(lo = 0.0, hi = hi, target = target, f = ::valueAt)
         if (factor == 1.0) return state
         return scaled(factor)
+    }
+
+    /**
+     * Stage two: one common **term added** to every weight value of the unpinned cells on [chains], never
+     * below 0 — the move that is available when no factor is.
+     *
+     * A factor multiplies, so a **0** stays a 0: a cell absent from a weight column can never be scaled
+     * into it, and its share is therefore capped at the absolute weight of the columns it does have a value
+     * in. That cap is not a fact about what the user asked for, only about how the cell happens to be
+     * written down, so a rule it puts out of reach is refused for no reason the user can act on. Adding
+     * reaches the columns the cell is missing from and lifts the cap: as the term grows, the cell's value
+     * dominates every column's total, so its share tends to the whole of its sub-list.
+     *
+     * It moves the same cells the factor does and reads a **pin** the same way — "hold this percentage",
+     * not "leave this weight alone" — so a pinned link sharing a sub-list with a moving one is re-solved
+     * onto the percentage it had, exactly as [scaleChainsShare] does.
+     *
+     * The term is monotone in the achieved share (each `(v + d) / (Σ + d)` is non-decreasing in `d`, since
+     * a column's total always includes the cell's own value), so the same bisection answers it — bounded by
+     * [maxShiftFor] for the same reason [maxScaleFor] bounds the factor.
+     */
+    private fun shiftChainsShare(
+        state: SchedulerState,
+        chains: List<List<CellId>>,
+        onChains: List<CellId>,
+        target: Double,
+        pinned: Set<CellId>,
+    ): SchedulerState {
+        val movable = onChains.filter { it !in pinned && state.cells[it] != null }
+        if (movable.isEmpty()) return state
+        // A cell's weight row is read with [SchedulerDomain.defaultWeightAt] past its end, so it is widened
+        // to the list's columns FIRST: the term has to reach the columns the row does not spell out, which
+        // are the very ones a cell can be missing from.
+        val rows = movable.associateWith { cellId ->
+            val cell = state.cells[cellId]!!
+            val columns = state.lists[cell.parentListId]?.weightColumns?.size ?: 0
+            (0 until maxOf(columns, cell.priorityWeights.size)).map { c ->
+                cell.priorityWeights.getOrElse(c) { SchedulerDomain.defaultWeightAt(c) }
+            }
+        }
+        val movedLists = movable.mapNotNull { state.cells[it]?.parentListId }.toSet()
+        val heldByList = onChains
+            .filter { it in pinned && state.cells[it]?.parentListId in movedLists }
+            .groupBy { state.cells[it]!!.parentListId }
+
+        fun shifted(delta: Double): SchedulerState {
+            var result = state.copy(
+                cells = state.cells + rows.mapValues { (cellId, row) ->
+                    state.cells[cellId]!!.copy(
+                        priorityWeights = row.map { (it + delta).coerceAtLeast(0.0) },
+                    )
+                },
+            )
+            for ((listId, held) in heldByList) {
+                result = setListShares(result, listId, held.associateWith { cellShare(state, it) })
+            }
+            return result
+        }
+
+        fun valueAt(delta: Double): Double = chainsProduct(shifted(delta), chains)
+
+        if (abs(valueAt(0.0) - target) <= EPSILON) return state
+        val delta =
+            if (valueAt(0.0) < target) {
+                val ceiling = maxShiftFor(state, movable)
+                var hi = 1.0
+                var guard = 0
+                while (hi < ceiling && valueAt(hi) < target && guard++ < 60) hi *= 2.0
+                solveMonotone(lo = 0.0, hi = hi.coerceAtMost(ceiling), target = target, f = ::valueAt)
+            } else {
+                // Take one step further down than the largest value on the chains and every one of them is
+                // clamped to 0, so nothing below that can move: it is the whole of the downward bracket.
+                solveMonotone(
+                    lo = -(rows.values.maxOf { row -> row.maxOrNull() ?: 0.0 } + 1.0),
+                    hi = 0.0,
+                    target = target,
+                    f = ::valueAt,
+                )
+            }
+        if (delta == 0.0) return state
+        return shifted(delta)
+    }
+
+    /**
+     * The largest term [shiftChainsShare] may add: the one leaving a moved cell carrying
+     * [MAX_WEIGHT_RATIO] times the largest weight it competes with. [maxScaleFor]'s bound and [maxScaleFor]'s
+     * reason — an unreachable target must not leave the bisection returning the top of a bracket that was
+     * doubled sixty times, because that weight reaches `SchedulerPlanner`'s `max(mᵢ / pᵢ)` scale.
+     */
+    private fun maxShiftFor(state: SchedulerState, cells: List<CellId>): Double {
+        var rivals = 1.0
+        for (cellId in cells) {
+            val cell = state.cells[cellId] ?: continue
+            val list = state.lists[cell.parentListId] ?: continue
+            for (id in list.cellIds) {
+                if (id == cellId || !SchedulerDomain.isPopulatedCell(state, id)) continue
+                state.cells[id]?.priorityWeights?.forEach { rivals = maxOf(rivals, it) }
+            }
+        }
+        return MAX_WEIGHT_RATIO * rivals
     }
 
     /**

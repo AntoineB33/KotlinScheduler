@@ -12,6 +12,7 @@ import kotlinx.datetime.isoDayNumber
 import kotlinx.datetime.minus
 import kotlinx.datetime.plus
 import kotlinx.datetime.toLocalDateTime
+import org.example.project.perf.Perf
 import org.example.project.scheduler.model.CellId
 import org.example.project.scheduler.model.CellListId
 import org.example.project.scheduler.model.ChoreEntry
@@ -3614,6 +3615,27 @@ object SchedulerDomain {
         // `SchedulerReducer.tpMode`; the default is mode 1, which is what a shell with no device signal
         // (tests, a headless host that cannot read a lock) should assume — somebody is at a screen.
         tpMode: Int = DynamicPeriods.MODE_AT_SCREEN,
+    ): List<TaskPanel> = Perf.measure("scheduler.fillSchedule") {
+        fillScheduleUninstrumented(
+            state, nowMillis, timeZone, liveRest, noScreenEvidence, horizonMillis, keepExistingUntilMillis,
+            tpMode,
+        )
+    }
+
+    /**
+     * [fillSchedule]'s body. Split out only so the fill can be timed as one section without a `return@measure`
+     * on every one of its exits — CLAUDE.md's rule is that a re-plan happens on a rule change and never on a
+     * tick, and this section is how that is checked rather than assumed.
+     */
+    private fun fillScheduleUninstrumented(
+        state: SchedulerState,
+        nowMillis: Long,
+        timeZone: TimeZone,
+        liveRest: LiveRest?,
+        noScreenEvidence: List<TaskTimeRange>,
+        horizonMillis: Long,
+        keepExistingUntilMillis: Long?,
+        tpMode: Int,
     ): List<TaskPanel> {
         val horizon = maxOf(horizonMillis, nowMillis)
         // Cut every non-pinned panel in [now, horizon]; keep fixed (pinned) panels, reminder tags (PRD

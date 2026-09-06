@@ -141,6 +141,7 @@ import kotlinx.datetime.plus
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import org.example.project.OmniPage
+import org.example.project.perf.Perf
 import org.example.project.scheduler.domain.SchedulerDomain
 import org.example.project.scheduler.model.ChoreEntry
 import org.example.project.scheduler.model.ChoreRecurrenceUnit
@@ -589,7 +590,7 @@ fun recordsForDay(
     records: List<CalendarRecord>,
     day: LocalDate,
     tz: TimeZone,
-): List<PlacedRecord> =
+): List<PlacedRecord> = Perf.measure("calendar.recordsForDay") {
     records.mapNotNull { record ->
         val start = Instant.fromEpochMilliseconds(record.range.startEpochMillis).toLocalDateTime(tz)
         val end = Instant.fromEpochMilliseconds(record.range.endEpochMillis).toLocalDateTime(tz)
@@ -655,6 +656,7 @@ fun recordsForDay(
             deviceSegments = daySegments,
         )
     }
+}
 
 /**
  * ADR 0009 display hot path: [recordsForDay] for the WHOLE visible span at once, keyed by day.
@@ -736,7 +738,13 @@ private fun approxEq(a: Float, b: Float): Boolean = kotlin.math.abs(a - b) < 1e-
  * panel collapses back to one full-width slice. Pure, for unit testing independently of Compose. Keyed
  * by [calendarBlockKey].
  */
-fun overlapLayout(blocks: List<PlacedRecord>): Map<String, List<PanelSlice>> {
+fun overlapLayout(blocks: List<PlacedRecord>): Map<String, List<PanelSlice>> =
+    // O(distinct boundaries x blocks), run once per DayColumn per composition and three times over
+    // (blocks, the live drag slices, the side markers) — so this is the calendar cost that grows fastest
+    // with what is on screen, and the one worth watching when a busy week feels heavier than a quiet one.
+    Perf.measure("calendar.overlapLayout") { overlapLayoutOf(blocks) }
+
+private fun overlapLayoutOf(blocks: List<PlacedRecord>): Map<String, List<PanelSlice>> {
     if (blocks.isEmpty()) return emptyMap()
     val boundaries = mutableSetOf<Float>()
     for (b in blocks) {
@@ -3971,6 +3979,10 @@ private fun DayColumn(
     showsDayDate: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    // Perf: one per day row per pass. The whole grid is seven of these, so this counter divided by seven is
+    // how often the calendar itself recomposed — which is the number to compare against `recompose.App`
+    // when deciding whether a stutter is the derivation or the drawing.
+    Perf.count("recompose.DayColumn")
     val density = LocalDensity.current
     // PRD §14/§15/§18: reminders and alarm rings (zero-duration) and screen breaks (sub-minute durations)
     // render on their own fixed-height marker paths; everything else is a height-proportional, draggable

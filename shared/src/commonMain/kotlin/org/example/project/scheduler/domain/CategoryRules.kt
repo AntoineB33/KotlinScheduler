@@ -357,7 +357,9 @@ object CategoryRules {
      * *which* two rules disagree rather than "it did not converge".
      *
      * All four are about the rules sharing ONE scope, because that is where the arithmetic is closed: the
-     * shares of one sub-tree sum to 1.
+     * shares of one sub-tree sum to 1. A share the weight COLUMNS put out of reach is deliberately not one
+     * of them: it bounds the factor, not the tree, and [RelativePriorityDomain.setChainsShare] answers it
+     * by adding instead of multiplying.
      */
     private fun structuralContradiction(state: SchedulerState, claims: List<Claim>): String? {
         // Grouped by the SUB-LIST each scope names, not by the cell: two cells of one mirrored task are

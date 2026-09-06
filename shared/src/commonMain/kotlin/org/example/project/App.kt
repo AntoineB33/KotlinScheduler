@@ -116,6 +116,8 @@ import org.example.project.ui.TaskListWindow
 import org.example.project.ui.TaskPalette
 import org.example.project.ui.rememberTaskHues
 import org.example.project.ui.TaskTreesWindow
+import org.example.project.perf.Perf
+import org.example.project.ui.PerfOverlay
 import org.example.project.ui.TimeSimPanel
 import org.example.project.ui.LocalTransientPopupHost
 import org.example.project.ui.TransientPopupHost
@@ -184,6 +186,11 @@ private fun displaySleepMillis(clock: AppClock, simDelayMillis: Long): Long {
 @Preview
 fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedulerHost? = null) {
     MaterialTheme {
+        // Perf: every pass through this body re-runs the whole display derivation below, so how often it runs
+        // is half of what the derivation costs. The counter is what turns "the app feels heavy" into a number
+        // — a display resample is ~1/s at the default zoom, so anything materially above that is a state read
+        // in THIS scope being written by something that is not the clock (ADR 0009).
+        Perf.count("recompose.App")
         var page by remember { mutableStateOf(OmniPage.TaskScheduler) }
         // Lateral-menu collapse: when true the whole menu (the page-nav dropdown and all) is not rendered — it
         // has slid fully off to the left; only the bookmark toggle remains, at the far-left edge, to pull it back.
@@ -736,6 +743,7 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
         // what decides whether a stretch is a REST (nobody can run there) or merely a period somebody is
         // resilient to.
         val displayDynamicBase =
+            Perf.measure("display.dynamicBase") {
             SchedulerDomain.restrictivePeriodsOf(schedulerState.panels) +
                 // The live pause reaches the recurrence bars as the rest stretch it is (see
                 // [SchedulerDomain.liveRestPeriod]), so the grid moves with a user who has walked away.
@@ -774,7 +782,9 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                         SchedulerDomain.BEFORE_BED_PANEL_TITLE,
                     )
                 }
-        val displayDynamicTasks = SchedulerDomain.planTasksOf(schedulerState, nowMillis)
+            }
+        val displayDynamicTasks =
+            Perf.measure("display.planTasks") { SchedulerDomain.planTasksOf(schedulerState, nowMillis) }
         // `side-dev/README.md` § *$t_p$ and 3 Dynamic Restrictive Period*: the elapsed part of the visible
         // window — what the three dynamic periods DID over a stretch the line has already crossed.
         //
@@ -791,6 +801,7 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
         // total history) and stopping one millisecond short of `now`, so this and the forward projection below
         // can never draw the same occurrence twice.
         val displayPastSidePanels =
+            Perf.measure("display.pastSidePanels") {
             SchedulerDomain.takenScreenBreakPanels(
                 schedulerState.screenBreaks,
                 visibleSpanStartMillis,
@@ -800,6 +811,7 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                 tpMillis = nowMillis,
                 mode = tpMode,
             )
+            }
         // The three over the visible span. Which half the calendar is looking at decides which question is
         // asked, and the split is the `t_p` line: a span containing the present is the past behind the line
         // plus the projection ahead of it, both asked AT the line so the two modes apply; a span entirely in
@@ -811,6 +823,7 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
         // tens of thousands of markers pushed through the O(n²) placement scan, which froze the app when a
         // far day was opened. Both branches are bounded by the VISIBLE days.
         val displaySidePanels =
+            Perf.measure("display.sidePanels") {
             if (visibleSpanStartMillis <= nowMillis) {
                 displayPastSidePanels +
                     SchedulerDomain.screenBreakPanels(
@@ -830,6 +843,7 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                     tasks = displayDynamicTasks,
                 )
             }
+            }
 
         // PRD §15: a screen break the now-line has REACHED is a period accepting no task, and in `t_p` mode 1
         // it slides right with the now-line for as long as it stays owed. The plan under it was materialized
@@ -837,12 +851,14 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
         // have to be cut out of the break's span here, on the display side — the reference's sliding-period regime, pinned to the
         // plan's own origin (`side-dev/scheduler_logic.py` tests 10–11).
         val displayWorkPlanPanels =
+            Perf.measure("display.clipPlanForBreak") {
             SchedulerDomain.clipPlanForPinnedScreenBreak(
                 workPlanPanels, displaySidePanels, nowMillis,
                 // The break shapes + the task attributes, so only what a break REFUSES is cut: a pose's open
                 // period keeps the off-screen work it accepts, which is the part the band draws hollow.
                 schedulerState.screenBreaks, schedulerState.tasks,
             )
+            }
 
         // PRD §14: reminder flags are calculated for the WHOLE displayed span — from now to the end of the
         // days the calendar is showing — so scrolling to a day shows its reminders. Like the screen-break
@@ -853,9 +869,12 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
         val reminderHorizonDays =
             ((visibleSpanEndMillis - todayStartMillis) / (24L * 60 * 60 * 1000)).toInt().coerceAtLeast(0)
         val displayReminderPanels =
-            SchedulerDomain.regenerateChorePanels(
-                schedulerState.panels, schedulerState.chores, todayStartMillis, reminderHorizonDays, nowMillis,
-            ).filter { SchedulerDomain.isReminder(it) }
+            Perf.measure("display.reminderPanels") {
+                SchedulerDomain.regenerateChorePanels(
+                    schedulerState.panels, schedulerState.chores, todayStartMillis, reminderHorizonDays,
+                    nowMillis,
+                ).filter { SchedulerDomain.isReminder(it) }
+            }
 
         // PRD §18: every ring of every alarm that falls in the WEEK ON SCREEN — past ones included, since an
         // alarm is a fixed wall-clock boundary and a ring that already went off stays where it happened. The
@@ -903,11 +922,13 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
         val displayFloorMillis =
             minOf(nowMillis - SchedulerDomain.SCHEDULE_HORIZON_MILLIS, visibleSpanStartMillis)
         val displayDerivedGaps =
-            SchedulerDomain.derivePauses(
-                activeSessions.map { TaskTimeRange(it.startMillis, it.endMillis) },
-                displayFloorMillis,
-                nowMillis,
-            )
+            Perf.measure("display.derivePauses") {
+                SchedulerDomain.derivePauses(
+                    activeSessions.map { TaskTimeRange(it.startMillis, it.endMillis) },
+                    displayFloorMillis,
+                    nowMillis,
+                )
+            }
         val displayInactivityGaps =
             SchedulerDomain.displayInactivityGaps(displayDerivedGaps, inactiveSince, activeSince, nowMillis)
         val pastActivityWindow = TaskTimeRange(displayFloorMillis, nowMillis)
@@ -1056,7 +1077,9 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
         // Done periods (PRD §8 task record, green) plus every calendar panel (PRD §8/§9 — auto and
         // user-authored, uniform blocks) drawn the same way; reminders (PRD §14) and screen breaks (PRD §15)
         // span the focused week.
-        val baseCalendarRecords = (
+        val baseCalendarRecords =
+            Perf.measure("display.baseCalendarRecords") {
+            (
             schedulerState.tasks.values.flatMap { task ->
                 SchedulerDomain.clipRecordsForObservedNoScreen(task.record, task, observedNoScreenRegions)
                     .map { CalendarRecord(title = task.title, range = it, taskId = task.id) }
@@ -1083,6 +1106,7 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                 record.copy(deviceSegments = deviceActivityIndex.segmentsFor(record.range, nowMillis))
             }
         }
+            }
         // PRD §8: the elapsed timeline is fully accounted for — every past stretch is either a TASK PANEL or a
         // GREY period. So whatever the panels leave uncovered in the past is drawn as a derived "Inactivity"
         // band (the user's rule: "the areas in the past that don't have a task panel should have a grey panel
@@ -1098,6 +1122,7 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                 .filterNot { it.reminder || it.alarm || it.screenBreak || it.noScreen }
                 .map { it.range }
         val pastInactivityRecords =
+            Perf.measure("display.inactivityBands") {
             SchedulerDomain.derivedInactivityBands(pastCoveredRegions, displayFloorMillis, nowMillis)
                 .let { gaps ->
                     // PRD §12 "∞ start": the earliest band is open-ended into the past when nothing precedes it.
@@ -1111,6 +1136,7 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                         )
                     }
                 }
+            }
         // PRD §8 calendar LAYERS: two decorative oblique-line layers over the timeline — one for "no computer
         // was unlocked", one (opposite slope) for "no phone was unlocked". Where BOTH fall, the stretch is a
         // NO-SCREEN period (the user's own definition), which is the same set §9 places the off-screen tasks
@@ -1134,6 +1160,7 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                         .map { TaskTimeRange(maxOf(it.startEpochMillis, nowMillis), it.endEpochMillis) },
             )
         val layerRecords =
+            Perf.measure("display.layerRecords") {
             SchedulerDomain.ActivityLayer.entries.flatMap { layer ->
                 val layerLocked =
                     when {
@@ -1183,6 +1210,7 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                     )
                 }
             }
+            }
         val calendarRecords = baseCalendarRecords + pastInactivityRecords + layerRecords +
             displayAlarmOccurrences.map { occurrence ->
                 // PRD §18: a zero-duration marker at the ring instant. Named by the alarm's label, falling
@@ -1214,6 +1242,27 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                     timer = true,
                 )
             }
+        // Perf: the sizes every derivation above is O(). Recorded here rather than sampled from outside
+        // because these are the exact lists the frame was built from — and a size that only grows is a
+        // leak signal no heap reading can give (see [PerfLeakWatch]).
+        if (Perf.enabled) {
+            Perf.gauge("state.tasks", schedulerState.tasks.size.toLong())
+            Perf.gauge("state.panels", schedulerState.panels.size.toLong())
+            Perf.gauge("state.cells", schedulerState.cells.size.toLong())
+            Perf.gauge("engine.activeSessions", activeSessions.size.toLong())
+            Perf.gauge("engine.inactivityGaps", inactivityGaps.size.toLong())
+            Perf.gauge("display.calendarRecords", calendarRecords.size.toLong())
+            Perf.gauge("display.sidePanels", displaySidePanels.size.toLong())
+            Perf.gauge("display.workPlanPanels", displayWorkPlanPanels.size.toLong())
+            // The four bounded collections, gauged precisely BECAUSE they are bounded: each has a cap
+            // (MAX_HISTORY_UNITS and the two log caps), so a value that keeps climbing past it is a cap
+            // that stopped being applied, which is the shape every leak in this state has taken.
+            Perf.gauge("state.historyUnits", schedulerState.histories.all().sumOf { it.second.units.size }.toLong())
+            Perf.gauge("state.notificationLog", schedulerState.notificationLog.size.toLong())
+            Perf.gauge("state.supabaseUsageLog", schedulerState.supabaseUsageLog.size.toLong())
+            Perf.gauge("state.taskTrees", schedulerState.taskTrees.size.toLong())
+        }
+
         // ---- The display's own clock ------------------------------------------------------------------
         //
         // `docs/scheduler_requirements.md`: the scheduler returns a SET OF RULES, and everything above is read
@@ -1232,11 +1281,13 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                 calendarRecords.forEach { add(it.range.startEpochMillis); add(it.range.endEpochMillis) }
             }
         val displayResampleDelay =
+            Perf.measure("display.resampleDelay") {
             SchedulerDomain.displayResampleDelayMillis(
                 displayBounds, nowMillis, tz,
                 millisPerPixel =
                     if (calendarOpen) nowLineMillisPerPixel else DEFAULT_NOW_LINE_MILLIS_PER_PIXEL,
             )
+            }
         // The sim clock's [SimAppClock.reconfigured] bump restarts the sleep at once when acceleration is
         // turned on or off, so a speed change is never held up behind a sleep taken at the old speed.
         val simReconfigured by simClock.reconfigured.collectAsState()
@@ -2261,6 +2312,19 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                                 .padding(12.dp)
                                 .zIndex(windowZ(FloatingWindow.TimeSim))
                                 .raiseOnPress { focusWindow(FloatingWindow.TimeSim) },
+                        )
+                    }
+
+                    // Debug-only performance overlay (gated by DebugFlags.PERF, independent of the time sim).
+                    // Top-right of the content area, above everything: it has to stay readable while a window
+                    // is being dragged over the calendar, since that gesture is one of the things it measures.
+                    if (DebugFlags.PERF) {
+                        PerfOverlay(
+                            nowMillis = nowMillis,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(12.dp)
+                                .zIndex(Float.MAX_VALUE),
                         )
                     }
                 }

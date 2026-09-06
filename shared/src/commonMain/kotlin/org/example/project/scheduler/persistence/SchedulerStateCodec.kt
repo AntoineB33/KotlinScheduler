@@ -57,6 +57,7 @@ import org.example.project.scheduler.state.SchedulerEditSession
 import org.example.project.scheduler.state.SchedulerHistories
 import org.example.project.scheduler.state.SchedulerHistory
 import org.example.project.scheduler.state.SchedulerSelection
+import org.example.project.perf.Perf
 import org.example.project.scheduler.state.SchedulerState
 import org.example.project.scheduler.state.SetSelectionDelta
 import org.example.project.scheduler.state.SleepDelta
@@ -109,7 +110,7 @@ object SchedulerStateCodec {
      * History Unit and one [HistoryPointerRow] per category. The history is intentionally *omitted*
      * from the payload blob (it lives in its own per-row table instead).
      */
-    fun encodeSnapshot(state: SchedulerState): PersistedSnapshot {
+    fun encodeSnapshot(state: SchedulerState): PersistedSnapshot = Perf.measure("persist.encodeSnapshot") {
         // `withHistories = false`, not `.copy(histories = null)`: the copy still BUILT the whole history
         // into PersistedDelta objects first and then threw it away — ~40 ms per call on a full 1000-unit
         // stack, and this runs on every save AND again for every syncFingerprint.

@@ -203,6 +203,23 @@ sim clock, local-only, 2 MB rotation). What lands there:
 
 **Use this instead of asking the user to describe a calendar anomaly.**
 
+## `perf-profile.bat [stateDir]`
+
+Launches the desktop app with the **performance overlay** on (`-Pomniapp.perf=true`): frame rate, process
+CPU/heap, and every instrumented derivation ranked by milliseconds spent per wall-clock second. Full
+reference in `docs/PERFORMANCE.md`.
+
+Two things it exists to keep right:
+
+- **Time simulation is OFF** (`-Pomniapp.timeSim=false`), unlike the plain dev `run`. The sim clock ticks the
+  now-line ~20x a second, so a profile taken under it measures the simulator, not the app.
+- **It refuses `~/.omniapp-release`** outright, before launching anything — that dir is the live app's DB
+  (CLAUDE.md). Default is `~/.omniapp-acc2`; pass any other scratch dir as the first argument.
+
+Profile a large, realistic account: an empty one hides every cost the tool exists to show. The panel's
+**dump** button writes the whole report into the same `diagnostics.log` `collect-diagnostics.bat` merges, so a
+stutter and the derive that caused it end up on one timeline.
+
 ## `update-supabase-cli.bat`
 
 **The** way to update the Supabase CLI **tool** (not the DB); `-Force` reinstalls regardless of version.

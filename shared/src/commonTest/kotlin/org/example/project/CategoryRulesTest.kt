@@ -87,6 +87,44 @@ class CategoryRulesTest {
         )
     }
 
+    /**
+     * The release account's root list, in miniature: two weight columns whose headers are `0.9` and `1.0`
+     * — so the FIRST is worth 90 % of the list and the second the remaining 10 % (PRD §5) — with "Book"
+     * holding its value in the first, and "Notes" (which carries the category) and a third cell holding
+     * theirs only in the second. Notes can be moved within that second column, but it can never be worth
+     * more than the 10 % the column itself is worth, however large its weight grows.
+     */
+    private fun twoColumnFixture(): Fixture {
+        val f = fixture()
+        val rootList = f.state.rootListId
+        val otherRootCell = f.state.lists[rootList]!!.cellIds[2]
+        var s = SchedulerReducer.reduce(f.state, SchedulerIntent.SetCellTitle(otherRootCell, "Misc"))
+        s = SchedulerReducer.reduce(s, SchedulerIntent.AddPriorityColumn(rootList, 1))
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetPriorityColumnWeight(rootList, 0, 0.9))
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetPriorityColumnWeight(rootList, 1, 1.0))
+        for ((cellId, weights) in listOf(
+            f.bookCell to listOf(1.0, 0.0),
+            f.notesCell to listOf(0.0, 1.0),
+            otherRootCell to listOf(0.0, 1.0),
+        )) {
+            weights.forEachIndexed { column, value ->
+                s = SchedulerReducer.reduce(s, SchedulerIntent.SetPriorityWeight(cellId, column, value))
+            }
+        }
+        s = SchedulerReducer.reduce(s, SchedulerIntent.AddTaskCategory(f.notes, "deep"))
+        return Fixture(
+            state = s,
+            book = f.book,
+            notes = f.notes,
+            chapter = f.chapter,
+            other = f.other,
+            read = f.read,
+            skim = f.skim,
+            bookCell = f.bookCell,
+            notesCell = f.notesCell,
+        )
+    }
+
     /** PRD §5: the whole tree is the one scope that is not a cell. */
     private val ROOT: CellId? = null
 
@@ -291,6 +329,104 @@ class CategoryRulesTest {
 
         assertNotNull(after.categoryRuleError, "there is nothing under Book to hold the other half")
         assertEquals(s.categories, after.categories)
+    }
+
+    /**
+     * PRD §5: a factor can only scale what is already there, so a cell left at **0** in a weight column can
+     * never be scaled into it and its share is capped at the absolute weight of the columns it does carry a
+     * value in. The release account met that cap: every root cell but two sat at 0 in a first column worth
+     * 90 % of the list, which put "50 % of root" out of reach of any of them. The solve now ADDS a common
+     * term instead, which reaches the missing column and lands the rule.
+     */
+    @Test
+    fun a_share_no_factor_can_reach_is_reached_by_adding_to_the_weights_instead() {
+        val f = twoColumnFixture()
+        val deep = categoryNamed(f.state, "deep")
+        // No factor can get there: Notes is at 0 in the column worth 90 % of the list.
+        assertTrue(
+            RelativePriorityDomain.cellShare(f.state, f.notesCell) < 0.11,
+            "the fixture must start under the 10 % the second column is worth",
+        )
+
+        val after = SchedulerReducer.reduce(f.state, SchedulerIntent.SetCategoryRule(deep, ROOT, 0.5))
+
+        assertNull(after.categoryRuleError, "adding can reach it, so nothing may be refused")
+        assertShare(0.5, CategoryRules.shareOf(after, deep, ROOT), "the rule")
+        assertTrue(
+            after.cells[f.notesCell]!!.priorityWeights[0] > 0.0,
+            "the term must have reached the column the cell was absent from",
+        )
+    }
+
+    /** The addition reaches EVERY column, so the cell is no longer capped and the next edit is a factor. */
+    @Test
+    fun once_added_to_the_cell_is_in_every_column_and_re_establishing_is_an_ordinary_factor() {
+        val f = twoColumnFixture()
+        val deep = categoryNamed(f.state, "deep")
+        val added = SchedulerReducer.reduce(f.state, SchedulerIntent.SetCategoryRule(deep, ROOT, 0.5))
+        val row = added.cells[f.notesCell]!!.priorityWeights
+
+        assertTrue(row.all { it > 0.0 }, "every column must carry a value now: $row")
+        // …so a plain factor can now move it anywhere, which is what a re-establishment uses.
+        val moved = RelativePriorityDomain.setChainsShare(
+            added,
+            CategoryRules.chainsFor(added, deep, ROOT),
+            0.7,
+        )
+        assertShare(0.7, CategoryRules.shareOf(moved, deep, ROOT), "the factor alone")
+        val ratios = moved.cells[f.notesCell]!!.priorityWeights.indices.map { i ->
+            moved.cells[f.notesCell]!!.priorityWeights[i] / row[i]
+        }
+        assertTrue(
+            abs(ratios.max() - ratios.min()) < 1e-6,
+            "a factor scales the whole row by ONE number, so every ratio must match: $ratios",
+        )
+    }
+
+    /**
+     * Multiplying is the preferred move because it keeps every ratio the user set, so it must still be what
+     * happens wherever it lands — the fallback may only ever pick up what a factor could not do.
+     */
+    @Test
+    fun a_share_a_factor_can_reach_is_still_reached_by_the_factor() {
+        val f = twoColumnFixture()
+        val deep = categoryNamed(f.state, "deep")
+        val before = f.state.cells[f.notesCell]!!.priorityWeights
+
+        val after = SchedulerReducer.reduce(f.state, SchedulerIntent.SetCategoryRule(deep, ROOT, 0.08))
+
+        assertNull(after.categoryRuleError, "8 % is inside the 10 % the second column is worth")
+        assertShare(0.08, CategoryRules.shareOf(after, deep, ROOT), "the rule")
+        assertEquals(
+            0.0,
+            after.cells[f.notesCell]!!.priorityWeights[0],
+            "a factor leaves a 0 a 0 — nothing may be added when multiplying suffices",
+        )
+        assertTrue(
+            after.cells[f.notesCell]!!.priorityWeights[1] > before[1],
+            "the reachable column is what moved",
+        )
+    }
+
+    /** A pin holds a PERCENTAGE, and it goes on holding it across an addition just as across a factor. */
+    @Test
+    fun a_pinned_link_holds_its_percentage_while_the_rest_of_the_chain_is_added_to() {
+        val f = twoColumnFixture()
+        // Chapter sits under Book, which is itself at 0 in the second column: the chain needs an addition.
+        var s = SchedulerReducer.reduce(f.state, SchedulerIntent.AddTaskCategory(f.chapter, "wide"))
+        val wide = categoryNamed(s, "wide")
+        val chapterCell = CategoryRules.chainsFor(s, wide, ROOT).single().last()
+        val heldBefore = RelativePriorityDomain.cellShare(s, chapterCell)
+
+        s = RelativePriorityDomain.setChainsShare(
+            s,
+            CategoryRules.chainsFor(s, wide, ROOT),
+            0.5,
+            pinned = setOf(chapterCell),
+        )
+
+        assertShare(0.5, CategoryRules.shareOf(s, wide, ROOT), "the ask")
+        assertShare(heldBefore, RelativePriorityDomain.cellShare(s, chapterCell), "the pinned link")
     }
 
     @Test

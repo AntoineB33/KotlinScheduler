@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
+import org.example.project.perf.Perf
 import org.example.project.scheduler.domain.SchedulerDomain
 import org.example.project.scheduler.persistence.PersistedSnapshot
 import org.example.project.scheduler.persistence.SchedulerStateCodec
@@ -251,8 +252,13 @@ class TaskSchedulerViewModel(
     }
 
     fun dispatch(intent: SchedulerIntent) {
+        // Perf: timed per intent CLASS, not as one lump — "the reducer costs 30 ms/s" says nothing, while
+        // "RefreshSchedule costs 30 ms/s and fires 8x a second" names both the intent and the sender. The
+        // simple name is the intent's own, so a keystroke (UpdateEditText) and a tick (RefreshSchedule) are
+        // never averaged together.
+        val label = if (Perf.enabled) "reduce." + (intent::class.simpleName ?: "?") else ""
         val current = _state.value
-        val next = SchedulerReducer.reduce(current, intent)
+        val next = Perf.measure(label) { SchedulerReducer.reduce(current, intent) }
         // No-op intents (e.g. a RefreshSchedule tick still within the deadline) return the same
         // instance; skip the state push and persist so the timer doesn't churn storage.
         if (next === current) return

@@ -32,6 +32,10 @@ every Supabase and SQLite migration, is in `CHANGELOG.md`.
   portability with `compileCommonMainKotlinMetadata`.
 - Do not use Android-specific CLI tools to render previews.
 - Diagnose calendar anomalies with `collect-diagnostics.bat`, not by asking the user to describe them.
+- Diagnose *slowness* by measuring it, not by reading for it: `perf-profile.bat` for the in-app overlay and
+  `:shared:jvmTest --tests "*PerfBenchmarkTest*" -i` for the headless derivation timings. `docs/PERFORMANCE.md`.
+  Profile a large, realistic account with time-sim OFF — the sim clock's ~20 Hz now-line inflates every
+  display-path cost by more than an order of magnitude over what a user pays.
 
 ## Deployment surfaces
 
@@ -150,6 +154,7 @@ where a change spans them (they cross-reference each other).
 | `*-fast-break*.bat` | the same, with screen breaks retimed for cue testing |
 | `deploy-supabase.bat` | migrations + both Edge Functions + `pause-cue-setup.sql` |
 | `collect-diagnostics.bat` | merged cross-device diagnostics timeline |
+| `perf-profile.bat` | launch with the performance overlay (time-sim off, never the release state dir) |
 | `update-supabase-cli.bat` | update the CLI tool (not the DB) |
 
 Two rules that bite:

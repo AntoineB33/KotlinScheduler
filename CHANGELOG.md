@@ -11,6 +11,72 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### The priority solve ADDS where no factor can reach — 2026-09-06
+
+`RelativePriorityDomain.setChainsShare` split into `scaleChainsShare` + `shiftChainsShare` (+ `maxShiftFor`),
+`CategoryRulesTest` (four tests), PRD §5, `docs/invariants/priorities.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy and no DB migration.**
+
+Setting the "motivation" category to **50 % of root** on account 3 was refused. It was not a conflict with
+any other rule: the root list's weight columns are `[0.9, 1.0]`, so the first is worth 90 % of the list and
+the second the remaining 10 %, and every root cell but `find a job` and `health` sits at **0** in the first.
+A factor multiplies, so a 0 stays a 0 — `motivation`'s share was capped at 10 % however large its weight
+grew (measured: 0.1 landed, 0.11 did not). The cap is a fact about how the cell happens to be written down,
+not about what was asked, so the refusal gave the user nothing to act on.
+
+`setChainsShare` is now two stages. **A factor first**, unchanged, because it is the only move that leaves
+every ratio the user set intact. **Where no factor lands, one common term is added** to every weight value
+of the same unpinned chain cells (never below 0, pins re-held at their percentage, bounded by `maxShiftFor`
+the way `maxScaleFor` bounds the factor). Adding reaches the column the cell was absent from and *removes*
+the cap rather than raising it — afterwards the cell carries a value in every column, so every later
+re-establishment is an ordinary factor again. The fallback is kept only when it lands closer than the factor
+did, so it can never undo one. Verified on the account itself: 50 % now lands exactly (`motivation`'s row
+becomes `[2.27, 3.27]`, `find a job` 45→21 %, `health` 46→22 %), the nested `"a" at 50 % of motivation` rule
+is still held, and every target from 5 % to 95 % is reachable where only ≤10 % was.
+
+This **replaces** the same day's fifth structural contradiction (a `maxChainsShare` ceiling that named the
+refusal precisely): the case it named is no longer impossible, so the check and the bound are gone.
+
+**Not done — the column header weights are still never touched**, and the header pins stay inert. Both ways
+of moving them are worse than the added term, measured on the account: scaling them by the same factor is
+**not monotone** (the cascade `absₙ = hₙ·(1 − Σ preceding)` makes a smaller factor worth more to a later
+column while that same factor shrinks the cell inside it) — it peaks at **1.6 %** near `f≈0.7` and collapses
+to 0 by `f≈1.2`, where the headers clamp at 1, which is *worse* than the 10 % the cells alone reach and is a
+hump no bisection can solve; and adding to them drives the headers to `[1, 1]`, making every later column
+worth nothing and taking **eleven of the thirteen root tasks to 0 %**. The added term over the cells reaches
+every share those knobs could and touches nothing outside the chains.
+
+### Performance measurement tooling — 2026-09-06
+
+`shared` (new `perf/` package + `ui/PerfOverlay.kt`), `desktopApp/main.kt`, `scripts/perf-profile.bat`,
+`docs/PERFORMANCE.md`, new `PerfBenchmarkTest`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy and no DB migration.**
+Off in every release build: the recorder is gated on `DebugFlags.PERF` (`-Pomniapp.perf`, unset by
+`createDistributable`), and every instrumented site is an `inline` that returns on one static boolean read.
+
+The app had **no performance instrumentation at all**, so "it is not smooth" could only be answered by
+reading code. Two tools now answer it by measuring:
+
+- **In-app overlay** (`scripts/perf-profile.bat`) — fps / p95 frame interval / jank from `withFrameNanos`
+  (which *observes* the frame clock rather than requesting frames, so an idle app reads as idle), process
+  CPU / heap / GC / threads, and every instrumented section ranked by **milliseconds per wall-clock second**.
+  Rates, not totals: a 4 ms derivation is free at 1 Hz and is 40% of a core at 100 Hz, and only the rate tells
+  them apart. Plus recomposition counters (`recompose.App`, `recompose.DayColumn`), per-intent reducer timings
+  (`reduce.<Intent>`), live collection gauges, and a post-GC leak sampler whose verdict is a least-squares
+  slope per hour — the raw heap sawtooths, so only the floor after a forced collection is retention.
+- **Headless benchmark** (`PerfBenchmarkTest`) — per-derivation medians, plus one real gate:
+  `display_derivation_cost_follows_the_visible_window_not_total_history` asks the same visible week with a
+  week and then a year of stored history behind it and requires the same cost. That is CLAUDE.md's hot-path
+  rule as a **ratio**, so it needs no wall-clock budget and cannot flake on a slow runner.
+
+The script keeps two rules the measurement depends on: **time simulation OFF** (the sim clock's ~20 Hz
+now-line inflates every display-path cost by an order of magnitude, so a profile under it measures the
+simulator) and **never the release state dir**.
+
+Instrumented: the ~12 unmemoized display derivations in `App.kt`, `SchedulerDomain.fillSchedule`,
+`recordsForDay` / `overlapLayout`, `SchedulerStateCodec.encodeSnapshot`, `SqlDelightSchedulerStore.save`,
+and every reducer dispatch.
+
 ### Creating a task no longer expands its cell — 2026-09-06
 
 `shared` (`state/SchedulerReducer.kt`) + `DefaultSubtreeTest`, PRD §4, `docs/invariants/task-tree.md`.

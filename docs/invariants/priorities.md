@@ -14,6 +14,22 @@ Global rules that always apply: `CLAUDE.md`.
 - Relative priority with `t_r == MAIN` is **exactly** `absoluteTaskPriorities`. Keep that identity.
 - Editing scales **percentages** by one common factor, solved by bisection on the measured tree — not by a
   closed form.
+- **A factor first, an added term only where no factor lands.** `setChainsShare` is two stages. A factor
+  cannot scale a **0** into a column, so a cell absent from one is capped at the absolute weight of the
+  columns it does carry a value in (the release account: every root cell but two at 0 in a first column
+  worth 90 %, so "50 % of root" was unreachable and came back as a refusal). Stage two adds **one common
+  term to every weight value** of the same unpinned cells, which reaches the missing column and *removes*
+  the cap — after it the cell has a value everywhere, so every later re-establishment is a factor again.
+  The stages are ordered because only the factor leaves every ratio the user set intact, and the fallback
+  is kept only when it lands **closer** than the factor did, so it can never undo one.
+- **The column HEADER weights are not part of either stage**, and the header pins stay inert. Scaling them
+  by the same factor is not monotone (the cascade `absₙ = hₙ·(1 − Σ preceding)` makes a *smaller* factor
+  worth *more* to a later column while the same factor shrinks the cell inside it): on the release account
+  it peaks at 1.6 % around `f≈0.7` and collapses to 0 by `f≈1.2` where the headers clamp at 1 — worse than
+  the 10 % the cells alone reach, and no bisection can solve a hump. Adding to them is worse still: the
+  clamp drives them to `[1, 1]`, which makes every later column worth **nothing** and takes every task
+  living only there to 0 % (measured: eleven of the account's thirteen root tasks). The added term over the
+  cells reaches every share those knobs could and touches nothing outside the chains.
 - **A pin means "hold this percentage", not "leave this weight alone"** — a pinned cell's weight may have to
   rise. Solve each sub-list over every chain cell, pinned included.
 - Pins are authoritative + synced, and **not** an Undo/Redo unit.
@@ -202,7 +218,9 @@ relative-priority window's number said once and then **kept**.
   an older payload, an earlier build's edit — else the user could not undo their way out), and a **dormant**
   rule is not a contradiction (the scope is gone, or nothing under it carries the category; deleting the last
   carrier is an ordinary edit). The four namable impossibilities are checked before anything is scaled, and
-  all four are about rules sharing ONE scope, because that is where the arithmetic is closed.
+  all four are about rules sharing ONE scope, because that is where the arithmetic is closed. A share the
+  weight COLUMNS put out of reach is deliberately **not** one of them: it bounds the factor, not the tree,
+  and the added term above answers it — briefly a fifth check, removed the moment the case became possible.
 - **The scope is a task CELL, and what it names is a LIST** (`CategoryRule.scopeCellId`, `null` = the whole
   tree). A task can appear several times in the tree, so "under Book" names no place when there are two of
   them: the window asks *under which task cell* and `CategoryRules.scopeEntries` offers every cell by its own

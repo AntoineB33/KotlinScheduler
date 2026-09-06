@@ -2,6 +2,7 @@ package org.example.project
 
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import org.example.project.perf.Perf
 import org.example.project.scheduler.domain.SchedulerDomain
 import org.example.project.scheduler.persistence.createDefaultSchedulerStore
 
@@ -26,6 +27,12 @@ fun main() {
     // Debug tooling (time simulation) is off unless the `omniapp.timeSim` property is set. The dev `run`
     // task sets it (defaulting true); the packaged release never does, so it ships without the debug panel.
     DebugFlags.TIME_SIMULATION = System.getProperty("omniapp.timeSim").toBoolean()
+    // The performance recorder + overlay (`-Pomniapp.perf=true`, or scripts/perf-profile.bat). Independent
+    // of the time simulation on purpose: what is worth profiling is the app on the REAL clock against the
+    // real account, and an accelerated now-line inflates every per-tick cost. Never set by the release, so
+    // the packaged build pays only one static boolean read per instrumented site.
+    DebugFlags.PERF = System.getProperty("omniapp.perf").toBoolean()
+    Perf.enabled = DebugFlags.PERF
     // Debug fast-break override (for testing the pause-cue voice message, and for watching the break rules on
     // an accelerated calendar): retime a screen break with `-Pomniapp.break.<lookAway|pose5|pose15>.durationMs`
     // (its drawn length) and `.intervalMs` (its recurrence bar). ALL THREE BREAKS are tweakable and
