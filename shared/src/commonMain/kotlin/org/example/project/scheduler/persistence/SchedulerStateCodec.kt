@@ -237,6 +237,7 @@ object SchedulerStateCodec {
                         it.weightColumns,
                         it.optionalTaskIds.map(TaskId::value),
                         it.optionalTaskValues.mapKeys { (taskId, _) -> taskId.value },
+                        it.defaultWeights,
                     )
                 },
             cells =
@@ -663,6 +664,7 @@ object SchedulerStateCodec {
                         it.weightColumns,
                         it.optionalTaskIds.map(TaskId::value),
                         it.optionalTaskValues.mapKeys { (taskId, _) -> taskId.value },
+                        it.defaultWeights,
                     )
                 },
             cells =
@@ -746,6 +748,7 @@ object SchedulerStateCodec {
                         parentCellId = p.parentCellId?.let(::CellId),
                         cellIds = p.cellIds.map(::CellId),
                         weightColumns = p.weightColumns,
+                        defaultWeights = p.defaultWeights,
                         optionalTaskIds = p.optionalTaskIds.map(::TaskId).toSet(),
                         optionalTaskValues = p.optionalTaskValues.mapKeys { (taskId, _) -> TaskId(taskId) },
                     )
@@ -1088,6 +1091,7 @@ object SchedulerStateCodec {
                         parentCellId = p.parentCellId?.let(::CellId),
                         cellIds = p.cellIds.map(::CellId),
                         weightColumns = p.weightColumns,
+                        defaultWeights = p.defaultWeights,
                     )
             }
         return TreeSnapshot(
@@ -1636,6 +1640,12 @@ private data class PersistedList(
     val weightColumns: List<Double> = listOf(1.0),
     val optionalTaskIds: List<String> = emptyList(),
     val optionalTaskValues: Map<String, List<Double>> = emptyMap(),
+    /**
+     * PRD §5 the weight table's **default row**. Absent from every payload written before it existed, and
+     * its default here is the built-in row (1 in the first column, 0 in the rest) — which is exactly what
+     * a new task used to be given, so an older account loads behaving as it always did.
+     */
+    val defaultWeights: List<Double> = listOf(1.0),
 )
 
 @Serializable

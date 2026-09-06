@@ -11,6 +11,37 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### The priority-weight table's default row — 2026-09-06
+
+`model/TaskModels.kt` (`CellList.defaultWeights`), `domain/SchedulerDomain.kt`
+(`defaultWeightRow`, the one place the row is read), `state/SchedulerIntent.kt`
+(`SetPriorityDefaultWeight`; `RestorePriorityWeights` carries the row), `state/SchedulerReducer.kt`
+(the four column operations carry it, `applySetCellTitle` and `applySetPriorityWeightTableRow` seed from it,
+Cancel restores it), `ui/TaskSchedulerScreen.kt` (`WeightTableDefaultRow`, `WEIGHT_WINDOW_LEADING_WIDTH`, the
+pin made optional), `persistence/SchedulerStateCodec.kt`, `sync/SnapshotMerge.kt`, new
+`PriorityWeightDefaultRowTest`, `PriorityWeightTableRowTest`, `SchedulerReducerTest`,
+`docs/PRD_TaskScheduler.md` §5, `docs/invariants/priorities.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy and no DB migration
+(the field rides the existing JSON payload and defaults to the built-in row on every older one).**
+
+Under the blank add row at the bottom of every priority-weight table there is now one more row, **default**,
+with a weight field per column and no pin. It says what a task **arriving** in that table is given — named in
+the task tree, or added to the table by hand as an optional row: both arrivals now read the same row through
+one funnel, where the first got a hard-coded `[1, 0, …]` and the second a hard-coded zero. It is read at the
+**naming**, not when the placeholder cell was minted, because a placeholder sits at the bottom of a list for
+as long as the list exists and would otherwise hand out whatever the row said before the user edited it.
+
+Its own default is 1 in the first column and 0 in the rest — exactly what a new task used to be given — so an
+account that never touches it behaves as it always did, and every payload written before the row existed
+decodes to it. An added column is 0 in it like everywhere else, and a moved / deleted / reset column carries
+it like any other row. It states nothing about what is already in the table: no chart slice, no priority sum,
+not in `treeSignature`, so editing it re-plans nothing — but it is one undo/redo unit, Cancel puts it back
+with the headers and the weight rows, and it is persisted and synced per sub-list.
+
+While drawing it: the column headers were sitting 72 dp left of the weight fields under them (the rows draw
+an expansion-arrow column and a percentage column the header row did not account for). Both the header and
+the new row now read one `WEIGHT_WINDOW_LEADING_WIDTH`, so the table lines up down every column.
+
 ### Three outlines, a selection that stays put, and a menu that lets the next click through — 2026-09-06
 
 `ui/TaskSheetChrome.kt` (`SheetColors.editBorder`, `TaskCellOutline` + `taskCellOutline` /

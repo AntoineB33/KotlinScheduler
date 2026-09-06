@@ -283,6 +283,9 @@ object SnapshotMerge {
             parentCellId = pickNullable(base?.parentCellId, local.parentCellId, remote.parentCellId),
             cellIds = mergeOrdered(base?.cellIds, local.cellIds, remote.cellIds),
             weightColumns = pick(base?.weightColumns, local.weightColumns, remote.weightColumns),
+            // The default row is one statement about this table, so it is picked whole — never merged
+            // column by column, which could hand back a row neither device ever wrote.
+            defaultWeights = pick(base?.defaultWeights, local.defaultWeights, remote.defaultWeights),
         )
 
     private fun mergeRecords(

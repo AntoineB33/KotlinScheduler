@@ -1027,8 +1027,14 @@ private fun stepWeight(value: Double, delta: Double, maxValue: Double): Double {
 private fun WeightInputCell(
     value: Double,
     onSet: (Double) -> Unit,
-    pinned: Boolean,
-    onTogglePinned: () -> Unit,
+    pinned: Boolean = false,
+    /**
+     * The pin switch beside the field, or **null** where there is nothing to pin. A pin holds an input's
+     * value while an optional-row edit scales the path to that task; the **default row** takes part in no
+     * such solve — it states what a future row starts at, and is in no priority sum — so it gets the field
+     * and no pin. The pin's space is kept, so every column still reads as one column down the table.
+     */
+    onTogglePinned: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     maxValue: Double = Double.POSITIVE_INFINITY,
     step: Double = 1.0,
@@ -1060,7 +1066,11 @@ private fun WeightInputCell(
             WeightStepButton(label = "▲", onClick = { onSet(stepWeight(value, step, maxValue)) })
             WeightStepButton(label = "▼", onClick = { onSet(stepWeight(value, -step, maxValue)) })
         }
-        WeightPinButton(pinned = pinned, onClick = onTogglePinned)
+        if (onTogglePinned != null) {
+            WeightPinButton(pinned = pinned, onClick = onTogglePinned)
+        } else {
+            Spacer(Modifier.size(width = 30.dp, height = 22.dp))
+        }
     }
 }
 
@@ -1420,7 +1430,66 @@ private fun WeightTableHeader(
 /** Width of the task-title column inside the priority-weight window. */
 private val WEIGHT_WINDOW_TITLE_WIDTH = 160.dp
 
+/**
+ * The offset every weight column of the priority-weight window starts at: exactly what a [TaskRow] draws
+ * before its first weight field — the expansion arrow's column, the title column, and the percentage
+ * column. The header row above the table and the **default row** below it are not task cells, so they
+ * cannot get that offset by drawing one; reading it from here is what keeps all three lined up. (The rows'
+ * own 4.dp start padding is not in it — the header and the default row each carry their own.)
+ */
+private val WEIGHT_WINDOW_LEADING_WIDTH = 20.dp + WEIGHT_WINDOW_TITLE_WIDTH + PERCENT_COLUMN_WIDTH
+
 private data class PriorityWeightFieldKey(val cellId: CellId?, val column: Int)
+
+/**
+ * PRD §5 the weight table's **default row**: the row below the add row, stating what a task ARRIVING in
+ * this table is given — whether it arrives by being named in the tree or by being added here as an
+ * optional row.
+ *
+ * It is the one row of the table that names no task, so it is deliberately **not** a [TaskRow]: there is no
+ * title to draw, no task colour to wear, no Edit Mode to open and no identity menu to offer, and a row
+ * drawn as a task cell with all of that taken out would be the inert row ADR 0013 already caught once. It
+ * is the header row's counterpart at the other end of the table — a label and one weight field per column,
+ * on the same [WEIGHT_WINDOW_LEADING_WIDTH] the rows above it use, so a column reads straight down. It
+ * follows a column drag the same way too, so the row the user is moving is grey here as well.
+ *
+ * No pin beside the fields: a pin holds a share while a solve moves the others, and this row is in no sum
+ * and no solve.
+ */
+@Composable
+private fun WeightTableDefaultRow(
+    weights: List<Double>,
+    draggedColumn: Int?,
+    dropIndex: Int?,
+    onSet: (Int, Double) -> Unit,
+) {
+    Row(
+        modifier = Modifier.padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier.width(WEIGHT_WINDOW_LEADING_WIDTH),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Text(
+                text = "default",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        weights.forEachIndexed { column, weight ->
+            if (draggedColumn != null && dropIndex == column) ColumnDropLine()
+            Box(
+                modifier = Modifier.background(
+                    if (draggedColumn == column) SheetColors.moveDragFill else Color.Transparent,
+                ),
+            ) {
+                WeightInputCell(value = weight, onSet = { onSet(column, it) })
+            }
+        }
+        if (draggedColumn != null && dropIndex == weights.size) ColumnDropLine()
+    }
+}
 
 /**
  * PRD §5: a row in the priority-weight window. Existing cells are real members of the sub-list; optional
@@ -1511,12 +1580,14 @@ internal fun priorityWeightTableValue(
 private data class WeightTableSnapshot(
     val weightColumns: List<Double>,
     val cellWeights: Map<CellId, List<Double>>,
+    val defaultWeights: List<Double>,
 )
 
 private fun weightTableSnapshot(state: SchedulerState, listId: CellListId): WeightTableSnapshot {
     val list = state.lists[listId]
     return WeightTableSnapshot(
         weightColumns = list?.weightColumns.orEmpty(),
+        defaultWeights = list?.defaultWeights.orEmpty(),
         cellWeights = list?.cellIds.orEmpty()
             .mapNotNull { id -> state.cells[id]?.let { id to it.priorityWeights } }
             .toMap(),
@@ -1664,7 +1735,7 @@ internal fun PriorityWeightWindow(
                     ) {
                         WeightTableHeader(
                             depth = 0,
-                            leadingWidth = WEIGHT_WINDOW_TITLE_WIDTH,
+                            leadingWidth = WEIGHT_WINDOW_LEADING_WIDTH,
                             weightColumns = list.weightColumns,
                             draggedColumn = draggedColumn,
                             dropIndex = columnDropIndex,
@@ -1901,6 +1972,17 @@ internal fun PriorityWeightWindow(
                             )
                             }
                         }
+                        // PRD §5: the **default row**, under the add row — what a task arriving in this
+                        // table is given. It is in no sum and no slice of the chart beside it, so it is
+                        // drawn after every row that is.
+                        WeightTableDefaultRow(
+                            weights = SchedulerDomain.defaultWeightRow(list),
+                            draggedColumn = draggedColumn,
+                            dropIndex = columnDropIndex,
+                            onSet = { column, value ->
+                                onIntent(SchedulerIntent.SetPriorityDefaultWeight(listId, column, value))
+                            },
+                        )
                     }
                     Spacer(Modifier.width(16.dp))
                     val chartRows = tableRows.filter { it.taskId != null }
@@ -1924,6 +2006,7 @@ internal fun PriorityWeightWindow(
                                     listId = listId,
                                     weightColumns = openedTable.weightColumns,
                                     cellWeights = openedTable.cellWeights,
+                                    defaultWeights = openedTable.defaultWeights,
                                 )
                             )
                         },

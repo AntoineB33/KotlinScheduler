@@ -32,6 +32,9 @@ Global rules that always apply: `CLAUDE.md`.
   blank-titled task is never a detached parent — that single rule is what still collects an emptied parent's
   sub-tree, and what keeps a peer's deletion sticking through `SnapshotMerge.repair`. Do not make the retention
   key on anything else.
+- **Naming a cell is also its ARRIVAL in its sub-list's weight table**, so `applySetCellTitle` seeds the
+  cell's weight row from that list's **default row** (`priorities.md`) at the instant the cell stops being
+  textually empty — never when the placeholder was minted, and never on a rename.
 - **Expansion is keyed by the CELL but the sub-list belongs to the TASK**, so a cell's `expanded` entry goes
   stale the moment it is given a different task's (or a brand-new, empty) sub-list. `applySetCellTitle` drops
   the cell where it **mints** that sub-list — a freshly minted sub-list is never shown expanded. A rename mints

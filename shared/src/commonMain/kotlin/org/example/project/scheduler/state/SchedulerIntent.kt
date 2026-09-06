@@ -233,6 +233,21 @@ sealed interface SchedulerIntent {
         val weight: Double,
     ) : SchedulerIntent
 
+    /**
+     * PRD §5 the weight table's **default row**: set what a task arriving in [listId]'s table is given in
+     * [column] (clamped to ≥ 0, like any other weight field).
+     *
+     * A statement about *future* rows, so it moves no share and re-plans nothing
+     * ([org.example.project.scheduler.domain.SchedulerDomain.schedulingSignature] never reads it) — but it
+     * is a fact about the account the user authored, so it is one content delta like every other edit this
+     * table makes, and Ctrl+Z walks it back.
+     */
+    data class SetPriorityDefaultWeight(
+        val listId: CellListId,
+        val column: Int,
+        val weight: Double,
+    ) : SchedulerIntent
+
     /** PRD §5: insert a new priority weight column at [index] (default appends to the end). */
     data class AddPriorityColumn(
         val listId: CellListId,
@@ -253,8 +268,9 @@ sealed interface SchedulerIntent {
 
     /**
      * PRD §5 the priority-weight window's **Cancel**: put the sub-list's weight table back to what it was
-     * when the window opened — [weightColumns] for the headers, [cellWeights] for each listed cell's row.
-     * A cell that has since left the sub-list keeps whatever its own table gave it.
+     * when the window opened — [weightColumns] for the headers, [cellWeights] for each listed cell's row,
+     * and [defaultWeights] for the default row under them. A cell that has since left the sub-list keeps
+     * whatever its own table gave it.
      *
      * Recorded as one ordinary content delta, like any other weight edit, which is exactly what makes
      * Ctrl+Z undo the cancel itself.
@@ -263,6 +279,7 @@ sealed interface SchedulerIntent {
         val listId: CellListId,
         val weightColumns: List<Double>,
         val cellWeights: Map<CellId, List<Double>>,
+        val defaultWeights: List<Double> = listOf(1.0),
     ) : SchedulerIntent
 
     /** PRD §5: reorder a priority column by dragging it to a new position. */

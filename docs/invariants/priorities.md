@@ -49,8 +49,8 @@ Global rules that always apply: `CLAUDE.md`.
 - **The weight window's chart is the readout of the table beside it**: each task's share of THAT sub-list
   (`cellShare`), never its absolute priority. The slice sweeps were always normalized by the list total; only
   the legend's number was reading against the whole tree.
-- **EVERY ROW OF THE WEIGHT TABLE IS A TASK CELL** — `TaskRow` again, the tree's own row, the FOURTH place it
-  is drawn. So a row is coloured by the task it names, opens the same Edit Mode, and renders its identity
+- **EVERY ROW OF THE WEIGHT TABLE THAT NAMES A TASK IS A TASK CELL** — `TaskRow` again, the tree's own row,
+  the FOURTH place it is drawn (the default row below is the one row that names none). So a row is coloured by the task it names, opens the same Edit Mode, and renders its identity
   menu through the same `EditModeMenuBlock`. Configured, never re-implemented, and the configuration is three
   things: **`selectable = true` on every row** — `selectable` is what installs the row's gestures AND the one
   background that WINS over the task colour (ADR 0013), so the optional rows it was false on were both inert
@@ -83,6 +83,30 @@ Global rules that always apply: `CLAUDE.md`.
   that parent (`optionalTaskPath`) — the one `SetPriorityWeightTableRow` itself enforces, asked of the menu
   so a refused pick can never be offered. A member cell (it has its own row) and an existing optional row are
   out either way.
+- **THE DEFAULT ROW IS THE ONE ROW THAT IS NOT A TASK CELL**, and that is the whole reason it is drawn by
+  hand (`WeightTableDefaultRow`) rather than through `TaskRow`. It names no task, so there is no title, no
+  colour, no Edit Mode and no identity menu to give it — a row drawn as a task cell with all of that taken
+  out is the inert row ADR 0013 already caught once. It is the **header row's counterpart at the other end
+  of the table**: a label and one weight field per column, and no pin (a pin holds a share while a solve
+  moves the others; this row is in no sum and no solve).
+- **What the default row says is what a task ARRIVING in the table is given** — `CellList.defaultWeights`,
+  1 in the first column and 0 in the rest until the user says otherwise, which is exactly what
+  `SchedulerDomain.defaultWeightAt` used to hand out, so an untouched account behaves as it always did.
+  "A task new to this table" is ONE question however the task got here, so **both** arrivals read the same
+  row through the same funnel (`SchedulerDomain.defaultWeightRow`): a cell **named in the tree**
+  (`applySetCellTitle`, at the instant a textually-empty cell stops being empty) and an **optional row**
+  added here or from the task-relations list (`applySetPriorityWeightTableRow`, where the seed was a
+  hard-coded zero). It is read at the **naming**, never when the placeholder cell was minted: a placeholder
+  sits at the bottom of every list for as long as the list exists, so seeding it at creation would hand a
+  new task whatever the row said before the user edited it. A cell that is merely renamed is not arriving.
+- **It is a ROW OF THE TABLE, so every column operation carries it**: an added column is **0** in it, a
+  deleted one drops its entry, a moved one takes its value along, a reset one puts `defaultWeightAt` back —
+  the same four lines the cells' rows get, in the same reducer functions. And **Cancel restores it** with
+  the headers and the weight rows, as part of the one table the window opened on.
+- **It states nothing about what is already in the table**: no slice of the chart, no term in any priority
+  sum, and **not in `treeSignature`** — editing it re-plans nothing. It is still the user's own setting, so
+  it is authoritative + synced (picked whole per list by the merge, never column by column) and **one
+  undo/redo unit**, with the keystroke that changes nothing recording none.
 - **The trailing ADD ROW is the TABLE's placeholder, not the tree's** (`PriorityWeightTableRow.isAddRow`, and
   `priorityWeightRowId` gives it and every optional row a synthetic id). It used to borrow an empty cell of
   the sub-list and was therefore missing wherever the list had none — and "empty" was read as `taskId ==

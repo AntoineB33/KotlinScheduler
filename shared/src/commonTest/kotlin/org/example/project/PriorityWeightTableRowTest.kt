@@ -132,13 +132,15 @@ class PriorityWeightTableRowTest {
     // ----- the row's identity: add, re-point, remove ----------------------------------------------
 
     @Test
-    fun adding_a_row_seeds_it_at_zero_in_every_column() {
+    fun adding_a_row_seeds_it_from_the_tables_default_row() {
         val f = fixture()
         var s = SchedulerReducer.reduce(f.state, SchedulerIntent.AddPriorityColumn(f.bookList))
         s = SchedulerReducer.reduce(s, SchedulerIntent.SetPriorityWeightTableRow(f.bookList, taskId = f.write))
         val list = s.lists[f.bookList]!!
         assertEquals(setOf(f.write), list.optionalTaskIds)
-        assertEquals(List(list.weightColumns.size) { 0.0 }, list.optionalTaskValues[f.write])
+        // The table's own default row — untouched here, so 1 in the first column and 0 in the added one.
+        assertEquals(listOf(1.0, 0.0), list.defaultWeights)
+        assertEquals(list.defaultWeights, list.optionalTaskValues[f.write])
     }
 
     @Test
@@ -169,8 +171,9 @@ class PriorityWeightTableRowTest {
             SchedulerIntent.SetPriorityWeightTableRow(f.bookList, replacing = f.write, taskId = f.chapter),
         )
         assertEquals(setOf(f.chapter), s.lists[f.bookList]!!.optionalTaskIds)
-        // The value belonged to the task the row named, never to the row's place in the table.
-        assertEquals(listOf(0.0), s.lists[f.bookList]!!.optionalTaskValues[f.chapter])
+        // The value belonged to the task the row named, never to the row's place in the table: the new
+        // row arrives on the default row exactly as the first one did.
+        assertEquals(listOf(1.0), s.lists[f.bookList]!!.optionalTaskValues[f.chapter])
         assertEquals(units + 1, s.histories.main.units.size)
         assertEquals("Change table row", s.histories.main.units.last().delta.label)
     }

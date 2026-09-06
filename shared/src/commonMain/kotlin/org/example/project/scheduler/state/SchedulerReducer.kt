@@ -193,6 +193,15 @@ object SchedulerReducer {
                 reduceDropTaskRelation(state, TaskRelationKey(intent.taskId, intent.relativeTo))
             is SchedulerIntent.SetPriorityColumnWeight ->
                 commitDelta(state, priorityTreeDelta(state, "Column weight") { applySetPriorityColumnWeight(it, intent.listId, intent.column, intent.weight) })
+            is SchedulerIntent.SetPriorityDefaultWeight -> {
+                val apply = { s: SchedulerState ->
+                    applySetPriorityDefaultWeight(s, intent.listId, intent.column, intent.weight)
+                }
+                // The field commits every keystroke, so a value that is already there must not push an
+                // empty unit for Ctrl+Z to walk back over — the same guard the table's other edits use.
+                if (apply(state) === state) state
+                else commitDelta(state, priorityTreeDelta(state, "Default weight", apply))
+            }
             is SchedulerIntent.AddPriorityColumn ->
                 commitDelta(state, priorityTreeDelta(state, "Add weight column") { applyAddPriorityColumn(it, intent.listId, intent.index) })
             is SchedulerIntent.ResetPriorityColumn ->
@@ -203,7 +212,13 @@ object SchedulerReducer {
                 commitDelta(state, priorityTreeDelta(state, "Move weight column") { applyMovePriorityColumn(it, intent.listId, intent.from, intent.to) })
             is SchedulerIntent.RestorePriorityWeights -> {
                 val restore = { s: SchedulerState ->
-                    applyRestorePriorityWeights(s, intent.listId, intent.weightColumns, intent.cellWeights)
+                    applyRestorePriorityWeights(
+                        s,
+                        intent.listId,
+                        intent.weightColumns,
+                        intent.cellWeights,
+                        intent.defaultWeights,
+                    )
                 }
                 // A cancel that changes nothing (the window was opened and nothing was edited) must not
                 // push an empty history unit for Ctrl+Z to walk back over.
@@ -2931,6 +2946,14 @@ private fun priorityTreeDelta(
  */
 private fun defaultWeightAt(column: Int): Double = if (column == 0) 1.0 else 0.0
 
+/**
+ * PRD §5 the weight table's **default row**, read to this list's column count and ready to be edited.
+ * [SchedulerDomain.defaultWeightRow] is the one place the row is read, so the table that draws it and the
+ * seeding below can never disagree about what it says.
+ */
+private fun defaultWeightRow(list: CellList): MutableList<Double> =
+    SchedulerDomain.defaultWeightRow(list).toMutableList()
+
 /** Pad [weights] to at least [size] entries, filling missing columns with their default. */
 private fun normalizedWeights(weights: List<Double>, size: Int): MutableList<Double> =
     MutableList(maxOf(size, weights.size)) { weights.getOrElse(it) { defaultWeightAt(it) } }
@@ -3598,6 +3621,26 @@ private fun applySetPriorityColumnWeight(
     return state.copy(lists = state.lists + (listId to list.copy(weightColumns = columns)))
 }
 
+/**
+ * PRD §5 the weight table's **default row**: set what a task arriving in [listId]'s table is given in
+ * [column]. Clamped to ≥ 0 like every other weight field, and returned unchanged when the row already says
+ * that, so a keystroke that changes nothing costs neither a history unit nor a save.
+ */
+private fun applySetPriorityDefaultWeight(
+    state: SchedulerState,
+    listId: CellListId,
+    column: Int,
+    value: Double,
+): SchedulerState {
+    val list = state.lists[listId] ?: return state
+    if (column < 0 || column >= list.weightColumns.size) return state
+    val clamped = value.coerceAtLeast(0.0)
+    val defaults = defaultWeightRow(list)
+    if (defaults[column] == clamped) return state
+    defaults[column] = clamped
+    return state.copy(lists = state.lists + (listId to list.copy(defaultWeights = defaults)))
+}
+
 private fun applyAddPriorityColumn(
     state: SchedulerState,
     listId: CellListId,
@@ -3614,7 +3657,9 @@ private fun applyAddPriorityColumn(
         cells[cellId] = cell.copy(priorityWeights = padded)
     }
     val columns = list.weightColumns.toMutableList().also { it.add(at, 0.0) }
-    val lists = state.lists + (listId to list.copy(weightColumns = columns))
+    // PRD §5: the default row is a row of this table like any other, so an added column is 0 in it too.
+    val defaults = defaultWeightRow(list).also { it.add(at, 0.0) }
+    val lists = state.lists + (listId to list.copy(weightColumns = columns, defaultWeights = defaults))
     return state.copy(cells = cells, lists = lists)
 }
 
@@ -3634,7 +3679,11 @@ private fun applyResetPriorityColumn(
         cells[cellId] = cell.copy(priorityWeights = weights)
     }
     val columns = list.weightColumns.toMutableList().also { it[column] = default }
-    return state.copy(cells = cells, lists = state.lists + (listId to list.copy(weightColumns = columns)))
+    val defaults = defaultWeightRow(list).also { it[column] = default }
+    return state.copy(
+        cells = cells,
+        lists = state.lists + (listId to list.copy(weightColumns = columns, defaultWeights = defaults)),
+    )
 }
 
 private fun applyMovePriorityColumn(
@@ -3661,7 +3710,11 @@ private fun applyMovePriorityColumn(
         cells[cellId] = cell.copy(priorityWeights = weights)
     }
     val columns = list.weightColumns.toMutableList().also { reorder(it) }
-    return state.copy(cells = cells, lists = state.lists + (listId to list.copy(weightColumns = columns)))
+    val defaults = defaultWeightRow(list).also { reorder(it) }
+    return state.copy(
+        cells = cells,
+        lists = state.lists + (listId to list.copy(weightColumns = columns, defaultWeights = defaults)),
+    )
 }
 
 private fun applyDeletePriorityColumn(
@@ -3680,15 +3733,16 @@ private fun applyDeletePriorityColumn(
         cells[cellId] = cell.copy(priorityWeights = padded)
     }
     val columns = list.weightColumns.toMutableList().also { it.removeAt(column) }
-    val lists = state.lists + (listId to list.copy(weightColumns = columns))
+    val defaults = defaultWeightRow(list).also { it.removeAt(column) }
+    val lists = state.lists + (listId to list.copy(weightColumns = columns, defaultWeights = defaults))
     return state.copy(cells = cells, lists = lists)
 }
 
 /**
- * PRD §5 the priority-weight window's **Cancel**: put [listId]'s weight table back to the headers and the
- * per-cell weight rows it held when the window opened. Only that one table is touched — a cell listed in
- * [cellWeights] that has since moved to another sub-list is left to its new table, and the list's
- * membership itself is never rewritten (Cancel undoes weight edits, not tree edits).
+ * PRD §5 the priority-weight window's **Cancel**: put [listId]'s weight table back to the headers, the
+ * per-cell weight rows and the default row it held when the window opened. Only that one table is touched —
+ * a cell listed in [cellWeights] that has since moved to another sub-list is left to its new table, and the
+ * list's membership itself is never rewritten (Cancel undoes weight edits, not tree edits).
  *
  * Returns the same instance when the table already matches, so the caller can skip the history unit.
  */
@@ -3697,6 +3751,7 @@ private fun applyRestorePriorityWeights(
     listId: CellListId,
     weightColumns: List<Double>,
     cellWeights: Map<CellId, List<Double>>,
+    defaultWeights: List<Double>,
 ): SchedulerState {
     val list = state.lists[listId] ?: return state
     if (weightColumns.isEmpty()) return state
@@ -3710,9 +3765,20 @@ private fun applyRestorePriorityWeights(
         changed = true
     }
     val columnsChanged = list.weightColumns != weightColumns
-    if (!changed && !columnsChanged) return state
+    val defaultsChanged = defaultWeights.isNotEmpty() && list.defaultWeights != defaultWeights
+    if (!changed && !columnsChanged && !defaultsChanged) return state
     val lists =
-        if (columnsChanged) state.lists + (listId to list.copy(weightColumns = weightColumns)) else state.lists
+        if (columnsChanged || defaultsChanged) {
+            state.lists + (
+                listId to
+                    list.copy(
+                        weightColumns = weightColumns,
+                        defaultWeights = if (defaultsChanged) defaultWeights else list.defaultWeights,
+                    )
+                )
+        } else {
+            state.lists
+        }
     return state.copy(cells = cells, lists = lists)
 }
 
@@ -3727,9 +3793,11 @@ private fun weightTableRowLabel(intent: SchedulerIntent.SetPriorityWeightTableRo
  * PRD §5: set what an **optional row** of [listId]'s priority-weight table names — add, re-point or remove,
  * the three shapes of one question (see [SchedulerIntent.SetPriorityWeightTableRow]).
  *
- * A new row is seeded at **zero** in every column: it states a share of the parent sub-tree the user has yet
- * to give it, and zero is the only value that asserts nothing. A re-pointed row is seeded the same way — the
- * value belonged to the task the row named, not to the row's position in the table.
+ * A new row arrives on the table's own **default row** ([CellList.defaultWeights]) — the same row a task
+ * named in the tree arrives on, because "a task new to this table" is one question however the task got
+ * here. A re-pointed row is seeded the same way: the value belonged to the task the row named, not to the
+ * row's position in the table. (Until the default row existed this was a hard-coded zero, which is what an
+ * untouched default row still says in every column but the first.)
  */
 private fun applySetPriorityWeightTableRow(
     state: SchedulerState,
@@ -3753,7 +3821,7 @@ private fun applySetPriorityWeightTableRow(
         if (taskId == parentTaskId) return state
         if (RelativePriorityDomain.optionalTaskPath(state, listId, taskId).isEmpty()) return state
         optionalIds = optionalIds + taskId
-        optionalValues = optionalValues + (taskId to List(list.weightColumns.size.coerceAtLeast(1)) { 0.0 })
+        optionalValues = optionalValues + (taskId to SchedulerDomain.defaultWeightRow(list))
     }
     if (optionalIds == list.optionalTaskIds && optionalValues == list.optionalTaskValues) return state
     return state.copy(
@@ -3967,6 +4035,12 @@ private fun applySetCellTitle(
 
     var working = state
     val list = working.lists[cell.parentListId] ?: return state
+    // PRD §5 the weight table's **default row**: a cell is textually empty until it is named (§4 — a blank
+    // title is what deletes), so this call is the one instant it becomes a ROW of its sub-list's weight
+    // table, and the row it arrives on is the table's own default. Read here rather than when the
+    // placeholder cell was minted: the user may have edited the default row since, and a placeholder sits
+    // at the bottom of every list for as long as the list exists.
+    val wasTextuallyEmpty = SchedulerDomain.isTextuallyEmptyCell(state, cellId)
 
     val isNewTask = forceTaskId == null && cell.taskId == null
     val (taskId, afterAllocate) =
@@ -4026,7 +4100,13 @@ private fun applySetCellTitle(
     }
 
     val cells = working.cells.toMutableMap()
-    cells[cellId] = cell.copy(taskId = if (keepAsTombstone) null else taskId)
+    val boundCell = cell.copy(taskId = if (keepAsTombstone) null else taskId)
+    cells[cellId] =
+        if (wasTextuallyEmpty && !keepAsTombstone && title.isNotEmpty()) {
+            boundCell.copy(priorityWeights = SchedulerDomain.defaultWeightRow(list))
+        } else {
+            boundCell
+        }
 
     var lists = working.lists.toMutableMap()
     var currentList = lists[cell.parentListId] ?: return state

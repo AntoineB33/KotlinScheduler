@@ -1095,7 +1095,7 @@ class SchedulerReducerTest {
     }
 
     @Test
-    fun manually_added_priority_table_rows_persist_per_list_and_start_at_zero() {
+    fun manually_added_priority_table_rows_persist_per_list_and_start_on_the_default_row() {
         var s = SchedulerState.empty()
         val rootCell = s.lists[s.rootListId]!!.cellIds.first()
         s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(rootCell, "Parent"))
@@ -1113,7 +1113,9 @@ class SchedulerReducerTest {
         val rows = org.example.project.scheduler.ui.priorityWeightTableRows(s, childList, s.lists[childList]!!.optionalTaskIds)
         val row = rows.first { it.taskId == childTask }
         val value = org.example.project.scheduler.ui.priorityWeightTableValue(s, childList, row, 0, s.lists[childList]!!.optionalTaskIds)
-        assertEquals(0.0, value, 1e-9)
+        // The table's own default row, untouched here: 1 in the first column.
+        assertEquals(s.lists[childList]!!.defaultWeights[0], value, 1e-9)
+        assertEquals(1.0, value, 1e-9)
     }
 
     @Test

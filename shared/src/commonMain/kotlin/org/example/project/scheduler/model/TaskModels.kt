@@ -768,6 +768,20 @@ data class CellList(
      * Defaults to a single column of weight 1 (equivalent to a plain weighted split).
      */
     val weightColumns: List<Double> = listOf(1.0),
+    /**
+     * PRD §5 the weight table's **default row**: the value row a task arrives in this table with — whether
+     * it arrives by being named in the tree or by being added to the table itself as an optional row. It is
+     * the one row of the table that names no task; it sits below the add row, index-aligned with
+     * [weightColumns] like every other row, and follows them through an add/delete/move/reset exactly as a
+     * cell's own row does (a **new column is 0** here too).
+     *
+     * It states a *rule about future rows*, never a share of anything, so it is in no priority sum, in no
+     * chart slice and in no scheduling signature: editing it re-plans nothing. A missing/short entry reads
+     * as the built-in default ([org.example.project.scheduler.domain.SchedulerDomain.defaultWeightAt] — 1 in
+     * the first column, 0 in the rest), which is what every payload written before this row existed decodes
+     * to, and is why an untouched account behaves exactly as it did.
+     */
+    val defaultWeights: List<Double> = listOf(1.0),
     /** Tasks the user manually added to this table as optional rows; persisted per sub-list. */
     val optionalTaskIds: Set<TaskId> = emptySet(),
     /** The last-entered value for each optional row in this list's weight columns. */

@@ -4710,6 +4710,20 @@ object SchedulerDomain {
     /** PRD §5: default value of a weight field by column — column 0 defaults to 1, the rest to 0. */
     internal fun defaultWeightAt(column: Int): Double = if (column == 0) 1.0 else 0.0
 
+    /**
+     * PRD §5 the weight table's **default row**, read to this list's column count — the value row a task
+     * arrives in [list]'s table with ([org.example.project.scheduler.model.CellList.defaultWeights]).
+     *
+     * The ONE place that row is read, so the table that draws it and the reducer that seeds from it can
+     * never disagree about what it says. A row shorter than the column count (every payload written before
+     * the row existed, and any list whose columns grew elsewhere) reads as [defaultWeightAt] past its end,
+     * which is exactly what a new task used to get.
+     */
+    internal fun defaultWeightRow(list: org.example.project.scheduler.model.CellList): List<Double> =
+        List(list.weightColumns.size.coerceAtLeast(1)) { c ->
+            list.defaultWeights.getOrElse(c) { defaultWeightAt(c) }
+        }
+
     fun parentTaskId(state: SchedulerState, cellId: CellId): TaskId? {
         val cell = state.cells[cellId] ?: return null
         val list = state.lists[cell.parentListId] ?: return null
