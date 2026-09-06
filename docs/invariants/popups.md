@@ -49,6 +49,16 @@ Categories, DefaultSubtree, Shortcuts, TimeSim) and every other pop-up in the ap
 - **One observer, at the app root** (`transientPopupDismissRoot`), watching the **Initial** pass without
   consuming. Never a per-pop-up outside-press handler. Presses inside a `DropdownMenu`/`Popup` draw in their
   own layer and never reach it, which is what keeps a pop-up's own menus from closing it.
+- **A right-click contextual MENU is sort 2 as well** — it is about one cell, one percentage, one id row — and
+  it dismisses the same way: `transientMenuDismissal` registers it with the host (no bounds, since a press
+  inside its `Popup` never reaches the observer) and the menu's own popup is made **non-focusable**. A
+  focusable `DropdownMenu` consumes the outside press for its own `onDismissRequest`, and that press is
+  exactly the one PRD §13 needs to go on and select the next cell: right-click one cell, click another, and
+  the second cell is selected in the same gesture. Wherever a menu is given `focusable = false`, the
+  registration must come with it — a non-focusable menu that no one registered never closes at all.
+- **Registering the menu also makes the tree deaf while it is open** (`anyOpen` → `keyboardOwned`), which is
+  the same rule every other sort-2 pop-up already lives under, and it is why the edited cell hands its caret
+  back for as long as a menu stands over it (`task-tree.md`, *The selection and Edit Mode belong to the TREE*).
 - **A sort-2 pop-up must be drawn where it can be on top.** The tree's `TaskEditWindow` / `DeepCopyWindow`
   are raised out of `TaskSchedulerScreen` into `App` for that reason (inside the tree they drew *under* any
   floating window stacked over it); `ReminderConstraintEditWindow` uses a `Popup` for the same reason.

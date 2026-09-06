@@ -3,7 +3,6 @@ package org.example.project.scheduler.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -16,6 +15,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.getValue
@@ -37,7 +38,6 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.text.TextRange
@@ -378,6 +378,7 @@ internal fun TaskTreeView(
         }
     }
 
+    CompositionLocalProvider(LocalTreeKeyboardOwned provides keyboardOwned) {
     Box(modifier = modifier) {
     Column(
         modifier = Modifier
@@ -598,12 +599,11 @@ internal fun TaskTreeView(
                 // rows' fillMaxWidth resolves against that natural width instead of the (infinite) scroll
                 // constraint, and every cell border stays aligned to the same right edge.
                 .horizontalScroll(rememberScrollState())
-                .width(IntrinsicSize.Max)
-                .pointerInput(Unit) {
-                    detectTapGestures {
-                        onIntent(SchedulerIntent.ClearSelection)
-                    }
-                },
+                // PRD §3: deliberately NO tap handler on the tree's empty space. The selection and Edit
+                // Mode are moved by a press on another task CELL and by nothing else — a press beside the
+                // cells (or in another window) leaves both untouched, so a rename survives reaching for
+                // the calendar and coming back.
+                .width(IntrinsicSize.Max),
         ) {
             CellListSection(
                 state = state,
@@ -741,4 +741,20 @@ internal fun TaskTreeView(
         // layer, above the calendar — not here — so it sits over every other window and dismisses on a
         // click anywhere else (which still does its normal job).
     }
+    }
 }
+
+/**
+ * Whether the tree drawn beneath this local currently **owns the keyboard** — `TaskTreeView`'s own
+ * `keyboardOwned`, published so the cell that is in Edit Mode can read it.
+ *
+ * PRD §4: focusing another window no longer ends the edit session (the cell keeps its Edit-Mode outline and
+ * its half-typed draft), so something else has to make sure the caret is not still sitting in a field the
+ * user has walked away from: the session survives, the **focus** follows the keyboard. Read from a local
+ * rather than threaded down as a parameter for the same reason `LocalTransientPopupHost` is — all three
+ * drawings of the tree get it at once, and no surface can forget to pass it on.
+ *
+ * Defaults to `true` for a task cell drawn outside any tree (the relative-priority window's occurrence
+ * chains), which never edits anything.
+ */
+internal val LocalTreeKeyboardOwned = compositionLocalOf { true }

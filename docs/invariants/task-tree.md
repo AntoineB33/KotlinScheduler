@@ -117,6 +117,12 @@ the menu's "deep copy") and the bare **task-id reference** `taskIdReferenceText`
   title, or an indent jump ⇒ `null` ⇒ the reducer returns the state unchanged. A plain tab-indented title tree
   still pastes, with its min-times left null.
 - The pre-1.6.0 form-feed shape is still **read** (a clipboard outlives a rebuild), never written.
+- **The cell menus are sort-2 pop-ups and dismiss through the app-root observer** (`transientMenuDismissal`,
+  `popups.md`), never through their own `DropdownMenu`. A focusable popup CONSUMES the outside press for its
+  own `onDismissRequest`, which is exactly the press that had to go on and select the next cell — so both cell
+  menus (the row's and the percentage column's) pass `PopupProperties(focusable = false)` and register with
+  the host instead. They publish no bounds: a press inside a `Popup` never reaches the observer, so every
+  press it sees is already a press outside the menu.
 - **A right-click SELECTS, through the ordinary `ClickCell`** (no ctrl, no shift, no `forceClearMulti`) — one
   rule, so the outside-the-selection case collapses onto the clicked cell and the inside-a-multi-selection case
   keeps the block, with no second selection path to drift. It fires from `contextMenuModifier` (the one handler
@@ -149,6 +155,26 @@ the menu's "deep copy") and the bare **task-id reference** `taskIdReferenceText`
   follows the deepest branch measured over the **whole** depth asked for — measured over the remainder, every
   branch ties and the path jumps around as the number changes — and, over several copied cells, starts from
   whichever of them reaches furthest.
+
+### The selection and Edit Mode belong to the TREE, not to the pointer
+
+→ PRD §3/§4/§7. `reduceClick` and `reduceFocusWindow` (`state/SchedulerReducer.kt`).
+
+- **A press on another task CELL is the only thing that moves the selection, and the only thing that forces
+  Edit Mode to exit.** There is no "deselect" gesture: no tap handler on the tree's empty space, none on the
+  screen's title, and `reduceFocusWindow` moves focus and nothing else. The old `ClearSelection` intent and the
+  three call sites that raised it are gone — an intent that clears the selection is how "clicking somewhere
+  harmless" starts throwing a rename away again, so do not reintroduce one. `Escape` (`CancelEdit`) and the
+  keyboard exits are how a session ends without naming another cell.
+- **The session survives; the FOCUS follows the keyboard.** `LocalTreeKeyboardOwned` (published by
+  `TaskTreeView` from its own `keyboardOwned`) is what the edited cell reads: it takes the caret while this
+  tree owns the keyboard and gives it back when it does not, so keystrokes aimed at the window the user just
+  went to never land in the rename they left open — and coming back puts the caret straight back in it. A
+  composition local, like `LocalTransientPopupHost`, so all three drawings of the tree get it at once; never a
+  flag each surface has to remember to pass on. Losing focus must never end the session — that is the
+  behaviour this replaced.
+- **Clicking the cell that is being edited is not "another cell"**: `applySelectionChange` ends the session
+  only for a *different* `clickedCellId`, which is what lets a click back into the field resume the rename.
 
 ### Find & replace (Ctrl+F)
 
@@ -213,12 +239,20 @@ disagreeing about what colour a task is.
   possible marker on a coloured tree.
 - **SELECTION AND EDIT MODE ARE SAID IN THE OUTLINE ALONE**, and that is what keeps the tint readable where it
   matters most. A cell that is the main selection, is among the selection, or is in Edit Mode keeps its own
-  background — its task colour — and is marked by its border's **weight**: the main selection and the edited
-  cell take a 2 dp `activeBorder`, every other cell of the selection a 1 dp one of the same colour, and an
-  unselected cell the ordinary 1 dp `grid` line. A fill repainted precisely the rows the user is working on,
-  so "which task is this" was unreadable in the middle of a rename and a whole selected block lost its
-  colours at once. `SheetColors.selectionFill` is now the find bar's latching-toggle fill and nothing else —
-  do not put it back behind a cell.
+  background — its task colour — and is marked by its border alone. A fill repainted precisely the rows the
+  user is working on, so "which task is this" was unreadable in the middle of a rename and a whole selected
+  block lost its colours at once. `SheetColors.selectionFill` is now the find bar's latching-toggle fill and
+  nothing else — do not put it back behind a cell.
+- **THE THREE STATES ARE THREE OUTLINES, and the ranking is one function**: `taskCellOutline` (in
+  `ui/TaskSheetChrome.kt`, beside the colours) turns the three overlapping flags into one `TaskCellOutline`,
+  and `borderWidth`/`borderColor` draw it — 1 dp `grid` unselected, 1 dp `activeBorder` for a cell of the
+  selection, 2 dp `activeBorder` for the main selection, 2 dp `editBorder` for Edit Mode. The flags are
+  **nested** in the state (the edited cell is also main, which is also in range), so the ranking, never the
+  caller, is what keeps them apart: read `isEditing` first. Edit Mode gets its own **hue** and not merely a
+  third weight because it is not a third degree of selection but the state where the keyboard writes into the
+  cell — it used to share the main selection's 2 dp blue, and the two were indistinguishable. Three surfaces
+  draw task cells, so the rule may not be re-answered at a call site; `TaskCellOutlineTest` holds it,
+  including that the four drawings are pairwise different.
 - **The uniform §8 event blue survives as the fallback**, for a panel whose task the tree gives no colour. A
   no-screen / inactivity period takes no task colour at all: it is not a task.
 - **Colours are DERIVED, never persisted or synced** — recomputed from the tree, like the percentages.

@@ -95,6 +95,7 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -106,6 +107,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import org.example.project.scheduler.domain.RelativePriorityDomain
@@ -140,10 +142,14 @@ import org.example.project.ui.PRIORITY_COLUMN_MAX
 import org.example.project.ui.PRIORITY_COLUMN_MIN
 import org.example.project.ui.SheetColors
 import org.example.project.ui.ShortcutHint
+import org.example.project.ui.borderColor
+import org.example.project.ui.borderWidth
+import org.example.project.ui.taskCellOutline
 import org.example.project.ui.TransientPopupLayer
 import org.example.project.ui.TaskPalette
 import org.example.project.ui.TaskHueMemo
 import org.example.project.ui.rememberTaskHues
+import org.example.project.ui.transientMenuDismissal
 import org.example.project.ui.transientPopupCard
 import org.example.project.ui.windowDragHandle
 import org.example.project.ui.TaskTreeFindBar
@@ -319,13 +325,11 @@ fun TaskSchedulerScreen(
             style = MaterialTheme.typography.titleLarge,
             // Shifted right so the lateral-menu collapse bookmark («/»), which straddles the content's
             // left edge, doesn't cover the start of the title.
-            modifier = Modifier
-                .padding(start = 40.dp)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = { vm.dispatch(SchedulerIntent.ClearSelection) },
-                ),
+            //
+            // PRD §3: no click handler. Only a press on another task CELL moves the selection — a press
+            // anywhere else (here, the tree's empty space, another window) leaves both the selection and
+            // Edit Mode exactly as they were.
+            modifier = Modifier.padding(start = 40.dp),
         )
         Spacer(Modifier.height(8.dp))
 
@@ -2479,8 +2483,20 @@ internal fun TaskRow(
     // minimum time or the empty tail of the row.
     val titleBounds = remember(cellId) { TaskSheetTitleBounds() }
     val currentResolveRowAt by rememberUpdatedState(resolveRowAt)
-    LaunchedEffect(isEditing) {
-        if (isEditing) editFocusRequester.requestFocus()
+    // Whether the edit field currently holds the focus. Only read to decide whether this cell is the one
+    // that has to give it up — never to end the session, which no longer depends on focus at all.
+    var editFieldFocused by remember(cellId) { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    // PRD §4: the SESSION survives whatever the pointer does elsewhere (another window, the tree's empty
+    // space, a pop-up), but the CARET follows the keyboard: the field takes focus while this tree owns the
+    // keyboard and hands it back when it does not, so keystrokes meant for the window the user just went
+    // to never land in a rename they left behind — and coming back puts the caret straight back in it.
+    val keyboardOwned = LocalTreeKeyboardOwned.current
+    LaunchedEffect(isEditing, keyboardOwned) {
+        when {
+            isEditing && keyboardOwned -> editFocusRequester.requestFocus()
+            isEditing && editFieldFocused -> focusManager.clearFocus()
+        }
     }
 
     val cellBackground =
@@ -2501,15 +2517,12 @@ internal fun TaskRow(
             taskColor != null -> taskColor
             else -> SheetColors.cellBackground
         }
-    // The three selection states are told apart by the outline's WEIGHT, not by a fill: the main selection
-    // and the cell being edited take the thick active border, every other cell of the selection a thin one
-    // of the same colour, and an unselected cell the ordinary grid line.
-    val cellBorder =
-        when {
-            isMainSelection || isEditing -> Modifier.border(2.dp, SheetColors.activeBorder)
-            isInSelectionRange -> Modifier.border(1.dp, SheetColors.activeBorder)
-            else -> Modifier.border(1.dp, SheetColors.grid)
-        }
+    // PRD §3/§4: the three states are told apart by the OUTLINE, not by a fill — and each of the three has
+    // its own: a thin active border for a cell of the selection, a thick one for the main selection, and a
+    // thick border in its own colour for Edit Mode. The rule itself lives in [taskCellOutline] because all
+    // three drawings of the tree render through this composable and none of them may answer it separately.
+    val outline = taskCellOutline(isEditing, isMainSelection, isInSelectionRange)
+    val cellBorder = Modifier.border(outline.borderWidth, outline.borderColor)
     val textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface)
 
     val currentCanMoveFromCell by rememberUpdatedState(canMoveFromCell)
@@ -2686,9 +2699,15 @@ internal fun TaskRow(
         ) {
             // PRD §13 right-click contextual menu on a populated cell.
             if (cellMenu != null) {
+                transientMenuDismissal(contextMenuOpen) { contextMenuOpen = false }
                 DropdownMenu(
                     expanded = contextMenuOpen,
                     onDismissRequest = { contextMenuOpen = false },
+                    // PRD §13: the menu must NOT eat the press that closes it — clicking another cell has
+                    // to select that cell in the same gesture. A focusable popup consumes that press for
+                    // its own outside-dismissal, so the dismissal is handed to the app-root observer
+                    // instead (see [transientMenuDismissal], registered just above).
+                    properties = PopupProperties(focusable = false),
                 ) {
                     // PRD §13: only offered on a schedulable leaf — a parent task is never placed.
                     cellMenu.onStartNow?.let { startNow ->
@@ -2790,6 +2809,9 @@ internal fun TaskRow(
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = 20.dp)
                         .focusRequester(editFocusRequester)
+                        // Only tells the effect above whether this field is the one holding the focus it
+                        // may have to release. Losing focus never ends the session (PRD §4).
+                        .onFocusChanged { editFieldFocused = it.isFocused }
                         .onPreviewKeyEvent { event ->
                             if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                             if (event.key == Key.Delete && !event.isCtrlPressed && !event.isMetaPressed) {
@@ -2953,9 +2975,13 @@ internal fun TaskRow(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        // Same rule as the row's own menu: dismissed by the app-root observer, so the
+                        // press that closes it still selects whatever it landed on.
+                        transientMenuDismissal(priorityMenuOpen) { priorityMenuOpen = false }
                         DropdownMenu(
                             expanded = priorityMenuOpen,
                             onDismissRequest = { priorityMenuOpen = false },
+                            properties = PopupProperties(focusable = false),
                         ) {
                             DropdownMenuItem(
                                 text = { Text("relative priority") },

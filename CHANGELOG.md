@@ -11,6 +11,40 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### Three outlines, a selection that stays put, and a menu that lets the next click through — 2026-09-06
+
+`ui/TaskSheetChrome.kt` (`SheetColors.editBorder`, `TaskCellOutline` + `taskCellOutline` /
+`borderWidth` / `borderColor`), `TaskSchedulerScreen.kt` (the cell's border reads that one function; both cell
+menus are non-focusable and register with the sort-2 host; the edit field's caret follows
+`LocalTreeKeyboardOwned`; the screen title's click handler removed), `TaskTreeView.kt` (the tree's empty-space
+tap removed, `LocalTreeKeyboardOwned` published), `ui/PopupWindows.kt` (`transientMenuDismissal`),
+`SchedulerReducer.kt` + `SchedulerIntent.kt` (`ClearSelection` and `reduceClearSelection` deleted;
+`reduceFocusWindow` moves focus and nothing else), `SchedulerReducerTest`, new `TaskCellOutlineTest`,
+`TransientPopupHostTest`, `docs/PRD_TaskScheduler.md` §3/§4/§7/§13,
+`docs/invariants/task-tree.md`, `docs/invariants/popups.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy and no DB migration.**
+
+Three changes to what a task cell says and what a click means, all in the same corner:
+
+**Edit Mode has its own outline.** The three states were meant to be told apart by the border alone, but the
+main selection and the edited cell shared one 2 dp blue, so only two of the three were ever visible. Edit Mode
+now takes a 2 dp `editBorder` instead — its own hue, not a third weight, because it is not a third degree of
+selection but the state where the keyboard writes into the cell. The ranking that turns three overlapping
+flags into one drawing is now a single function (`taskCellOutline`), because three surfaces draw task cells.
+
+**Nothing but another task cell moves the selection.** Clicking beside the tree, on the screen's title, or
+into another window used to clear the selection and force Edit Mode to exit (PRD §4's old "Forced Exit" read
+that widely). It no longer does any of it: the selection is where the user left it until they put it
+somewhere else, and a rename survives a glance at the calendar. What follows the keyboard instead is the
+**caret**: the field gives it up while another window owns the keyboard and takes it back on return, so
+keystrokes aimed at that window never land in the rename left open behind it. `ClearSelection` is deleted
+rather than left unused — an intent that clears the selection is how the old behaviour comes back.
+
+**The right-click menu no longer eats the click that closes it.** A focusable `DropdownMenu` consumes the
+outside press for its own dismissal, so clicking a second cell while the menu stood only closed the menu. Both
+cell menus are non-focusable now and dismiss through the app-root observer every other sort-2 pop-up already
+uses — which never consumes — so that press goes on to select the cell it landed on, as PRD §13 asks.
+
 ### A timer's countdown is editable before it is started — 2026-09-06
 
 `TimerDomain.withRemaining` (an idle row banks instead of returning unchanged) + `withCountdownField` (the

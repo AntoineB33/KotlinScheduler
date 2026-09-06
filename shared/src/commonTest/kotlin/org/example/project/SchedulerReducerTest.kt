@@ -193,9 +193,10 @@ class SchedulerReducerTest {
     }
 
     @Test
-    fun focusing_a_floating_window_clears_selection_exits_edit_and_records_a_window_nav_unit() {
-        // PRD §7: clicking a floating window forcibly exits tree Edit Mode, makes the tree selection
-        // disappear, moves focus, and records a (non-undoable) WindowNav history unit.
+    fun focusing_a_floating_window_keeps_the_selection_and_edit_mode_and_records_a_window_nav_unit() {
+        // PRD §3/§7: clicking another window moves FOCUS and nothing else. The tree's selection and its
+        // Edit Mode belong to the tree, so a rename survives a trip to the calendar and back; only a press
+        // on another task CELL moves the selection. The navigation is still a (non-undoable) WindowNav unit.
         var s = SchedulerState.empty()
         val cellId = s.lists[s.rootListId]!!.cellIds.first()
         s = SchedulerReducer.reduce(
@@ -208,11 +209,20 @@ class SchedulerReducerTest {
 
         s = SchedulerReducer.reduce(s, SchedulerIntent.FocusWindow(AppWindow.Calendar))
         assertEquals(AppWindow.Calendar, s.focusedWindow)
-        assertNull(s.editSession) // Edit Mode left
-        assertNull(s.selection.main) // selection disappeared
-        assertTrue(s.selection.selected.isEmpty())
+        assertNotNull(s.editSession) // still in Edit Mode
+        assertEquals(cellId, s.editSession!!.cellId)
+        assertEquals("x", s.editSession!!.draftText) // …with the draft it was holding
+        assertEquals(cellId, s.selection.main) // …and the selection it had
+
+        // Coming back is just as inert: focus returns, and neither of the two is touched on the way.
+        s = SchedulerReducer.reduce(s, SchedulerIntent.FocusWindow(AppWindow.Tree))
+        assertEquals(AppWindow.Tree, s.focusedWindow)
+        assertNotNull(s.editSession)
+        assertEquals(cellId, s.selection.main)
+
+        s = SchedulerReducer.reduce(s, SchedulerIntent.FocusWindow(AppWindow.Calendar))
         val nav = s.histories.windowNav
-        assertEquals(1, nav.units.size)
+        assertEquals(3, nav.units.size) // one per move: Calendar, Tree, Calendar
         assertEquals("Focus Calendar", nav.units.last().delta.label)
 
         // The WindowNav unit is not walked by any undo/redo command, so Ctrl+Z does not revert focus.
@@ -337,22 +347,43 @@ class SchedulerReducerTest {
     }
 
     @Test
-    fun clear_selection_clears_main_and_multi_and_exits_edit() {
+    fun only_another_task_cell_moves_the_selection_and_leaves_edit_mode() {
+        // PRD §3/§4: there is no "deselect" gesture left. A multi-selection and an open Edit Mode survive
+        // everything but a press on another task CELL — which is what makes clicking beside the tree, or in
+        // another window, inert (the two places that used to raise the old ClearSelection intent).
         var s = seedThreeTasks()
         val visible = SchedulerDomain.selectableVisibleOrder(s)
         val cell = visible[1]
+        val other = visible[2]
 
         s = SchedulerReducer.reduce(
             s,
             SchedulerIntent.ClickCell(cellId = cell, ctrl = false, shift = false, visibleOrder = visible),
         )
-        s = SchedulerReducer.reduce(s, SchedulerIntent.BeginEdit(cell))
+        s = SchedulerReducer.reduce(
+            s,
+            SchedulerIntent.ClickCell(cellId = other, ctrl = true, shift = false, visibleOrder = visible),
+        )
+        assertEquals(setOf(cell, other), s.selection.selected)
+
+        // (Entering Edit Mode is itself what collapses the block onto the edited cell — PRD §4.)
+        s = SchedulerReducer.reduce(s, SchedulerIntent.BeginEdit(other))
+        assertNotNull(s.editSession)
+        assertEquals(other, s.selection.main)
+
+        // Clicking the very cell being edited is not "another cell": it keeps its own session.
+        s = SchedulerReducer.reduce(
+            s,
+            SchedulerIntent.ClickCell(cellId = other, ctrl = false, shift = false, visibleOrder = visible),
+        )
         assertNotNull(s.editSession)
 
-        s = SchedulerReducer.reduce(s, SchedulerIntent.ClearSelection)
-
-        assertEquals(null, s.selection.main)
-        assertTrue(s.selection.selected.isEmpty())
+        // A different cell is: the selection collapses onto it and the session ends.
+        s = SchedulerReducer.reduce(
+            s,
+            SchedulerIntent.ClickCell(cellId = cell, ctrl = false, shift = false, visibleOrder = visible),
+        )
+        assertEquals(cell, s.selection.main)
         assertEquals(null, s.editSession)
     }
 

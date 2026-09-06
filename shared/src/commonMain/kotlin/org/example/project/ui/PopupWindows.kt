@@ -179,6 +179,31 @@ fun Modifier.transientPopupCard(onDismiss: () -> Unit): Modifier {
 }
 
 /**
+ * The same dismissal, for a **right-click contextual menu** — a `DropdownMenu`, which draws its own
+ * `Popup` and therefore has no card of ours to measure.
+ *
+ * A menu is about ONE object (this cell, this percentage, this id row), so it is sort 2 like any other, and
+ * routing it through the host is what makes PRD §13's rule hold: the press that closes the menu **still does
+ * its normal job**, so right-clicking a cell and then clicking another one selects that other cell in the
+ * same gesture instead of being eaten as a dismissal. That requires the menu's own popup to be
+ * **non-focusable** — a focusable one consumes the outside press for its own `onDismissRequest` — so pass
+ * `PopupProperties(focusable = false)` wherever this is used.
+ *
+ * No bounds are ever published: a press inside a `Popup` never reaches the app-root observer (it draws in
+ * its own layer), so "any press the observer sees" is exactly "a press outside the menu".
+ */
+@Composable
+fun transientMenuDismissal(open: Boolean, onDismiss: () -> Unit) {
+    val host = LocalTransientPopupHost.current
+    val key = remember { Any() }
+    val latestDismiss by rememberUpdatedState(onDismiss)
+    DisposableEffect(host, key, open) {
+        if (open) host?.open(key) { latestDismiss() }
+        onDispose { host?.close(key) }
+    }
+}
+
+/**
  * The one way the app says something back to a gesture it could not carry out — today the calendar's
  * "go to task tree" on a panel whose task no cell holds (PRD §8).
  *

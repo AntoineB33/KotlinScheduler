@@ -22,6 +22,7 @@ import androidx.compose.ui.input.key.utf16CodePoint
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /**
@@ -44,6 +45,12 @@ internal object SheetColors {
      */
     val selectionFill = Color(0xFFE8F0FE)
     val activeBorder = Color(0xFF1A73E8)
+    /**
+     * PRD §4: the outline of a cell **in Edit Mode**. Its own hue, not just its own weight: Edit Mode is
+     * not a third degree of selection, it is the state where the keyboard writes into the cell, and the
+     * user has to be able to tell it from the main selection at a glance ([TaskCellOutline]).
+     */
+    val editBorder = Color(0xFF9334E6)
     val nonSelectableFill = Color(0xFFF8F9FA)
     val guideLine = Color(0xFFC7CBD1)
     val overflowArrow = Color(0xFFD93025)
@@ -54,6 +61,66 @@ internal object SheetColors {
     /** …and behind the one hit the find bar is currently sitting on. */
     val searchCurrentFill = Color(0xFFFFB74D)
 }
+
+/**
+ * PRD §3/§4: the three states a task cell can be in, each with its **own outline**.
+ *
+ * Selection and Edit Mode are said in the OUTLINE ALONE — never in a fill — so a cell keeps its task colour
+ * while the user is working on it. The three are pairwise distinguishable by construction: `Selected` and
+ * `Main` share the active colour and differ in weight, and `Editing` differs from both in colour, because it
+ * is not a third degree of selection but the state where the keyboard writes into the cell.
+ *
+ * One decision, in one place: three surfaces draw task cells (the tree, the "All tasks" window and the
+ * default sub-tree template) and a second copy of this rule is how two of them come to disagree about what
+ * "selected" looks like.
+ */
+internal enum class TaskCellOutline {
+    /** Not selected at all: the ordinary grid line. */
+    None,
+
+    /** In the Selected Cells List, but not the main selection. */
+    Selected,
+
+    /** The main selection, not being edited. */
+    Main,
+
+    /** In Edit Mode. Takes precedence over [Main]: the edited cell is always the main selection too. */
+    Editing,
+}
+
+/**
+ * Which outline a cell wears. [isEditing] wins over [isMainSelection], which wins over
+ * [isInSelectionRange] — the edited cell is also the main selection, and the main selection is also in the
+ * selection range, so the states are nested and only the innermost one may show.
+ */
+internal fun taskCellOutline(
+    isEditing: Boolean,
+    isMainSelection: Boolean,
+    isInSelectionRange: Boolean,
+): TaskCellOutline =
+    when {
+        isEditing -> TaskCellOutline.Editing
+        isMainSelection -> TaskCellOutline.Main
+        isInSelectionRange -> TaskCellOutline.Selected
+        else -> TaskCellOutline.None
+    }
+
+/** The outline's weight. */
+internal val TaskCellOutline.borderWidth: Dp
+    get() =
+        when (this) {
+            TaskCellOutline.None, TaskCellOutline.Selected -> 1.dp
+            TaskCellOutline.Main, TaskCellOutline.Editing -> 2.dp
+        }
+
+/** The outline's colour. */
+internal val TaskCellOutline.borderColor: Color
+    get() =
+        when (this) {
+            TaskCellOutline.None -> SheetColors.grid
+            TaskCellOutline.Selected, TaskCellOutline.Main -> SheetColors.activeBorder
+            TaskCellOutline.Editing -> SheetColors.editBorder
+        }
 
 /** Indentation step (dp) per nesting level; also the spacing between hierarchy guide-lines. */
 internal const val INDENT_STEP_DP = 16

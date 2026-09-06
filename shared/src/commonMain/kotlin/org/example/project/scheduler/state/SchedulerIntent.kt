@@ -52,8 +52,6 @@ sealed interface SchedulerIntent {
         val insertBefore: Boolean,
     ) : SchedulerIntent
 
-    data object ClearSelection : SchedulerIntent
-
     data object EmptySelectedCells : SchedulerIntent
 
     data class ExitEdit(val navigation: EditExitNavigation) : SchedulerIntent

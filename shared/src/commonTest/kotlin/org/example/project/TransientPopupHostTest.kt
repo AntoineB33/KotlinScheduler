@@ -71,6 +71,42 @@ class TransientPopupHostTest {
     }
 
     @Test
+    fun `a right-click menu is dismissed by the press that lands on the next cell`() {
+        // PRD §13: the cell's contextual menu is registered here with NO bounds (a DropdownMenu draws its
+        // own Popup, and a press inside a Popup never reaches the app-root observer). So every press the
+        // observer does see is a press outside the menu — including the one on the next task cell, which
+        // closes the menu *and* goes on to select that cell, because the observer never consumes it.
+        val host = TransientPopupHost()
+        var dismissed = 0
+        host.open(Any()) { dismissed++ }
+        assertTrue(host.anyOpen)
+
+        host.onPress(Offset(220f, 640f)) // a cell somewhere else in the tree
+
+        assertEquals(1, dismissed)
+        assertFalse(host.anyOpen)
+    }
+
+    @Test
+    fun `right-clicking a second cell replaces the menu instead of stacking one`() {
+        // The right-click that opens menu B arrives at the observer FIRST (Initial pass) and closes menu A;
+        // registering B afterwards must not leave two menus believing they are open.
+        val host = TransientPopupHost()
+        var dismissedA = 0
+        val keyA = Any()
+        host.open(keyA) { dismissedA++ }
+        host.onPress(Offset(220f, 640f))
+        assertEquals(1, dismissedA)
+
+        host.open(Any()) {}
+        assertTrue(host.anyOpen)
+        // …and the menu that was dismissed is not dismissed a second time when it leaves the composition.
+        host.close(keyA)
+        assertEquals(1, dismissedA)
+        assertTrue(host.anyOpen)
+    }
+
+    @Test
     fun `opening one pop-up dismisses the one already open`() {
         val host = TransientPopupHost()
         var dismissedA = 0

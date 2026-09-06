@@ -127,7 +127,6 @@ object SchedulerReducer {
             is SchedulerIntent.ClickCell -> reduceClick(state, intent)
             is SchedulerIntent.DragSelectCells -> reduceDragSelect(state, intent)
             is SchedulerIntent.MoveSelectedCells -> reduceMoveSelected(state, intent)
-            SchedulerIntent.ClearSelection -> reduceClearSelection(state)
             SchedulerIntent.EmptySelectedCells -> reduceEmptySelected(state)
             is SchedulerIntent.ExitEdit -> reduceExitEdit(state, intent.navigation)
             is SchedulerIntent.ToggleExpand -> reduceToggleExpand(state, intent.cellId)
@@ -1565,38 +1564,21 @@ object SchedulerReducer {
         )
     }
 
-    private fun reduceClearSelection(state: SchedulerState): SchedulerState {
-        if (state.selection.main == null &&
-            state.selection.selected.isEmpty() &&
-            state.editSession == null
-        ) {
-            return state
-        }
-        var next = state
-        if (state.editSession != null) {
-            next = endEditSession(state)
-        }
-        if (next.selection.main == null && next.selection.selected.isEmpty()) return next
-        return commitDelta(
-            next,
-            SetSelectionDelta(before = next.selection, after = SchedulerSelection()),
-            HistoryCategory.Selection,
-        )
-    }
-
     /**
-     * PRD §7 window navigation. Moving focus to a *floating* window forcibly exits any tree Edit Mode and
-     * clears the tree selection (PRD §4 "Forced Exit"; the selection "disappears") — [reduceClearSelection]
-     * does both and records the Selection-state change. The navigation itself is then recorded as a
-     * WindowNav History Unit (shown in the History Manager but, for now, not walked by any undo/redo
-     * command). A no-op when focus does not actually change.
+     * PRD §7 window navigation. Focus moves and **nothing else does**: the tree's selection and its Edit
+     * Mode belong to the tree, not to whichever window the pointer went to next, so reaching for the
+     * calendar and coming back leaves the rename in progress exactly where it was. (A press on another task
+     * CELL is the one thing that moves the selection — [reduceClick] — and Escape is the one thing that
+     * leaves Edit Mode without committing to a neighbour.)
+     *
+     * The navigation is recorded as a WindowNav History Unit (shown in the History Manager but, for now,
+     * not walked by any undo/redo command). A no-op when focus does not actually change.
      */
     private fun reduceFocusWindow(state: SchedulerState, window: AppWindow): SchedulerState {
         if (state.focusedWindow == window) return state
-        val cleared = if (window != AppWindow.Tree) reduceClearSelection(state) else state
         return commitDelta(
-            cleared,
-            FocusDelta(before = cleared.focusedWindow, after = window),
+            state,
+            FocusDelta(before = state.focusedWindow, after = window),
             HistoryCategory.WindowNav,
         )
     }
