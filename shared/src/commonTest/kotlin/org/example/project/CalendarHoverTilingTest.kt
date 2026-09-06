@@ -71,6 +71,31 @@ class CalendarHoverTilingTest {
     }
 
     @Test
+    fun every_tile_of_a_reminder_tag_names_the_reminder() {
+        // PRD §8/§14: a tag is the top-most thing the column draws AND a pointer-input node, so it wins the
+        // hit test against everything under it and owes the bubble what it hides. Its own overlay spans the
+        // WHOLE tag, so however the panels underneath cut it, no tile can come out without the reminder —
+        // and each tile carries exactly what is hidden at that height. Here an 18-dp tag at 60 dp/h sits at
+        // 13:00–13:30, half over a task panel that ends at 13:15, all of it under a layer.
+        val zones = bubbleHoverZones(
+            top = 13f,
+            bottom = 13.5f,
+            overlays = listOf(
+                BubbleOverlay(13f, 13.5f, section(Kind.Reminder)),
+                BubbleOverlay(12f, 13.25f, section(Kind.Task)),
+                BubbleOverlay(0f, 24f, section(Kind.NoComputerUnlocked)),
+            ),
+        )
+        assertEquals(listOf(13f to 13.25f, 13.25f to 13.5f), zones.map { it.top to it.bottom })
+        assertTrue(zones.all { Kind.Reminder in kindsOf(it) })
+        assertEquals(
+            listOf(Kind.Reminder, Kind.Task, Kind.NoComputerUnlocked),
+            kindsOf(zones.first()),
+        )
+        assertEquals(listOf(Kind.Reminder, Kind.NoComputerUnlocked), kindsOf(zones.last()))
+    }
+
+    @Test
     fun a_zero_height_band_still_reports_with_a_cut_asked_for() {
         // A sub-minute look-away is drawn at a coerced minimum height, so its tiling span can collapse; the
         // band must stay hoverable, and asking for a resize strip on it must not empty it.

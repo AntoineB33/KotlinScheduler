@@ -62,9 +62,11 @@ Global rules that always apply: `CLAUDE.md`.
   *named* by the hover bubble anyway — its section rides whatever the cursor is over, or the bottom-most
   hover pickup where that is nothing.
 - **The hover bubble is a STACK of sections**, one per thing true at the instant under the cursor, ordered
-  `task = break > inactivity = sleep > no computer unlocked = no phone unlocked` (equal ranks are ties, kept
-  in collection order). **When there is a break there can't be a task.** Both rules live in
+  `reminder > task = break > inactivity = sleep > no computer unlocked = no phone unlocked` (equal ranks are
+  ties, kept in collection order). **When there is a break there can't be a task.** Both rules live in
   `orderedBubbleSections`, applied in the one funnel `Modifier.calendarTitleHover` — never at a call site.
+  A **§14 reminder leads** it for the same reason it is emitted last: the tag is the top-most thing the
+  column draws, so it is what the cursor is on and it is what hides everything below it.
 - **Hover is TILED, never nested**: two reporters at one position race (the parent's Move wins). Cut the
   element at every covering section's boundary (`bubbleHoverZones`) and give each tile one reporter.
 - **A CURSOR SHAPE rides the hover tile; it is never a lid over it.** A Box carrying only
@@ -92,6 +94,20 @@ Global rules that always apply: `CLAUDE.md`.
   being pointer-input nodes, won the hit test against the tag underneath so the click that checks a reminder
   off never reached it. The bubble said so — hovering a tag named the break and the two "nobody unlocked"
   layers instead of the reminder.
+- **Being on top is exactly why a tag OWES the bubble what it hides.** The tag is itself a pointer-input node
+  — it has to be, it is clicked — so it wins the hit test against every tile beneath it and those tiles stop
+  reporting: a hovered tag named *nothing at all*. It therefore carries hover tiles of its own over its own
+  drawn rectangle (`ReminderTag` → `CalendarHoverTiles`), with its own section (`reminderBubbleSection`) over
+  `underReminderOverlays` — the screen breaks plus the one `underPanelOverlays` list a `ScreenBreakBand`
+  reads for the same purpose. **One list, not two readings**, for the same reason `blockBubbleOverlays` is
+  shared with the width handle drawn over a block. Two rules hold it:
+  - the **click lives on the ancestor** the tiles hang under, never beside them. A sibling tile layer is the
+    "lid over the tile" mistake with the roles swapped — it would eat the one click on the calendar that has
+    to land. `Box(clickable) { Row(the chip); CalendarHoverTiles(…) }`.
+  - the tag's section names **the time the reminder is FOR**, not where the tag sits — an overdue tag rides
+    the now-line and a checked one is frozen at the instant it was ticked off, and neither is the answer to
+    "when is this reminder". What it hides, on the other hand, is read at where it is DRAWN (the quantized
+    anchor, like every other derivation; only the placement is exact).
 - **GREY = the scheduler places nothing here** — inactivity period, sleep window, the §17 **"Before bed"
   hour** (`before bed`, whose default resilience is `0` like theirs), and **all three screen
   breaks end to end** (they are `no task allowed`; there is no closed head and no hollow tail any more). It is

@@ -4091,6 +4091,16 @@ private fun DayColumn(
                 )
             }
         }
+    // PRD §8: what an element drawn OVER the panels owes the ones it hides — every task / period panel by
+    // its own time span, stacked under the column-wide grey periods and layers. Two elements read it, and
+    // they are the whole of what the calendar draws on top of the panels: the §15 screen-break bands and the
+    // §14 reminder tags. ONE list, because a second reading of "what is under the cursor here" is how two
+    // elements start naming the same panel differently (the same reason [blockBubbleOverlays] is shared with
+    // the width handle drawn over a block).
+    val underPanelOverlays: List<BubbleOverlay> =
+        blockRecords.map { BubbleOverlay(it.startHour, it.endHour, panelBubbleSection(it, tz)) } +
+            contextOverlays
+
     // The right-click position (in this column's local pixels) that anchors the contextual menu; null
     // when no menu is open. [menuTarget] is the block the click landed on (null = empty space).
     var menuOffset by remember { mutableStateOf<Offset?>(null) }
@@ -4756,15 +4766,11 @@ private fun DayColumn(
         if (visibleScreenBreaks.isNotEmpty()) {
             val sideLayout = remember(screenBreakMarkers) { overlapLayout(screenBreakMarkers) }
             // PRD §8: a screen break is drawn on top of every panel and band (only the reminder tags go
-            // above it), so whatever sits under it is otherwise hidden — the grey periods and the layers
-            // ([contextOverlays]), plus, rarely (the fill
-            // normally carves an exact gap for the break), a real panel. A TASK panel under a break is
+            // above it), so whatever sits under it is otherwise hidden — the grey periods and the layers,
+            // plus, rarely (the fill normally carves an exact gap for the break), a real panel. That is
+            // [underPanelOverlays], the one list the reminder tags read too. A TASK panel under a break is
             // dropped by the user's rule ("when there is a break, there can't be a task"); every other panel
             // still stacks. See [orderedBubbleSections].
-            val sideUnders =
-                blockRecords.map {
-                    BubbleOverlay(it.startHour, it.endHour, panelBubbleSection(it, tz))
-                } + contextOverlays
             BoxWithConstraints(Modifier.fillMaxSize()) {
                 val colWidth = maxWidth
                 visibleScreenBreaks.forEach { marker ->
@@ -4773,7 +4779,8 @@ private fun DayColumn(
                         ?: listOf(PanelSlice(marker.startHour, marker.endHour, xFraction = 0f, widthFraction = 1f))
                     slices.forEach { slice ->
                         ScreenBreakBand(
-                            marker, slice, hourHeight, colWidth, tz, hoverScope, sideUnders, showsDayDate,
+                            marker, slice, hourHeight, colWidth, tz, hoverScope, underPanelOverlays,
+                            showsDayDate,
                         )
                     }
                 }
@@ -4823,6 +4830,19 @@ private fun DayColumn(
         // they won the hit test against the tag underneath and the click that would check the reminder off
         // never reached it (the same "a lid over the tile" mistake [CalendarHoverTiles] exists to prevent).
         // So nothing is emitted after this block.
+        //
+        // **Being on top is also why the tag OWES the bubble whatever it hides.** It is a pointer-input node
+        // (it has to be — it is clicked), so it wins the hit test against every tile under it and those tiles
+        // stop reporting: hovering a tag used to name nothing at all. It therefore carries its own hover
+        // tiles, over its own drawn rectangle, stacking the panel / band / layer sections beneath its own —
+        // the same answer, through the same funnel, as a [ScreenBreakBand]'s `underOverlays`, and the
+        // §14 reminder outranks all of them ([CalendarBubbleSection.Kind.Reminder]).
+        // A screen break is under the tag here (only the tags go above one), so it joins that list.
+        val underReminderOverlays =
+            if (reminderTags.isEmpty()) emptyList()
+            else screenBreakMarkers.map {
+                BubbleOverlay(it.startHour, it.endHour, panelBubbleSection(it, tz))
+            } + underPanelOverlays
         fun checkedAtHour(tag: PlacedRecord): Float? =
             tag.checkedAtMillis?.let {
                 Instant.fromEpochMilliseconds(it).toLocalDateTime(tz).time.hourOfDay()
@@ -4841,7 +4861,15 @@ private fun DayColumn(
                 // The sweep must run over the WHOLE day — each tag's slot depends on the one above it —
                 // so it is the emission that is culled, never the list.
                 if (!onScreenDp(y, y + REMINDER_TAG_HEIGHT)) return@forEach
-                ReminderTag(tag, Modifier.offset(y = y)) { onToggleReminder(tag) }
+                ReminderTag(
+                    tag = tag,
+                    topHour = y / hourHeight,
+                    hourHeight = hourHeight,
+                    underOverlays = underReminderOverlays,
+                    tz = tz,
+                    hoverScope = hoverScope,
+                    modifier = Modifier.offset(y = y),
+                ) { onToggleReminder(tag) }
             }
         reminderTags.filter(::onNowLine).forEachIndexed { i, tag ->
             val stackOffset = REMINDER_TAG_HEIGHT * i
@@ -4852,8 +4880,16 @@ private fun DayColumn(
             val y = hourHeight * (nowHour ?: 0f) + stackOffset
             if (!onScreenDp(y, y + REMINDER_TAG_HEIGHT)) return@forEachIndexed
             ReminderTag(
-                tag,
-                Modifier.graphicsLayer {
+                tag = tag,
+                // The QUANTIZED anchor, deliberately: the tile stack is a composition-time answer to "what
+                // is under the tag", so it reads the instant everything else derived from is read at. Only
+                // the placement below is exact — the same split as the cull above.
+                topHour = y / hourHeight,
+                hourHeight = hourHeight,
+                underOverlays = underReminderOverlays,
+                tz = tz,
+                hoverScope = hoverScope,
+                modifier = Modifier.graphicsLayer {
                     translationY = nowLineOffsetPx(hourHeight, nowLineHour.value) + stackOffset.toPx()
                 },
             ) { onToggleReminder(tag) }
@@ -5125,7 +5161,12 @@ private fun ScreenBreakSegment(
  * overwriting another's.
  *
  * [Kind.rank] is the user's ordering, read top to bottom:
- * `task = break > inactivity = sleep > no computer unlocked = no phone unlocked`.
+ * `reminder > task = break > inactivity = sleep > no computer unlocked = no phone unlocked`.
+ *
+ * A §14 REMINDER TAG leads it. The tag is the top-most thing the column draws and the one marker the user
+ * must be able to hit, so it is also the thing the cursor is on wherever it is drawn — and it hides whatever
+ * it covers. It therefore reports its own section FIRST and stacks the panel, the band and the layers under
+ * it below, exactly as a screen-break band does (see [ScreenBreakBand]'s `underOverlays`).
  */
 data class CalendarBubbleSection(
     val kind: Kind,
@@ -5138,19 +5179,21 @@ data class CalendarBubbleSection(
 ) {
     /** What a section is about. Equal [rank]s are deliberate ties (see [orderedBubbleSections]). */
     enum class Kind(val rank: Int) {
-        Task(0),
-        Break(0),
-        Inactivity(1),
-        Sleep(1),
-        NoScreen(1),
-        NoComputerUnlocked(2),
-        NoPhoneUnlocked(2),
+        Reminder(0),
+        Task(1),
+        Break(1),
+        Inactivity(2),
+        Sleep(2),
+        NoScreen(2),
+        NoComputerUnlocked(3),
+        NoPhoneUnlocked(3),
     }
 }
 
 /**
  * PRD §8: [sections] in the order the bubble draws them, top to bottom — by [CalendarBubbleSection.Kind.rank],
- * ties in collection order (the sort is stable), duplicates dropped.
+ * ties in collection order (the sort is stable), duplicates dropped. A §14 reminder outranks everything: it
+ * is the top-most thing drawn, so it is the first thing named.
  *
  * The one exclusion, the user's rule: **when there is a break there can't be a task**. A §15 screen break
  * SUSPENDS the chunk it lands in rather than cutting it, so the task's panel really does span the break —
@@ -5437,34 +5480,91 @@ private fun CalendarTitleBubble(sections: List<CalendarBubbleSection>, pos: Offs
     }
 }
 
+/**
+ * PRD §14: one reminder tag on the calendar — a small checkable chip, not a draggable block.
+ *
+ * PRD §8: it also REPORTS the hover bubble, its own section first and everything it covers stacked under it
+ * ([underOverlays], [reminderBubbleSection]). It has to: a tag is the top-most thing the column draws AND a
+ * pointer-input node (it is clicked), so it wins the hit test against the tiles beneath and they stop
+ * receiving Enter/Move — hovering one named nothing at all.
+ *
+ * The click lives on the OUTER Box, an ANCESTOR of the hover tiles, which is the whole of why adding them
+ * cannot cost the tag its click: an ancestor stays on the hit path of whatever descendant is hit. A sibling
+ * layer of tiles would be the "lid over the tile" mistake ([CalendarHoverTiles]) with the roles swapped —
+ * the tiles would eat the one click on the calendar that has to land.
+ *
+ * [topHour] is where the tag is DRAWN (an overdue tag rides the now-line, a checked one freezes where it was
+ * checked), not when the reminder is due — that is what the tag covers, and so what it owes the bubble.
+ */
 @Composable
-private fun ReminderTag(tag: PlacedRecord, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Row(
+private fun ReminderTag(
+    tag: PlacedRecord,
+    topHour: Float,
+    hourHeight: Dp,
+    underOverlays: List<BubbleOverlay>,
+    tz: TimeZone,
+    hoverScope: CalendarTitleHoverScope,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Box(
         modifier = modifier
             .fillMaxWidth()
             .height(REMINDER_TAG_HEIGHT)
             .padding(horizontal = 2.dp)
             .clip(RoundedCornerShape(4.dp))
             .background(if (tag.checked) CalColors.muted.copy(alpha = 0.3f) else CalColors.accent)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+            .clickable(onClick = onClick),
     ) {
-        Text(
-            text = if (tag.checked) "☑" else "☐",
-            style = MaterialTheme.typography.labelSmall,
-            color = Color.White,
-        )
-        Text(
-            text = tag.title,
-            style = MaterialTheme.typography.labelSmall,
-            color = Color.White,
-            maxLines = 1,
-            modifier = Modifier.weight(1f),
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = if (tag.checked) "☑" else "☐",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+            )
+            Text(
+                text = tag.title,
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        // The tag's own rectangle, tiled by whatever else covers each sub-range of it — one reporter per
+        // tile, never a nest ([bubbleHoverZones]). The tag is a fixed height whatever the zoom, so its span
+        // in hours is that height divided by the hour: at the zoom ceiling it is a sliver of a minute, at
+        // zoom 1 the better part of an hour, and either way what the bubble names under it is what is
+        // actually hidden behind it.
+        val span = if (hourHeight > 0.dp) REMINDER_TAG_HEIGHT / hourHeight else 0f
+        CalendarHoverTiles(
+            top = topHour,
+            bottom = topHour + span,
+            overlays = listOf(
+                BubbleOverlay(topHour, topHour + span, reminderBubbleSection(tag, tz)),
+            ) + underOverlays,
+            hourHeight = hourHeight,
+            hoverScope = hoverScope,
         )
     }
 }
+
+/**
+ * PRD §8/§14: the bubble section a reminder tag contributes — its title and the time the reminder is FOR.
+ *
+ * That is the reminder's own instant, never where the tag happens to sit: an unchecked overdue one is parked
+ * on the now-line and a checked one is frozen at the moment it was ticked off, and neither of those is what
+ * the user is asking when they hover it. A reminder has no duration, so the line is one time, not a range.
+ */
+internal fun reminderBubbleSection(tag: PlacedRecord, tz: TimeZone): CalendarBubbleSection =
+    CalendarBubbleSection(
+        CalendarBubbleSection.Kind.Reminder,
+        tag.title,
+        formatHm(tag.fullStartMillis, tz),
+    )
 
 /**
  * PRD §18 Alarms and Timers: one ring on the calendar — an alarm's, or (when [PlacedRecord.timer] is set) a

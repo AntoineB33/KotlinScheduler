@@ -2,9 +2,13 @@ package org.example.project
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Instant
+import kotlinx.datetime.TimeZone
 import org.example.project.ui.CalendarBubbleSection
 import org.example.project.ui.CalendarBubbleSection.Kind
+import org.example.project.ui.PlacedRecord
 import org.example.project.ui.orderedBubbleSections
+import org.example.project.ui.reminderBubbleSection
 
 /**
  * PRD §8 hover bubble. The calendar deliberately draws its elements across each other — a task inside a
@@ -13,8 +17,12 @@ import org.example.project.ui.orderedBubbleSections
  *
  * These tests pin the user's two rules for that stack:
  *
- * 1. the order, top to bottom: `task = break > inactivity = sleep > no computer unlocked = no phone unlocked`;
+ * 1. the order, top to bottom:
+ *    `reminder > task = break > inactivity = sleep > no computer unlocked = no phone unlocked`;
  * 2. **when there is a break, there can't be a task**.
+ *
+ * A §14 REMINDER leads the order because the tag is the top-most thing the column draws — it is what the
+ * cursor is actually on, and it hides the panel and the layers under it, which stack below it in the bubble.
  */
 class CalendarBubbleSectionTest {
 
@@ -34,6 +42,32 @@ class CalendarBubbleSectionTest {
             listOf(Kind.Task, Kind.Sleep, Kind.NoComputerUnlocked, Kind.NoPhoneUnlocked),
             kindsOf(Kind.NoComputerUnlocked, Kind.NoPhoneUnlocked, Kind.Sleep, Kind.Task),
         )
+    }
+
+    @Test
+    fun a_reminder_leads_the_stack_and_everything_it_covers_follows() {
+        // Hovering a reminder tag: the reminder first, then the panel it is drawn over and the layers
+        // hatched across that panel. The tag hides all of them, so it owes the bubble all of them.
+        assertEquals(
+            listOf(Kind.Reminder, Kind.Task, Kind.Sleep, Kind.NoComputerUnlocked),
+            kindsOf(Kind.NoComputerUnlocked, Kind.Task, Kind.Sleep, Kind.Reminder),
+        )
+    }
+
+    @Test
+    fun a_reminder_outranks_a_break_too() {
+        // The other element drawn over the panels. Only the reminder tags go above a screen-break band, so
+        // when both are true at the cursor the reminder is named first — and the break still drops the task.
+        assertEquals(
+            listOf(Kind.Reminder, Kind.Break, Kind.Inactivity),
+            kindsOf(Kind.Task, Kind.Break, Kind.Reminder, Kind.Inactivity),
+        )
+    }
+
+    @Test
+    fun a_reminder_alone_is_a_stack_of_one() {
+        // A tag over empty grid — the common case, and the one the whole feature is for.
+        assertEquals(listOf(Kind.Reminder), kindsOf(Kind.Reminder))
     }
 
     @Test
@@ -75,7 +109,7 @@ class CalendarBubbleSectionTest {
 
     @Test
     fun a_break_drops_only_the_task_section() {
-        // Everything below the top rank still stacks under the break — including the OTHER rank-0 kinds a
+        // Everything below the break still stacks under it — including the OTHER kinds of its own rank a
         // break can legitimately coincide with (a user-authored "No screen" period is not a task).
         assertEquals(
             listOf(Kind.Break, Kind.NoScreen, Kind.Inactivity, Kind.NoPhoneUnlocked),
@@ -86,6 +120,32 @@ class CalendarBubbleSectionTest {
     @Test
     fun a_task_alone_is_untouched() {
         assertEquals(listOf(Kind.Task), kindsOf(Kind.Task))
+    }
+
+    // ----- a reminder's own section --------------------------------------------------------------------
+
+    @Test
+    fun a_reminder_section_names_the_time_the_reminder_is_for() {
+        // Not where the tag is DRAWN: an overdue one is parked on the now-line and a checked one is frozen
+        // at the moment it was ticked off, and the user hovering it is asking when the reminder is for.
+        // A reminder has no duration, so the line is one time and not a range.
+        val tz = TimeZone.UTC
+        val due = Instant.parse("2026-09-06T09:30:00Z").toEpochMilliseconds()
+        val tag = PlacedRecord(
+            title = "Take the pills",
+            startHour = 14f,
+            endHour = 14f,
+            scheduled = false,
+            reminder = true,
+            checked = true,
+            checkedAtMillis = Instant.parse("2026-09-06T14:00:00Z").toEpochMilliseconds(),
+            fullStartMillis = due,
+            fullEndMillis = due,
+        )
+        val section = reminderBubbleSection(tag, tz)
+        assertEquals(Kind.Reminder, section.kind)
+        assertEquals("Take the pills", section.title)
+        assertEquals("09:30", section.times)
     }
 
     @Test

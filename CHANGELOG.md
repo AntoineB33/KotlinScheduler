@@ -11,6 +11,34 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### The hover bubble names a reminder — 2026-09-06
+
+`ui/CalendarUi.kt` (`CalendarBubbleSection.Kind.Reminder` + the re-numbered ranks, `reminderBubbleSection`,
+`underPanelOverlays` hoisted out of the screen-break block, `underReminderOverlays`, `ReminderTag` rebuilt
+around its own `CalendarHoverTiles`), `CalendarBubbleSectionTest`, `CalendarHoverTilingTest`,
+`docs/PRD_TaskScheduler.md` §8/§14, `docs/invariants/calendar.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy, no DB migration, no
+state change of any kind (this is drawing).**
+
+Hovering a §14 reminder tag now pops the info surface, naming the reminder's title and the time it is FOR —
+and, under it, the panel / band / layer the tag is drawn over, the reminder first. Before this the tag was
+the one element on the calendar that reported no hover at all: it is emitted last (it is the one marker that
+has to stay clickable) and it is a pointer-input node, so it won the hit test against the tiles beneath it
+and they stopped receiving Enter/Move — the bubble simply went blank over a tag.
+
+So the tag owes the bubble what it hides, the same debt a `ScreenBreakBand` already pays through its
+`underOverlays`, and it now reads the same list (`underPanelOverlays`: every task/period panel by its span,
+then the grey periods and the layers) plus the screen breaks, which are under a tag too. The section order
+gains a rank above everything: `reminder > task = break > inactivity = sleep > no computer unlocked = no
+phone unlocked`.
+
+Two things it must not become. The click lives on the tag's OUTER Box, an **ancestor** of the hover tiles —
+a sibling tile layer would be the "lid over the tile" mistake with the roles swapped, eating the one click on
+the calendar that has to land. And the reminder's own line is its **due** time, never where the tag sits: an
+overdue tag rides the now-line and a checked one freezes at the instant it was ticked off, and neither
+answers "when is this reminder for". What it *hides* is read at where it is drawn, off the quantized display
+instant like every other derivation.
+
 ### The priority-weight table's default row — 2026-09-06
 
 `model/TaskModels.kt` (`CellList.defaultWeights`), `domain/SchedulerDomain.kt`
