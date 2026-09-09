@@ -176,7 +176,13 @@ the desktop app signed in as account 1). Default dev run enables debug tooling (
       (*Task tree* / *Categories*). Pick **Categories** in the Window drop-down — only the category unit is
       left; pick *All windows* — both are back. Units recorded before this build carry no window tag: they
       must stay visible under *All windows* and vanish under any named one.
-- [ ] **The other-sources field.** Tick the check box: the Window field greys out, the units disappear and
+- [ ] **The undo-chord field (PRD §5/§6).** It reads *Any*. Pick **Ctrl+Z**: the *Selection* and *WindowNav*
+      rows go, the *Main* / *Edit* / *Calendar* ones stay. Pick **Alt+arrows**: only *Selection* rows are left.
+      Pick **Ctrl+Z or Alt+arrows**: both are back but the *WindowNav* rows (recorded when you focus another
+      window, and walked by no chord) are **not** — they return only under *Any*. Confirm the field means what
+      it says: with **Ctrl+Z** picked, press `Ctrl+Z` and watch the pointer move down one of the listed rows;
+      with **Alt+arrows** picked, `Alt+←` must do the same there and `Ctrl+Z` must not.
+- [ ] **The other-sources field.** Tick the check box: the Window and Undo-chord fields grey out, the units disappear and
       the app's own rows take their place — **Scheduler**, **Notification** and **Supabase** rows in one
       newest-first list. Pick each source in turn and check the list narrows to it. There must be at least one
       **Scheduler** row (edit the tree to force a re-plan if not).

@@ -156,6 +156,8 @@ import org.example.project.scheduler.platform.GlobalShortcutBindings
 import org.example.project.scheduler.platform.ShortcutBinding
 import org.example.project.scheduler.state.CalendarEdge
 import org.example.project.scheduler.state.HistoryCategory
+import org.example.project.scheduler.state.chord
+import org.example.project.scheduler.state.HistoryChord
 import org.example.project.scheduler.state.HistorySource
 import org.example.project.scheduler.state.HistoryUnit
 import org.example.project.scheduler.state.HistoryWindow
@@ -1649,15 +1651,22 @@ fun ChoresManagerWindow(
  *    undoes them and they carry no delta — which is exactly why they are the other field and not more
  *    windows.
  *
- * [filterBySource] is the check box: it says which of the two fields is the one filtering. That is what
+ * [filterBySource] is the check box: it says which of the two ORIGINS is the one filtering. That is what
  * keeps the default view — every window's units — from being drowned by the Supabase log, which is one row
  * per HTTP call and would otherwise bury the units it sits beside.
  *
- * [query] is free text and applies whichever field is active, matched against everything the row *shows*.
+ * [chords] is the third field, and it narrows the same half [window] does: **which undo/redo chord walks the
+ * unit**. `null` is "any" and admits every unit, including the window-navigation ones no chord walks (PRD §7
+ * — recorded for this window and nothing else). The three named entries are `setOf(Undo)`, `setOf(Selection)`
+ * and both together; a unit whose category answers no chord ([HistoryCategory.chord] `null`) is in none of
+ * them, so "both" means "everything some chord walks" rather than "everything".
+ *
+ * [query] is free text and applies whichever fields are active, matched against everything the row *shows*.
  */
 data class HistoryFilterConfig(
     val filterBySource: Boolean = false,
     val window: HistoryWindow? = null,
+    val chords: Set<HistoryChord>? = null,
     val source: HistorySource? = null,
     val query: String = "",
 )
@@ -1758,6 +1767,9 @@ fun filteredHistoryUnits(
                     }
                 }
                 .filter { filter.window == null || it.unit.window == filter.window }
+                // The chord field narrows the same half. A WindowNav unit answers no chord, so it is in
+                // "any" and in none of the three named entries — never silently in "both".
+                .filter { filter.chords == null || it.category.chord in filter.chords }
                 .filter { entry ->
                     matches(entry.unit.delta.label, entry.unit.delta.details.joinToString("\n"))
                 }
@@ -1890,16 +1902,18 @@ fun HistoryManagerWindow(
                             modifier = Modifier.weight(1f),
                         )
                         Button(
-                            // Back to the default view: all windows, no query.
+                            // Back to the default view: all windows, any chord, no query.
                             onClick = { filter = HistoryFilterConfig() },
                         ) {
                             Text("Reset")
                         }
                     }
 
-                    // PRD §6 configuration menu: the two origin fields, and the check box that says
-                    // which of them is filtering. The inactive field is greyed and inert rather than
-                    // hidden, so what the other half of the filter would ask stays readable.
+                    // PRD §6 configuration menu: the two ORIGIN fields with the check box that says which
+                    // of them is filtering, and the undo-chord field, which narrows the History-Unit half
+                    // and so is enabled and greyed with the window field rather than on its own. An
+                    // inactive field is greyed and inert rather than hidden, so what the other half of the
+                    // filter would ask stays readable.
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1914,6 +1928,13 @@ fun HistoryManagerWindow(
                                     HistoryWindow.entries.map { it.label to it },
                             enabled = !filter.filterBySource,
                             onSelect = { filter = filter.copy(window = it) },
+                        )
+                        HistoryDropdownField(
+                            label = "Undo chord",
+                            selected = chordFilterLabel(filter.chords),
+                            options = CHORD_FILTER_OPTIONS,
+                            enabled = !filter.filterBySource,
+                            onSelect = { filter = filter.copy(chords = it) },
                         )
                         HistoryDropdownField(
                             label = "Other source",
@@ -2053,6 +2074,26 @@ const val ALL_WINDOWS_LABEL = "All windows"
 
 /** PRD §6: the same for the other-sources field. */
 const val ALL_SOURCES_LABEL = "All sources"
+
+/** PRD §6: the chord field's "no restriction" entry — it admits the units no chord walks as well. */
+const val ANY_CHORD_LABEL = "Any"
+
+/**
+ * PRD §5/§6: the chord field's entries, in the order the drop-down lists them — no restriction, then each
+ * chord on its own, then both. "Both" is the union and not "everything": a window-navigation unit is walked
+ * by neither chord, so only [ANY_CHORD_LABEL] reaches it.
+ */
+private val CHORD_FILTER_OPTIONS: List<Pair<String, Set<HistoryChord>?>> =
+    listOf(
+        ANY_CHORD_LABEL to null,
+        HistoryChord.Undo.label to setOf(HistoryChord.Undo),
+        HistoryChord.Selection.label to setOf(HistoryChord.Selection),
+        "${HistoryChord.Undo.label} or ${HistoryChord.Selection.label}" to HistoryChord.entries.toSet(),
+    )
+
+/** What the chord field shows for [chords] — read out of [CHORD_FILTER_OPTIONS] so the two cannot drift. */
+private fun chordFilterLabel(chords: Set<HistoryChord>?): String =
+    CHORD_FILTER_OPTIONS.firstOrNull { it.second == chords }?.first ?: ANY_CHORD_LABEL
 
 /**
  * PRD §6: one field of the History window's configuration menu — a label and a drop-down of [options],

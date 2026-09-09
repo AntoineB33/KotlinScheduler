@@ -11,6 +11,25 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### The History window filters by undo chord — 2026-09-09
+
+`state/SchedulerState.kt` (new `HistoryChord` enum + `HistoryCategory.chord`), `ui/CalendarUi.kt`
+(`HistoryFilterConfig.chords`, a third drop-down), new `HistoryChordFilterTest`, PRD §6,
+`docs/MANUAL_TESTING.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy.**
+
+A third field beside the two origin fields: **any** (default), **`Ctrl+Z`**, **`Alt+←`/`Alt+→`**, or **both**.
+It narrows the History-Unit half, so it greys out with the window field when the check box hands the filter to
+the other sources — nothing the app produces itself is walked by a chord.
+
+The mapping is stated once, on `HistoryCategory.chord`: Edit / Calendar / Main answer `Ctrl+Z`, Selection
+answers `Alt+arrows`, **WindowNav answers neither** — it is recorded for this window and no undo/redo command
+reaches it (PRD §7). That last one is why **"both" is the union of the two chords and not "everything"**, and
+why the default entry is *any* rather than *both*: a window-navigation unit would otherwise vanish from the
+default view. `SchedulerReducer.contentCategory` picks WHICH `Ctrl+Z` category a keystroke lands on and has to
+stay inside that mapping; `HistoryChordFilterTest` pins both halves — what the property says, and what the two
+chords actually move.
+
 ### The History window filters by WINDOW, and rows open on a double click — 2026-09-09
 
 `state/SchedulerState.kt` (new `HistoryWindow` / `HistorySource` enums, `HistoryUnit.window`, new

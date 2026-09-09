@@ -54,6 +54,40 @@ data class SchedulerHistory(
 enum class HistoryCategory { Edit, Selection, Calendar, Main, WindowNav }
 
 /**
+ * PRD §5/§6: the two undo/redo chords, as the History window's third filter dimension — "show me only what
+ * `Ctrl+Z` walks", "only what `Alt+←`/`Alt+→` walks", or both.
+ *
+ * There are exactly two because there are exactly two pointers a keystroke moves: the **content** pointer
+ * (`Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y`, which picks its category by context — see [HistoryCategory]) and the
+ * **selection** pointer (`Alt+←` / `Alt+→`). A category walked by neither answers to [HistoryCategory.chord]
+ * with `null` and is not "both".
+ */
+enum class HistoryChord(val label: String) {
+    /** The content stacks: `Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y`. */
+    Undo("Ctrl+Z"),
+
+    /** The selection stack, walked separately: `Alt+←` / `Alt+→`. */
+    Selection("Alt+arrows"),
+}
+
+/**
+ * PRD §5/§6: **which chord walks this category's units**, or `null` for a category no undo/redo command
+ * reaches — today only [HistoryCategory.WindowNav], which is recorded for the History window and nothing
+ * else (PRD §7).
+ *
+ * This is the one statement of that mapping, and `SchedulerReducer`'s `contentCategory` — which picks WHICH
+ * of the [HistoryChord.Undo] categories a given `Ctrl+Z` lands on — must stay inside it: every category that
+ * function can return has to answer [HistoryChord.Undo] here, or the History window's chord filter would
+ * promise something the keyboard does not do. `HistoryChordFilterTest` pins it.
+ */
+val HistoryCategory.chord: HistoryChord?
+    get() = when (this) {
+        HistoryCategory.Edit, HistoryCategory.Calendar, HistoryCategory.Main -> HistoryChord.Undo
+        HistoryCategory.Selection -> HistoryChord.Selection
+        HistoryCategory.WindowNav -> null
+    }
+
+/**
  * PRD §7: the focus targets the user navigates between — the task tree plus the floating windows. The
  * focused window is the top layer except when the task tree is focused. Persisted with the rest of the
  * app state.
