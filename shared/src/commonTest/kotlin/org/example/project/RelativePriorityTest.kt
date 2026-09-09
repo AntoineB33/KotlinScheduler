@@ -95,7 +95,7 @@ class RelativePriorityTest {
     fun relative_priority_against_the_root_is_the_absolute_percentage() {
         val f = fixture()
         val absolute = SchedulerDomain.absoluteTaskPriorities(f.state)[f.write]!!
-        assertClose(absolute, RelativePriorityDomain.relativePriority(f.state, f.write, WellKnownIds.MAIN_TASK))
+        assertClose(absolute, RelativePriorityDomain.relativePriority(f.state, f.write, WellKnownIds.ROOT_TASK))
         // Not a degenerate zero: the task really does hold a share of the tree.
         assertTrue(absolute > 0.0)
     }
@@ -113,10 +113,10 @@ class RelativePriorityTest {
                 listOf(f.notesCell, f.writeUnderNotes),
                 listOf(f.bookCell, f.chapterCell, f.writeUnderChapter),
             ),
-            RelativePriorityDomain.occurrenceChains(f.state, f.write, WellKnownIds.MAIN_TASK),
+            RelativePriorityDomain.occurrenceChains(f.state, f.write, WellKnownIds.ROOT_TASK),
         )
         // 1/2 · 1/2 · 1/2 (under Book) + 1/2 · 1/2 (under Notes).
-        assertClose(0.375, RelativePriorityDomain.relativePriority(f.state, f.write, WellKnownIds.MAIN_TASK))
+        assertClose(0.375, RelativePriorityDomain.relativePriority(f.state, f.write, WellKnownIds.ROOT_TASK))
     }
 
     @Test
@@ -124,7 +124,7 @@ class RelativePriorityTest {
         val f = fixture()
         val chapter = f.state.cells[f.chapterCell]!!.taskId!!
         assertEquals(
-            listOf(WellKnownIds.MAIN_TASK, f.book, chapter),
+            listOf(WellKnownIds.ROOT_TASK, f.book, chapter),
             RelativePriorityDomain.relativeToOptions(f.state, f.writeUnderChapter),
         )
     }
@@ -163,11 +163,11 @@ class RelativePriorityTest {
         val after = RelativePriorityDomain.setRelativePriority(
             f.state,
             f.write,
-            WellKnownIds.MAIN_TASK,
+            WellKnownIds.ROOT_TASK,
             target = 0.5,
             pinned = emptySet(),
         )
-        assertClose(0.5, RelativePriorityDomain.relativePriority(after, f.write, WellKnownIds.MAIN_TASK), 1e-6)
+        assertClose(0.5, RelativePriorityDomain.relativePriority(after, f.write, WellKnownIds.ROOT_TASK), 1e-6)
     }
 
     @Test
@@ -202,25 +202,25 @@ class RelativePriorityTest {
         val after = RelativePriorityDomain.setRelativePriority(
             f.state,
             f.write,
-            WellKnownIds.MAIN_TASK,
+            WellKnownIds.ROOT_TASK,
             target = 0.3,
             pinned = setOf(f.bookCell),
         )
         assertClose(0.5, RelativePriorityDomain.cellShare(after, f.bookCell), 1e-6)
-        assertClose(0.3, RelativePriorityDomain.relativePriority(after, f.write, WellKnownIds.MAIN_TASK), 1e-6)
+        assertClose(0.3, RelativePriorityDomain.relativePriority(after, f.write, WellKnownIds.ROOT_TASK), 1e-6)
     }
 
     @Test
     fun pinning_every_cell_leaves_the_tree_untouched() {
         val f = fixture()
         val everyCell = RelativePriorityDomain
-            .occurrenceChains(f.state, f.write, WellKnownIds.MAIN_TASK)
+            .occurrenceChains(f.state, f.write, WellKnownIds.ROOT_TASK)
             .flatten()
             .toSet()
         val after = RelativePriorityDomain.setRelativePriority(
             f.state,
             f.write,
-            WellKnownIds.MAIN_TASK,
+            WellKnownIds.ROOT_TASK,
             target = 0.4,
             pinned = everyCell,
         )
@@ -249,27 +249,27 @@ class RelativePriorityTest {
     @Test
     fun the_intent_reads_the_pins_of_its_own_task_and_ancestor_pair() {
         val f = fixture()
-        val key = RelativePriorityPinKey(f.write, WellKnownIds.MAIN_TASK)
+        val key = RelativePriorityPinKey(f.write, WellKnownIds.ROOT_TASK)
         var s = SchedulerReducer.reduce(
             f.state,
-            SchedulerIntent.ToggleRelativePriorityPin(f.write, WellKnownIds.MAIN_TASK, f.bookCell),
+            SchedulerIntent.ToggleRelativePriorityPin(f.write, WellKnownIds.ROOT_TASK, f.bookCell),
         )
         assertEquals(setOf(f.bookCell), s.relativePriorityPins[key])
         // A pin filed under another ancestor is a different set entirely (the user's rule).
         assertEquals(null, s.relativePriorityPins[RelativePriorityPinKey(f.write, f.book)])
 
-        s = SchedulerReducer.reduce(s, SchedulerIntent.SetRelativePriority(f.write, WellKnownIds.MAIN_TASK, 0.3))
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetRelativePriority(f.write, WellKnownIds.ROOT_TASK, 0.3))
         assertClose(
             RelativePriorityDomain.cellShare(f.state, f.bookCell),
             RelativePriorityDomain.cellShare(s, f.bookCell),
             1e-6,
         )
-        assertClose(0.3, RelativePriorityDomain.relativePriority(s, f.write, WellKnownIds.MAIN_TASK), 1e-6)
+        assertClose(0.3, RelativePriorityDomain.relativePriority(s, f.write, WellKnownIds.ROOT_TASK), 1e-6)
 
         // Toggling the same cell again unpins it, and the empty set is dropped rather than stored.
         s = SchedulerReducer.reduce(
             s,
-            SchedulerIntent.ToggleRelativePriorityPin(f.write, WellKnownIds.MAIN_TASK, f.bookCell),
+            SchedulerIntent.ToggleRelativePriorityPin(f.write, WellKnownIds.ROOT_TASK, f.bookCell),
         )
         assertEquals(null, s.relativePriorityPins[key])
     }
@@ -279,15 +279,15 @@ class RelativePriorityTest {
         val f = fixture()
         var s = SchedulerReducer.reduce(
             f.state,
-            SchedulerIntent.ToggleRelativePriorityPin(f.write, WellKnownIds.MAIN_TASK, f.bookCell),
+            SchedulerIntent.ToggleRelativePriorityPin(f.write, WellKnownIds.ROOT_TASK, f.bookCell),
         )
         s = SchedulerReducer.reduce(
             s,
             SchedulerIntent.ToggleRelativePriorityPin(f.write, f.book, f.chapterCell),
         )
-        s = SchedulerReducer.reduce(s, SchedulerIntent.ClearRelativePriorityPins(f.write, WellKnownIds.MAIN_TASK))
+        s = SchedulerReducer.reduce(s, SchedulerIntent.ClearRelativePriorityPins(f.write, WellKnownIds.ROOT_TASK))
 
-        assertEquals(null, s.relativePriorityPins[RelativePriorityPinKey(f.write, WellKnownIds.MAIN_TASK)])
+        assertEquals(null, s.relativePriorityPins[RelativePriorityPinKey(f.write, WellKnownIds.ROOT_TASK)])
         assertEquals(setOf(f.chapterCell), s.relativePriorityPins[RelativePriorityPinKey(f.write, f.book)])
     }
 
@@ -296,12 +296,12 @@ class RelativePriorityTest {
         val f = fixture()
         val pinned = SchedulerReducer.reduce(
             f.state,
-            SchedulerIntent.ToggleRelativePriorityPin(f.write, WellKnownIds.MAIN_TASK, f.bookCell),
+            SchedulerIntent.ToggleRelativePriorityPin(f.write, WellKnownIds.ROOT_TASK, f.bookCell),
         )
         val decoded = SchedulerStateCodec.decode(SchedulerStateCodec.encode(pinned))!!
         assertEquals(
             setOf(f.bookCell),
-            decoded.relativePriorityPins[RelativePriorityPinKey(f.write, WellKnownIds.MAIN_TASK)],
+            decoded.relativePriorityPins[RelativePriorityPinKey(f.write, WellKnownIds.ROOT_TASK)],
         )
         // Authoritative user data: a pin is a change the other devices must see.
         assertNotEquals(

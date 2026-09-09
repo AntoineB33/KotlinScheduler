@@ -46,7 +46,7 @@ class SnapshotMergeTest {
         val empty = SchedulerState.empty()
         val cells =
             rows.associate { (name, title) ->
-                cellId(name) to Cell(cellId(name), WellKnownIds.MAIN_LIST, taskId(title))
+                cellId(name) to Cell(cellId(name), WellKnownIds.ROOT_LIST, taskId(title))
             }
         val tasks =
             rows.associate { (name, title) ->
@@ -55,7 +55,7 @@ class SnapshotMergeTest {
         return empty.copy(
             lists =
                 empty.lists +
-                    (WellKnownIds.MAIN_LIST to empty.lists.getValue(WellKnownIds.MAIN_LIST)
+                    (WellKnownIds.ROOT_LIST to empty.lists.getValue(WellKnownIds.ROOT_LIST)
                         .copy(cellIds = rows.map { cellId(it.first) })),
             cells = cells,
             tasks = empty.tasks + tasks,
@@ -63,23 +63,23 @@ class SnapshotMergeTest {
     }
 
     private fun SchedulerState.titles(): List<String> =
-        lists.getValue(WellKnownIds.MAIN_LIST).cellIds.mapNotNull { cells[it]?.taskId?.let { id -> tasks[id]?.title } }
+        lists.getValue(WellKnownIds.ROOT_LIST).cellIds.mapNotNull { cells[it]?.taskId?.let { id -> tasks[id]?.title } }
 
     private fun SchedulerState.task(title: String): Task? = tasks[taskId(title)]
 
     private fun SchedulerState.withRow(name: String, title: String): SchedulerState {
-        val list = lists.getValue(WellKnownIds.MAIN_LIST)
+        val list = lists.getValue(WellKnownIds.ROOT_LIST)
         return copy(
-            lists = lists + (WellKnownIds.MAIN_LIST to list.copy(cellIds = list.cellIds + cellId(name))),
-            cells = cells + (cellId(name) to Cell(cellId(name), WellKnownIds.MAIN_LIST, taskId(title))),
+            lists = lists + (WellKnownIds.ROOT_LIST to list.copy(cellIds = list.cellIds + cellId(name))),
+            cells = cells + (cellId(name) to Cell(cellId(name), WellKnownIds.ROOT_LIST, taskId(title))),
             tasks = tasks + (taskId(title) to Task(taskId(title), title, occurrences = listOf(cellId(name)))),
         )
     }
 
     private fun SchedulerState.withoutRow(name: String, title: String): SchedulerState {
-        val list = lists.getValue(WellKnownIds.MAIN_LIST)
+        val list = lists.getValue(WellKnownIds.ROOT_LIST)
         return copy(
-            lists = lists + (WellKnownIds.MAIN_LIST to list.copy(cellIds = list.cellIds - cellId(name))),
+            lists = lists + (WellKnownIds.ROOT_LIST to list.copy(cellIds = list.cellIds - cellId(name))),
             cells = cells - cellId(name),
             tasks = tasks - taskId(title),
         )
@@ -244,13 +244,13 @@ class SnapshotMergeTest {
         // the user slotted between two others must not jump to the end of the list just because the peer's
         // snapshot is the one that reached the server first.
         val base = tree("0" to "A", "1" to "C")
-        val list = base.lists.getValue(WellKnownIds.MAIN_LIST)
+        val list = base.lists.getValue(WellKnownIds.ROOT_LIST)
         val local =
             base.withRow("2", "B").let {
                 it.copy(
                     lists =
                         it.lists +
-                            (WellKnownIds.MAIN_LIST to list.copy(cellIds = listOf(cellId("0"), cellId("2"), cellId("1")))),
+                            (WellKnownIds.ROOT_LIST to list.copy(cellIds = listOf(cellId("0"), cellId("2"), cellId("1")))),
                 )
             }
         val remote = base.withRow("3", "D")

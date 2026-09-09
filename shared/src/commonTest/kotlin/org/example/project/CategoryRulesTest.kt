@@ -257,7 +257,7 @@ class CategoryRulesTest {
         assertNull(s.categoryRuleError)
         assertShare(0.75, CategoryRules.shareOf(s, deep, f.bookCell), "inside Book")
         // Book itself still holds half the tree: a rule about a sub-tree says nothing about the tree above it.
-        assertShare(0.5, RelativePriorityDomain.relativePriority(s, f.book, WellKnownIds.MAIN_TASK), "Book")
+        assertShare(0.5, RelativePriorityDomain.relativePriority(s, f.book, WellKnownIds.ROOT_TASK), "Book")
     }
 
     @Test

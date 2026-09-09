@@ -226,7 +226,7 @@ class TaskListRowsTest {
 
         // The cleanup pass every edit boundary runs must still reach it. Reachability walks from the
         // state's root — which the projection has re-pointed at the window's own list — so without
-        // MAIN_LIST being seeded too, this cell would be pruned out of the tree by the first edit here.
+        // ROOT_LIST being seeded too, this cell would be pruned out of the tree by the first edit here.
         val pruned = SchedulerDomain.pruneDetachedTree(s.projectTaskList(rows))
         assertTrue(rootWrite in pruned.cells, "a real root cell must not read as detached")
 

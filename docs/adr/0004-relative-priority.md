@@ -301,6 +301,11 @@ same softness a rule whose scope task was deleted already had, and re-pointing i
 "go to task" lands on — and `task/main` becomes the whole tree. `scopeTaskId` is still WRITTEN beside the
 cell, so a build made before the change reads a rule it understands rather than a payload it cannot decode.
 
+> **Since the root rename** (`task/root` over `task/main` collapsed into one root — `CHANGELOG.md`, and
+> `docs/invariants/task-tree.md`): the whole-tree scope is written **blank** rather than as the root's id. A
+> blank has always decoded as the whole tree, where the root's id is a moving target a pre-rename build cannot
+> resolve. Payloads still spelling it `task/main` are rewritten before they are read.
+
 ### A category is an object, not a string on a task
 
 The field that names one is a task cell in Edit Mode: an identity menu and title suggestions. That is the

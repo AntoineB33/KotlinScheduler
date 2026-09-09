@@ -143,7 +143,8 @@ Deep work
 
 An id of any shape other than the `task/user/<n>` the app mints is **rejected at parse time** — `null`, so the
 paste is a no-op. Without that, a hand-written clipboard could build a task over `task/root` or `task/main`, or
-under an id the counter will never walk past.
+under an id the counter will never walk past. (Those were the tree's two well-known tasks; they have since
+collapsed into the single `task/root` — the rule is unchanged, there is simply one id left to protect.)
 
 The blank title is still what deletes (PRD §4), which is what makes cut → paste work: a cut blanks the titles, the
 cells and their tasks are pruned, and the ids the clipboard names are free by the time the paste asks for them. A

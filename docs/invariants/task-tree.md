@@ -22,6 +22,59 @@ Global rules that always apply: `CLAUDE.md`.
 - **The one sanctioned exception to "time never re-plans"** — and only because the cursor is **quantized**
   (`TASK_TREE_BLEND_STEPS` = 100). Do not reintroduce an unquantized/per-tick form.
 
+### The tree has ONE root, and it is a real cell
+
+- There used to be two well-known tasks — a conceptual `task/root` whose single child was `task/main`, whose
+  cells lived in `list/main`. The second level existed so sibling trees could hang beside `main`; **named task
+  trees are how the account actually holds several trees**, so it answered nothing and is gone. The survivor is
+  `WellKnownIds.ROOT_TASK` (`task/root`, titled `root`), and its child list `ROOT_LIST` (`list/root`) is the
+  tree's top-level list — the one `SchedulerState.rootListId` names.
+- **`SchedulerDomain.withRoot` is the ONE definition of that shape**: `SchedulerState.empty` builds through it,
+  the codec heals every decoded payload with it, `SnapshotMerge.repair` repairs with it, and
+  `SchedulerState.applyTree` carries it across a whole-tree swap (`keepingRoot`). A second place that spells
+  the root out is a second answer waiting to drift.
+- **The root is DRAWN** (PRD §2): `ROOT_CELL` is a real cell of the tree, alone in `ROOT_CELL_LIST` one level
+  **above** `rootListId`, pointing at `ROOT_TASK`. Real, not a synthetic header, so exactly one thing draws a
+  task row, one thing decides the visible order, and the expansion set answers for it as for any other parent —
+  collapsing it collapses the tree. Every drawing starts at `displayRootListId`, never at `rootListId`.
+- **It is drawn COMPACT** (`TaskRow`'s `compact`): the expand arrow and nothing else — no title column, no
+  percentage, no minimum time, no categories, and no `fillMaxWidth`. It names nothing the user wrote, so a
+  title and a percentage would restate what the row's position says, and a full-width band would read as a
+  separator. Do not give it a column back "for alignment": the tree's columns are shared by a **sub-list**,
+  and the root row is the only member of its own.
+- **It is the one cell that is not selectable and still has a contextual menu** (PRD §13), which is most of
+  what the row is for. `TaskCellMenuActions.onEdit` is therefore **nullable** — the root has no task to edit
+  — and the cell menu is gated on `selectable || isRootRow`, never on `selectable` alone.
+- **`rootListId` did not move onto it.** That field names the list of the tree's *top-level tasks*, and it is
+  what the priority walk, the colour ring, the category scopes and the path labels all mean by "the root".
+  The root cell is reached the other way round — it is the root list's `parentCellId`, and a **null** there is
+  exactly what says "this drawing has no root row" (PRD §4's template and PRD §7's "All tasks", both re-rooted
+  at parentless lists of their own).
+- **A real cell at the top is the whole danger**: every walk that climbs to the top of the tree now finds one
+  more level whose sub-tree is *the whole tree*. Three answers must not change because of it, and each is a
+  bug that shipped for the length of one test run:
+  - `ancestorTaskIds` and `RelativePriorityDomain.ancestorCells` **stop** at it. Counting it made every task an
+    ancestor of every cell, so `assignCollisionScope` refused **every** assignment — no cell could be pointed
+    at any task again — and every category scope label grew a `root / ` prefix.
+  - `absoluteTaskPriorities` **leaves it out** of the map. It answers `1.0` so the walk terminates, but it is
+    what the percentages are a share *of*, not a row holding one: returning it puts a second `1.0` beside the
+    tasks dividing that `1.0` up, and everything summing the map counts the tree twice.
+  - It is **not a render-via** (`renderViaOf`). A render-via names *which occurrence of a mirrored parent* a row
+    is drawn under, and the root can never be mirrored; the top-level rows keep the `null` via they always had,
+    which is what lets the tree, the "All tasks" window and the template highlight one selection alike.
+- `pruneDetachedTree` seeds `ROOT_CELL_LIST` as well: the root cell hangs above `rootListId` and off every
+  detached parent, so without that seed the first edit boundary prunes the row the tree is drawn under.
+- **The id rename is a load-time migration, and it runs on the parsed JSON** (`SchedulerStateCodec`), not on
+  the typed model — because `task/main` is named from relative-priority pin keys, task-relation keys, a
+  category rule's legacy `scopeTaskId`, every stored task tree, the default sub-tree, and the **whole tree
+  snapshot inside each history unit**, which is a separate row and a separate decode call. It rewrites an id
+  only where the string is the whole value or the whole map key: cell ids embed their list's id
+  (`cell/list/main/3`) and must survive byte for byte, or every expansion, selection and rule scope stops
+  resolving.
+- **The whole-tree category scope is written blank, never as the root's id.** `legacy.isBlank()` has always
+  meant "the whole tree", so a blank survives a downgrade; `task/root` would be unresolvable to a pre-rename
+  build, which would drop the rule.
+
 ### A sub-list belongs to the task id, not to the cell
 
 - Every cell pointing at a task shows the **same** sub-tree — that is what mirroring is. So re-pointing a cell at
@@ -109,7 +162,7 @@ the menu's "deep copy") and the bare **task-id reference** `taskIdReferenceText`
   the task id, so its own sub-tree shows and the clipboard's children/fields are never written over it); the id is
   free ⇒ **restore** the task under that very id, and `reserveTaskId` walks the counter past it; no id, or one
   `canAssignTaskId` refuses ⇒ a **fresh** task, as before. An id that is not the `task/user/<n>` the app mints is
-  rejected at parse time — never build a task over `task/root`/`task/main`.
+  rejected at parse time — never build a task over `task/root`, the tree's own root.
 - **Ctrl+V REPLACES the cell it lands on**: the cell is re-pointed at the pasted task (never a rename of the task
   that was there), which leaves that task a detached parent its id can bring back.
 - **The attribute names ARE the format**: they exist once (the `ATTR_*` constants) and the parser matches those
@@ -334,9 +387,10 @@ to the task id. Do not add a second row implementation: the flat one this replac
   the *same* walk as `firstTaskOccurrence`.
 - **Re-rooting is the whole of the projection**, so every navigation the tree does — visible order, `Ctrl+A`,
   the arrows, Ctrl+F's walk — follows the window's rows for free. Two root walks must NOT follow it, and do
-  not: `pruneDetachedTree` seeds `WellKnownIds.MAIN_LIST` **as well as** `rootListId` (a real root cell that is
-  not a first occurrence is reachable from neither the synthetic root nor a detached parent, and without that
-  seed the first edit boundary here would delete it), and the **colours** are solved over the live state
+  not: `pruneDetachedTree` seeds `WellKnownIds.ROOT_LIST` and `ROOT_CELL_LIST` **as well as** `rootListId` (a
+  real root cell that is not a first occurrence is reachable from neither the synthetic root nor a detached
+  parent, and without that seed the first edit boundary here would delete it), and the **colours** are solved
+  over the live state
   (`TaskTreeView`'s `colorSource`) so a task is one colour in the list, the tree and the calendar (ADR 0013).
 - **The synthetic list never escapes the projection.** `withTaskListCapturedFrom` drops it, which is what keeps
   it out of every history delta, out of the persisted payload and off the wire.

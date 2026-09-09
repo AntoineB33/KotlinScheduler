@@ -671,7 +671,7 @@ data class RelativePriorityPinKey(val taskId: TaskId, val relativeTo: TaskId)
  * **relative to**. The same shape as [RelativePriorityPinKey] and deliberately not the same type: a pin key
  * files a set of cells under one open window, where this is the account's own standing list of the pairs the
  * user has worked on. The target is a task because that is what names a sub-list (the sub-list *of* a task,
- * `MAIN_TASK` for the root list) — the relative-priority window's `t_r` and the priority-weight table's
+ * `ROOT_TASK` for the root list) — the relative-priority window's `t_r` and the priority-weight table's
  * parent task are the same thing said twice.
  */
 data class TaskRelationKey(val taskId: TaskId, val relativeTo: TaskId)

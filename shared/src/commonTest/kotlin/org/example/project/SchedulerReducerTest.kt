@@ -30,17 +30,32 @@ import org.example.project.ui.HistoryFilterConfig
 import org.example.project.ui.filteredHistoryUnits
 
 class SchedulerReducerTest {
+    /**
+     * PRD §6 *Empty DB*: the tree starts at ONE root — there is no second `main` level under it any more
+     * (named task trees are how the account holds several trees), and the root is drawn as a real row.
+     */
     @Test
-    fun empty_db_initializes_root_and_main_tasks() {
+    fun empty_db_initializes_the_one_root_task_and_its_row() {
         val s = SchedulerState.empty()
-        assertEquals(WellKnownIds.MAIN_LIST, s.rootListId)
-        assertNotNull(s.tasks[WellKnownIds.ROOT_TASK])
-        assertNotNull(s.tasks[WellKnownIds.MAIN_TASK])
-        assertEquals("root", s.tasks[WellKnownIds.ROOT_TASK]!!.title)
-        assertEquals("main", s.tasks[WellKnownIds.MAIN_TASK]!!.title)
-        assertEquals(listOf(WellKnownIds.MAIN_TASK), s.tasks[WellKnownIds.ROOT_TASK]!!.childTaskIds)
-        assertEquals(listOf(WellKnownIds.MAIN_TASK), s.titleToTaskIds["main"])
+        assertEquals(WellKnownIds.ROOT_LIST, s.rootListId)
+        val root = assertNotNull(s.tasks[WellKnownIds.ROOT_TASK])
+        assertEquals("root", root.title)
+        assertEquals(WellKnownIds.ROOT_LIST, root.childListId)
+        assertEquals(listOf(WellKnownIds.ROOT_TASK), s.titleToTaskIds["root"])
+        // The one task the account starts with: no `task/main` beside it.
+        assertEquals(setOf(WellKnownIds.ROOT_TASK), s.tasks.keys)
         assertEquals(1, s.lists[s.rootListId]!!.cellIds.size)
+
+        // The root cell: one inert row, in its own list one level above the root list, expanded so the
+        // tree is visible, and the row every drawing of the tree starts from.
+        assertEquals(WellKnownIds.ROOT_CELL, SchedulerDomain.rootCellId(s))
+        assertEquals(WellKnownIds.ROOT_CELL_LIST, SchedulerDomain.displayRootListId(s))
+        assertEquals(WellKnownIds.ROOT_TASK, s.cells[WellKnownIds.ROOT_CELL]!!.taskId)
+        assertEquals(listOf(WellKnownIds.ROOT_CELL), s.lists[WellKnownIds.ROOT_CELL_LIST]!!.cellIds)
+        assertEquals(WellKnownIds.ROOT_CELL, s.lists[WellKnownIds.ROOT_LIST]!!.parentCellId)
+        assertTrue(WellKnownIds.ROOT_CELL in s.expanded)
+        // ...and it is not selectable, so no gesture can edit, move or delete it.
+        assertFalse(SchedulerDomain.isSelectableCell(s, WellKnownIds.ROOT_CELL))
     }
 
     @Test
@@ -237,7 +252,7 @@ class SchedulerReducerTest {
         s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(cellId, "Daily"))
 
         val taskId = s.cells[cellId]!!.taskId!!
-        assertTrue(taskId in s.tasks[WellKnownIds.MAIN_TASK]!!.childTaskIds)
+        assertTrue(taskId in s.tasks[WellKnownIds.ROOT_TASK]!!.childTaskIds)
     }
 
     @Test
@@ -1360,7 +1375,7 @@ class SchedulerReducerTest {
     fun viewport_does_not_render_main_cell() {
         val s = SchedulerState.empty()
         val rootCells = s.lists[s.rootListId]!!.cellIds
-        assertTrue(rootCells.none { s.cells[it]?.taskId == WellKnownIds.MAIN_TASK })
+        assertTrue(rootCells.none { s.cells[it]?.taskId == WellKnownIds.ROOT_TASK })
         assertTrue(SchedulerDomain.isSelectableCell(s, rootCells.first()))
     }
 
@@ -2073,7 +2088,7 @@ class SchedulerReducerTest {
 
     @Test
     fun typing_in_empty_child_keeps_task_menu_collapsed_and_shows_title_suggestion() {
-        // Anomaly repro continued: typing "m" must surface the "main" title suggestion
+        // Anomaly repro continued: typing "r" must surface the "root" title suggestion
         // and must NOT surface any existing-task row.
         var s = SchedulerState.empty()
         val firstCell = s.lists[s.rootListId]!!.cellIds.first()
@@ -2084,9 +2099,9 @@ class SchedulerReducerTest {
         val gChild = s.lists[s.tasks[gTaskId]!!.childListId!!]!!.cellIds.first()
 
         s = SchedulerReducer.reduce(s, SchedulerIntent.BeginEdit(gChild))
-        s = SchedulerReducer.reduce(s, SchedulerIntent.UpdateEditText("m"))
+        s = SchedulerReducer.reduce(s, SchedulerIntent.UpdateEditText("r"))
         val session = s.editSession!!
-        assertEquals("m", session.draftText)
+        assertEquals("r", session.draftText)
 
         val entries =
             SchedulerDomain.changeTaskMenuEntries(
@@ -2098,8 +2113,8 @@ class SchedulerReducerTest {
         assertEquals(1, entries.size)
         assertEquals("New task", entries.single().label)
 
-        val suggestions = SchedulerDomain.titleSuggestions(s, "m")
-        assertEquals(listOf("main"), suggestions)
+        val suggestions = SchedulerDomain.titleSuggestions(s, "r")
+        assertEquals(listOf("root"), suggestions)
     }
 
     @Test
@@ -2154,11 +2169,11 @@ class SchedulerReducerTest {
     }
 
     @Test
-    fun title_suggestions_on_empty_db_list_root_and_main() {
-        // Entering Edit Mode on a fresh DB with an empty draft must surface the existing
-        // titles ("root", "main"), sorted alphabetically (PRD §4 Menu 2).
+    fun title_suggestions_on_empty_db_list_the_root() {
+        // Entering Edit Mode on a fresh DB with an empty draft must surface the existing titles (PRD §4
+        // Menu 2). A fresh account holds exactly one: the root's own.
         val s = SchedulerState.empty()
-        assertEquals(listOf("main", "root"), SchedulerDomain.titleSuggestions(s, ""))
+        assertEquals(listOf("root"), SchedulerDomain.titleSuggestions(s, ""))
     }
 
     @Test
@@ -2167,15 +2182,15 @@ class SchedulerReducerTest {
         val cellId = s.lists[s.rootListId]!!.cellIds.first()
         s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(cellId, "Alpha"))
 
-        assertEquals(listOf("Alpha", "main", "root"), SchedulerDomain.titleSuggestions(s, ""))
+        assertEquals(listOf("Alpha", "root"), SchedulerDomain.titleSuggestions(s, ""))
     }
 
     @Test
     fun title_suggestions_show_single_match() {
         // Single suggestion must still be returned (no "only one element" rule for Menu 2).
         val s = SchedulerState.empty()
-        assertEquals(listOf("main"), SchedulerDomain.titleSuggestions(s, "m"))
-        assertEquals(listOf("main"), SchedulerDomain.titleSuggestions(s, "ai"))
+        assertEquals(listOf("root"), SchedulerDomain.titleSuggestions(s, "r"))
+        assertEquals(listOf("root"), SchedulerDomain.titleSuggestions(s, "oo"))
     }
 
     @Test
@@ -2593,7 +2608,7 @@ class SchedulerReducerTest {
         assertEquals(aChildList, s.cells[b]!!.parentListId)
         // The task tree is relinked: B is now a child of A, no longer of main.
         assertTrue(bTask in s.tasks[aTask]!!.childTaskIds)
-        assertFalse(bTask in s.tasks[WellKnownIds.MAIN_TASK]!!.childTaskIds)
+        assertFalse(bTask in s.tasks[WellKnownIds.ROOT_TASK]!!.childTaskIds)
 
         // The cross-list move round-trips through undo.
         s = SchedulerReducer.reduce(s, SchedulerIntent.Undo)

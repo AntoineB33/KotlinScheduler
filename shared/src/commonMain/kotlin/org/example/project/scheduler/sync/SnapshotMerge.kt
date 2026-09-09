@@ -463,7 +463,12 @@ object SnapshotMerge {
                 // in the window, where a chord silently answering the wrong action would not be.
                 shortcutBindings = repairShortcutBindings(state.shortcutBindings),
             )
-        return SchedulerDomain.pruneDetachedTree(rooted)
+        // PRD §2: the root is merged entity by entity like everything else, so a peer that predates it (or a
+        // three-way pick that dropped one of its three parts) can leave a tree with no root task, no root
+        // cell, or a root list pointing at a cell nobody kept. [SchedulerDomain.withRoot] is the same funnel
+        // the codec and [SchedulerState.empty] use, applied AFTER the prune so the root task's denormalized
+        // children are recomputed over the cells the prune actually left.
+        return SchedulerDomain.withRoot(SchedulerDomain.pruneDetachedTree(rooted))
     }
 
     /**

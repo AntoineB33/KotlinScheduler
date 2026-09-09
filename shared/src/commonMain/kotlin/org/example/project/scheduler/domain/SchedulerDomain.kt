@@ -13,7 +13,9 @@ import kotlinx.datetime.minus
 import kotlinx.datetime.plus
 import kotlinx.datetime.toLocalDateTime
 import org.example.project.perf.Perf
+import org.example.project.scheduler.model.Cell
 import org.example.project.scheduler.model.CellId
+import org.example.project.scheduler.model.CellList
 import org.example.project.scheduler.model.CellListId
 import org.example.project.scheduler.model.ChoreEntry
 import org.example.project.scheduler.model.DEFAULT_MINIMUM_MINUTES
@@ -35,13 +37,11 @@ import org.example.project.scheduler.state.SchedulerState
 import org.example.project.scheduler.state.TaskTreeEntry
 
 object SchedulerDomain {
-    fun isMainTask(taskId: TaskId?): Boolean = taskId == WellKnownIds.MAIN_TASK
-
     fun isRootTask(taskId: TaskId?): Boolean = taskId == WellKnownIds.ROOT_TASK
 
     /**
      * The id shape [SchedulerState.allocateTaskId] mints — the only one a clipboard payload may name
-     * (ADR 0012), so a pasted id can never land on the tree's own root/main tasks or on an id the counter
+     * (ADR 0012), so a pasted id can never land on the tree's own root task or on an id the counter
      * will never walk past.
      */
     fun isUserTaskId(taskId: TaskId): Boolean = USER_TASK_ID_PATTERN.matches(taskId.value)
@@ -50,8 +50,108 @@ object SchedulerDomain {
 
     fun isSelectableCell(state: SchedulerState, cellId: CellId): Boolean {
         val cell = state.cells[cellId] ?: return false
-        return !isMainTask(cell.taskId) && !isRootTask(cell.taskId)
+        return !isRootTask(cell.taskId)
     }
+
+    // ----- The root ---------------------------------------------------------------------------------
+    //
+    // PRD §2: the tree is drawn under ONE inert row standing for the whole of it — [WellKnownIds.ROOT_CELL],
+    // a real cell of the tree pointing at [WellKnownIds.ROOT_TASK], sitting alone in
+    // [WellKnownIds.ROOT_CELL_LIST] one level above [SchedulerState.rootListId]. It is a real cell and not a
+    // synthetic header so that exactly one thing draws a task row, one thing decides the visible order, and
+    // the expansion set answers for the root the same way it answers for every other parent: collapsing it
+    // collapses the tree.
+    //
+    // [SchedulerState.rootListId] deliberately did NOT move onto the root cell's list. That field names the
+    // list of the tree's TOP-LEVEL tasks ([WellKnownIds.ROOT_LIST]), and it is what the priority walk, the
+    // colour ring, the category scopes and the path labels all mean by "the root" — re-pointing it at a list
+    // holding one inert cell would have changed every one of those answers. So the root cell is reached the
+    // other way round: it is the root list's `parentCellId`, which is null on a drawing that has no root row
+    // and is the one thing that tells the two shapes apart.
+
+    /**
+     * The tree's **root cell**, or `null` for a drawing that has none — the PRD §4 template and PRD §7's
+     * "All tasks" projection, whose own root lists are parentless.
+     */
+    fun rootCellId(state: SchedulerState): CellId? =
+        state.lists[state.rootListId]?.parentCellId?.takeIf { it in state.cells && !isSelectableCell(state, it) }
+
+    /**
+     * The list a **drawing** of this tree starts from: the root cell's own list where there is one, and
+     * [SchedulerState.rootListId] itself where there is not. Everything that decides what the user can see —
+     * [visibleOccurrences] and the tree's own [org.example.project.scheduler.ui.TaskTreeView] — starts here,
+     * so a collapsed root cell hides the tree from the keyboard exactly as it hides it from the eye.
+     */
+    fun displayRootListId(state: SchedulerState): CellListId =
+        rootCellId(state)?.let { state.cells[it]?.parentListId } ?: state.rootListId
+
+    /**
+     * Installs the whole root shape — the [WellKnownIds.ROOT_TASK] titled `root`, its [WellKnownIds.ROOT_LIST]
+     * of top-level cells, and the [WellKnownIds.ROOT_CELL] the tree is drawn under — on a tree written before
+     * it existed, and leaves a tree that already has it exactly as it is (the stored expansion included:
+     * only a freshly minted root cell is expanded, so an account that collapsed it keeps it collapsed).
+     *
+     * It is the ONE definition of that shape: [SchedulerState.empty] builds through it, the codec heals a
+     * decoded payload with it, the sync merge repairs with it, and [SchedulerState.applyTree] carries it
+     * across an undo into pre-upgrade history. It refuses any tree not rooted at [WellKnownIds.ROOT_LIST]
+     * (the "All tasks" projection is re-rooted elsewhere), and the caller that must not grow one — the §4
+     * template, whose own [WellKnownIds.ROOT_LIST] is parentless and shadows the live tree's — is kept out
+     * by its own call site.
+     *
+     * The **title is forced** rather than defaulted: the root task is not selectable, so no user gesture can
+     * name it, and a payload written when it was called `main` must not keep saying so.
+     */
+    fun withRoot(state: SchedulerState): SchedulerState {
+        if (state.rootListId != WellKnownIds.ROOT_LIST) return state
+        val rootList = state.lists[WellKnownIds.ROOT_LIST] ?: return state
+        val rootTask =
+            Task(
+                id = WellKnownIds.ROOT_TASK,
+                title = ROOT_TASK_TITLE,
+                childListId = WellKnownIds.ROOT_LIST,
+                // Denormalized like every other parent's: the tree's top-level tasks, in reading order.
+                childTaskIds = rootList.cellIds.mapNotNull { state.cells[it]?.taskId },
+            )
+        val healed =
+            if (state.tasks[WellKnownIds.ROOT_TASK] == rootTask) {
+                state
+            } else {
+                val tasks = state.tasks + (WellKnownIds.ROOT_TASK to rootTask)
+                state.copy(tasks = tasks, titleToTaskIds = buildTitleIndex(tasks))
+            }
+        if (rootList.parentCellId == WellKnownIds.ROOT_CELL &&
+            WellKnownIds.ROOT_CELL in healed.cells &&
+            WellKnownIds.ROOT_CELL_LIST in healed.lists
+        ) {
+            return healed
+        }
+        val rootCell =
+            Cell(
+                id = WellKnownIds.ROOT_CELL,
+                parentListId = WellKnownIds.ROOT_CELL_LIST,
+                taskId = WellKnownIds.ROOT_TASK,
+            )
+        return healed.copy(
+            lists =
+                healed.lists +
+                    mapOf(
+                        WellKnownIds.ROOT_CELL_LIST to
+                            CellList(
+                                id = WellKnownIds.ROOT_CELL_LIST,
+                                parentCellId = null,
+                                cellIds = listOf(WellKnownIds.ROOT_CELL),
+                            ),
+                        WellKnownIds.ROOT_LIST to rootList.copy(parentCellId = WellKnownIds.ROOT_CELL),
+                    ),
+            cells = healed.cells + (WellKnownIds.ROOT_CELL to rootCell),
+            // A tree arriving without a root cell has never been able to collapse one, so the row it grows
+            // here is open: anything else would hide the whole tree behind an upgrade.
+            expanded = healed.expanded + WellKnownIds.ROOT_CELL,
+        )
+    }
+
+    /** The root task's title — the one name the tree's own root row, and every "root" label, print. */
+    const val ROOT_TASK_TITLE: String = "root"
 
     /** True when the cell has no assigned task or its task title is blank (PRD §5). */
     fun isTextuallyEmptyCell(state: SchedulerState, cellId: CellId): Boolean {
@@ -82,10 +182,15 @@ object SchedulerDomain {
     /**
      * Depth-first visible order of displayed rows starting at [listId], each tagged with the
      * parent occurrence ([via]) it is rendered under. Collapsed cells omit their subtree.
+     *
+     * It starts at [displayRootListId] and not at [SchedulerState.rootListId]: the root cell is a parent
+     * like any other, so a collapsed one has to omit the whole tree here exactly as it does on screen —
+     * otherwise the arrows would still walk rows the user cannot see. It is NOT a render-via, though
+     * ([renderViaOf]): the rows under it keep the null via that says "the root viewport".
      */
     fun visibleOccurrences(
         state: SchedulerState,
-        listId: CellListId = state.rootListId,
+        listId: CellListId = displayRootListId(state),
         via: CellId? = null,
     ): List<VisibleOccurrence> {
         val list = state.lists[listId] ?: return emptyList()
@@ -97,7 +202,7 @@ object SchedulerDomain {
             val task = cell.taskId?.let { state.tasks[it] } ?: continue
             val childListId = task.childListId ?: continue
             if (cellId in state.expanded) {
-                result += visibleOccurrences(state, childListId, cellId)
+                result += visibleOccurrences(state, childListId, renderViaOf(state, cellId))
             }
         }
         return result
@@ -109,7 +214,7 @@ object SchedulerDomain {
      */
     fun visibleCellOrder(
         state: SchedulerState,
-        listId: CellListId = state.rootListId,
+        listId: CellListId = displayRootListId(state),
     ): List<CellId> = visibleOccurrences(state, listId).map { it.cellId }
 
     fun selectableVisibleOrder(state: SchedulerState): List<CellId> =
@@ -238,8 +343,21 @@ object SchedulerDomain {
             if (main != cellId && isInVisualSubtree(state, cellId, main)) return main
         }
         val listId = state.cells[cellId]?.parentListId ?: return null
-        return state.lists[listId]?.parentCellId
+        return state.lists[listId]?.parentCellId?.let { renderViaOf(state, it) }
     }
+
+    /**
+     * [parentCellId] as a **render-via**, or `null` when it is the PRD §2 root cell.
+     *
+     * A render-via names *which occurrence of a mirrored parent* a row is drawn under, and the root cell is
+     * the one parent that can never be mirrored — it is the viewport's header, not a place in the tree. So
+     * the tree's top-level cells keep the `null` via they had before the root row existed, which is what
+     * lets all three drawings agree: the tree draws them under the root row, PRD §7's "All tasks" window
+     * and PRD §4's template draw them at the top with no parent at all, and one selection highlights
+     * correctly in every one of them.
+     */
+    fun renderViaOf(state: SchedulerState, parentCellId: CellId): CellId? =
+        parentCellId.takeIf { isSelectableCell(state, it) }
 
     fun shouldShowSelectionHighlight(
         selection: SchedulerSelection,
@@ -319,10 +437,10 @@ object SchedulerDomain {
         return state.copy(lists = lists)
     }
 
-    /** Parent task owning [listId] (its `childListId`); MAIN_TASK for the viewport list. */
+    /** Parent task owning [listId] (its `childListId`); ROOT_TASK for the viewport list. */
     fun parentTaskIdOfList(state: SchedulerState, listId: CellListId): TaskId? {
         val list = state.lists[listId] ?: return null
-        val parentCellId = list.parentCellId ?: return WellKnownIds.MAIN_TASK
+        val parentCellId = list.parentCellId ?: return WellKnownIds.ROOT_TASK
         return state.cells[parentCellId]?.taskId
     }
 
@@ -603,7 +721,7 @@ object SchedulerDomain {
         val visiting = HashSet<TaskId>()
 
         fun absolute(taskId: TaskId): Double {
-            if (taskId == WellKnownIds.MAIN_TASK) return 1.0
+            if (taskId == WellKnownIds.ROOT_TASK) return 1.0
             memo[taskId]?.let { return it }
             if (!visiting.add(taskId)) return 0.0 // cycle guard (constraints forbid real cycles)
             var sum = 0.0
@@ -619,7 +737,13 @@ object SchedulerDomain {
             return sum
         }
 
-        return cellsByTask.keys.associateWith { absolute(it) }
+        // The root task is left OUT of the answer. It is what every percentage is a share *of* — [absolute]
+        // returns 1.0 for it so the walk terminates — not a row that holds a share of its own, and it only
+        // reaches [cellsByTask] at all because the PRD §2 root cell points at it. Returning it would put a
+        // second 1.0 beside the tasks that divide that 1.0 up, so anything summing this map (the category
+        // rules' solve, the "All tasks" window, the tests that assert the leaves fill the tree) would count
+        // the whole tree twice.
+        return cellsByTask.keys.asSequence().filterNot(::isRootTask).associateWith { absolute(it) }
     }
 
     // ----- The task list ("All tasks") ---------------------------------------------------------
@@ -1046,7 +1170,7 @@ object SchedulerDomain {
         taskId: TaskId,
         taskIdsWithCells: Set<TaskId>,
     ): Boolean {
-        if (isRootTask(taskId) || isMainTask(taskId)) return false
+        if (isRootTask(taskId)) return false
         if (taskId in taskIdsWithCells) return false
         val task = state.tasks[taskId] ?: return false
         if (task.title.isBlank()) return false
@@ -1074,13 +1198,13 @@ object SchedulerDomain {
 
     /**
      * PRD §9: the *schedulable leaf* tasks — leaves of the tree ([isLeafTask]) that are real, titled
-     * tasks still in the tree. Empty placeholders, the root/main tasks, tasks no longer pointed at by any
+     * tasks still in the tree. Empty placeholders, the root task, tasks no longer pointed at by any
      * cell (kept only for their record, PRD §4/§8), and **blank-titled tasks** (a cell emptied to "delete"
      * the task keeps its id and lingers while panels/records still point at it) are all excluded.
      */
     fun schedulableLeaves(state: SchedulerState): List<TaskId> =
         state.tasks.keys.filter {
-            !isRootTask(it) && !isMainTask(it) && taskHasCells(state, it) && isLeafTask(state, it) &&
+            !isRootTask(it) && taskHasCells(state, it) && isLeafTask(state, it) &&
                 state.tasks[it]?.title?.isNotBlank() == true
         }
 
@@ -1121,7 +1245,7 @@ object SchedulerDomain {
     /**
      * PRD §8 Manual add: the task chosen by the calendar's right-click "add a task" action — the one
      * with the biggest absolute priority percentage, breaking ties alphabetically by title (the
-     * first in alphabetic order wins). Excludes the root/main tasks, tasks no longer in the tree,
+     * first in alphabetic order wins). Excludes the root task, tasks no longer in the tree,
      * blank-titled (emptied) tasks, and non-leaf tasks (the calendar schedules only leaves, PRD §8).
      * Returns null when there is no real task to add.
      */
@@ -1129,7 +1253,7 @@ object SchedulerDomain {
         val absolute = absoluteTaskPriorities(state)
         val candidates =
             state.tasks.keys.filter {
-                !isRootTask(it) && !isMainTask(it) && taskHasCells(state, it) && isLeafTask(state, it) &&
+                !isRootTask(it) && taskHasCells(state, it) && isLeafTask(state, it) &&
                     state.tasks[it]?.title?.isNotBlank() == true
             }
         if (candidates.isEmpty()) return null
@@ -4727,16 +4851,27 @@ object SchedulerDomain {
     fun parentTaskId(state: SchedulerState, cellId: CellId): TaskId? {
         val cell = state.cells[cellId] ?: return null
         val list = state.lists[cell.parentListId] ?: return null
-        if (list.parentCellId == null) return WellKnownIds.MAIN_TASK
+        if (list.parentCellId == null) return WellKnownIds.ROOT_TASK
         return state.cells[list.parentCellId]?.taskId
     }
 
+    /**
+     * The tasks of the cells [cellId] hangs under — PRD §1 *Constraint 2*'s "ancestor cells", and the set
+     * the assign / move collision rules are read against.
+     *
+     * **The root cell is not one of them.** It stands for the whole tree rather than being a parent inside
+     * it, so its sub-tree IS the tree: counting it would make every task an ancestor of every cell, and
+     * `assignCollisionScope` would read that as "everything collides" — no task could be assigned to any
+     * cell any more. The walk therefore stops at the first non-selectable parent, which is exactly where it
+     * used to stop when the top list had no parent cell at all.
+     */
     fun ancestorTaskIds(state: SchedulerState, cellId: CellId): Set<TaskId> {
         val ancestors = mutableSetOf<TaskId>()
         var listId = state.cells[cellId]?.parentListId ?: return ancestors
         while (true) {
             val list = state.lists[listId] ?: break
             val parentCellId = list.parentCellId ?: break
+            if (!isSelectableCell(state, parentCellId)) break
             val parentCell = state.cells[parentCellId] ?: break
             parentCell.taskId?.let { ancestors += it }
             listId = parentCell.parentListId
@@ -4755,7 +4890,7 @@ object SchedulerDomain {
 
     fun canAssignTaskId(state: SchedulerState, cellId: CellId, taskId: TaskId): Boolean {
         if (!isSelectableCell(state, cellId)) return false
-        if (isRootTask(taskId) || isMainTask(taskId)) return false
+        if (isRootTask(taskId)) return false
         // "already in the sub-list": the same task can't appear twice in the cell's own list.
         if (taskId in siblingTaskIds(state, cellId)) return false
         // "parents set": assigning a task whose sub-tree shares any task with an ancestor's sub-tree
@@ -4791,7 +4926,7 @@ object SchedulerDomain {
     fun shortestTaskTreePaths(state: SchedulerState): Map<TaskId, List<TaskId>> {
         // The two well-known tasks above the root list, so a row reads "root / main / …" exactly as it did
         // when the path was walked through the task links. [taskPathLabel] drops whichever is absent.
-        val prefix = listOf(WellKnownIds.ROOT_TASK, WellKnownIds.MAIN_TASK)
+        val prefix = listOf(WellKnownIds.ROOT_TASK)
         val shortest = HashMap<TaskId, List<TaskId>>()
         val visitedLists = mutableSetOf(state.rootListId)
         var frontier = listOf(state.rootListId to prefix)
@@ -4866,7 +5001,7 @@ object SchedulerDomain {
         excludeTaskId: TaskId? = null,
     ): List<TaskId> =
         state.tasks.keys
-            .filter { !isRootTask(it) && !isMainTask(it) }
+            .filter { !isRootTask(it) }
             .filter { it != excludeTaskId }
             .filter { task ->
                 val title = state.tasks[task]?.title.orEmpty()
@@ -4968,7 +5103,7 @@ object SchedulerDomain {
      * back (picking it is a no-op the reducer drops), and the row keeps ITS COLOUR while its own title sits
      * in the field. Without the exemption a row went colourless the instant its editor opened.
      *
-     * Title matching, ordering and the exclusion of the root/main tasks are [eligibleAssignTaskIds]' own, so
+     * Title matching, ordering and the exclusion of the root task are [eligibleAssignTaskIds]' own, so
      * the two menus read the same way (an exact title match, shortest path first).
      */
     fun eligibleWeightTableTaskIds(
@@ -5411,7 +5546,7 @@ object SchedulerDomain {
         val withCells = taskIdsWithCells(state)
         val referenced =
             withCells +
-                setOf(WellKnownIds.ROOT_TASK, WellKnownIds.MAIN_TASK) +
+                setOf(WellKnownIds.ROOT_TASK) +
                 state.tasks.filterValues { it.record.isNotEmpty() }.keys +
                 state.panels.mapNotNull { it.taskId } +
                 state.tasks.keys.filter { isDetachedParentTask(state, it, withCells) }
@@ -5449,7 +5584,7 @@ object SchedulerDomain {
             state.tasks.keys.mapNotNull { taskId ->
                 state.tasks[taskId]?.childListId?.takeIf { isDetachedParentTask(state, taskId, withCells) }
             }
-        // [WellKnownIds.MAIN_LIST] is seeded as well as [SchedulerState.rootListId]: every tree in the
+        // [WellKnownIds.ROOT_LIST] is seeded as well as [SchedulerState.rootListId]: every tree in the
         // account is rooted there (SchedulerState.empty, withTaskTreeLoaded, projectDefaultSubtree), so for
         // all of them this is the same list twice. It matters for the ONE projection that re-roots the state
         // elsewhere — PRD §7's "All tasks" window
@@ -5457,7 +5592,14 @@ object SchedulerDomain {
         // task: a real root cell that is not the first occurrence of its task (nor an empty placeholder) is
         // reachable from neither that root nor a detached parent, and without this seed the first edit
         // boundary in that window would prune it out of the tree.
-        val queue = ArrayDeque(listOf(state.rootListId, WellKnownIds.MAIN_LIST) + detachedRoots)
+        // [WellKnownIds.ROOT_CELL_LIST] joins them for the same reason: the root cell is reachable from
+        // neither [SchedulerState.rootListId] (it sits ABOVE it) nor a detached parent, so without this seed
+        // the first edit boundary would prune the row the whole tree is drawn under — and, in PRD §7's "All
+        // tasks" window, would prune it out of the live tree.
+        val queue =
+            ArrayDeque(
+                listOf(state.rootListId, WellKnownIds.ROOT_LIST, WellKnownIds.ROOT_CELL_LIST) + detachedRoots,
+            )
         while (queue.isNotEmpty()) {
             val listId = queue.removeFirst()
             if (!reachableLists.add(listId)) continue
@@ -6007,7 +6149,7 @@ object SchedulerDomain {
 
     /**
      * PRD §4/§13 **"copy task id"**: one bare reference node per line — and null on an id [isUserTaskId]
-     * refuses, which keeps a paste from ever pointing a cell at `task/root` / `task/main`.
+     * refuses, which keeps a paste from ever pointing a cell at the tree's own `task/root`.
      */
     private fun parseTaskIdReferences(lines: List<String>): List<CopiedNode>? =
         lines.map { it.trim() }.filter { it.isNotEmpty() }.map { line ->
@@ -6097,7 +6239,7 @@ object SchedulerDomain {
         val value = field.substring(colon + 1).trim()
         when (name) {
             // Only the shape the app itself mints: anything else is not our clipboard text, and paste
-            // must stay a no-op rather than build a task under an id the tree reserves (root/main).
+            // must stay a no-op rather than build a task under the id the tree reserves (the root).
             ATTR_ID -> node.taskId = TaskId(value).takeIf { isUserTaskId(it) } ?: return false
             ATTR_MIN_TIME -> node.minMinutes = value.removeSuffix(" min").trim().toIntOrNull() ?: return false
             // The pre-resilience switch, read-only: "can be done during a no-screen period" is exactly a

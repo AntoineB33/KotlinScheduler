@@ -1002,7 +1002,7 @@ object SchedulerReducer {
         for (cellId in targets.leaves) {
             val childListId = working.cells[cellId]?.taskId?.let { working.tasks[it]?.childListId } ?: continue
             working =
-                applyDefaultSubtreeTemplate(working, childListId, state.defaultSubtree, WellKnownIds.MAIN_LIST)
+                applyDefaultSubtreeTemplate(working, childListId, state.defaultSubtree, WellKnownIds.ROOT_LIST)
         }
         val after = working.captureTree()
         if (before == after) return state
@@ -3912,7 +3912,7 @@ private fun graftDefaultSubtree(
     val childList = state.lists[childListId] ?: return state
     // Only a freshly minted, still-empty sub-list is seeded — never one the user (or a paste) already built.
     if (childList.cellIds.any { state.cells[it]?.taskId != null }) return state
-    return applyDefaultSubtreeTemplate(state, childListId, state.defaultSubtree, WellKnownIds.MAIN_LIST)
+    return applyDefaultSubtreeTemplate(state, childListId, state.defaultSubtree, WellKnownIds.ROOT_LIST)
 }
 
 /**

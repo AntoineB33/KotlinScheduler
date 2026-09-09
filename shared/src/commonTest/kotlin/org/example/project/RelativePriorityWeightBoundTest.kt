@@ -51,7 +51,7 @@ class RelativePriorityWeightBoundTest {
     fun an_unreachable_target_never_runs_the_weight_away() {
         var s = threeSiblings()
         val a = s.tasks.keys.first { s.tasks[it]!!.title == "A" }
-        val main = org.example.project.scheduler.model.WellKnownIds.MAIN_TASK
+        val main = org.example.project.scheduler.model.WellKnownIds.ROOT_TASK
         val before = maxWeight(s)
 
         // 100 % of the tree is unreachable while B and C are in it, and the window commits every keystroke —
@@ -73,7 +73,7 @@ class RelativePriorityWeightBoundTest {
     fun a_reachable_target_is_still_reached() {
         var s = threeSiblings()
         val a = s.tasks.keys.first { s.tasks[it]!!.title == "A" }
-        val main = org.example.project.scheduler.model.WellKnownIds.MAIN_TASK
+        val main = org.example.project.scheduler.model.WellKnownIds.ROOT_TASK
         s = RelativePriorityDomain.setRelativePriority(s, a, main, 0.5, pinned = emptySet())
         val got = SchedulerDomain.absoluteTaskPriorities(s)[a] ?: 0.0
         assertTrue(kotlin.math.abs(got - 0.5) < 1e-6, "the cap must not disturb a reachable target (got $got)")

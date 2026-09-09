@@ -9,7 +9,12 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNames
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.decodeFromJsonElement
 import org.example.project.scheduler.domain.AlarmDomain
 import org.example.project.scheduler.domain.TimerDomain
 import org.example.project.scheduler.domain.CategoryRules
@@ -102,7 +107,99 @@ object SchedulerStateCodec {
 
     /** Returns the decoded state, or `null` if the payload is missing/corrupt. */
     fun decode(text: String): SchedulerState? =
-        runCatching { json.decodeFromString<PersistedState>(text).toState() }.getOrNull()
+        runCatching { decodePersisted(text).toHealedState() }.getOrNull()
+
+    // ----- The pre-1.6.0 root/main migration ----------------------------------------------------
+    //
+    // The tree used to be rooted at a conceptual `task/root` whose one child was `task/main`, and
+    // `task/main`'s cells lived in `list/main`. The second level existed so that sibling trees could hang
+    // beside `main`; named task trees (PRD §6) are how the account actually holds several trees, so the
+    // level was removed and the survivor is `task/root` / `list/root` (see [WellKnownIds]).
+    //
+    // The rename cannot be done on the typed model alone, because those two ids are named from far more
+    // places than the tree: the relative-priority pin keys, the task-relation keys, a category rule's
+    // legacy `scopeTaskId`, every stored task tree, the default sub-tree template — and, the one that
+    // decides the shape of this code, the FULL tree snapshot carried inside every history unit, which is a
+    // separate row and a separate `decodeFromString` call. So the rewrite runs on the parsed JSON, before
+    // any of it is deserialized, and every entry point goes through it. One rule, one funnel.
+    //
+    // It rewrites an id only where the string is the WHOLE value (or the whole map key), never as a
+    // substring: cell ids embed their list's id (`cell/list/main/3`), and those must stay exactly as they
+    // are or every expansion, selection and category-rule scope in the payload would stop resolving.
+    // The one accepted false positive is a task *titled* `task/main`, which is retitled `task/root`.
+
+    /** The marker that says a payload predates the migration — `task/main` as a whole JSON string. */
+    private const val LEGACY_PAYLOAD_MARKER = "\"task/main\""
+
+    private const val LEGACY_ROOT_TASK_ID = "task/main"
+    private const val LEGACY_ROOT_LIST_ID = "list/main"
+
+    /**
+     * Ids that a legacy payload must be stripped of before the rename, because the rename would otherwise
+     * collide with them: the conceptual `task/root` the survivor takes the id of, and — in a payload written
+     * by a build that had the root cell but not yet the rename — the root cell and the list holding it,
+     * which [SchedulerDomain.withRoot] mints again under their current ids.
+     */
+    private val LEGACY_DROPPED_ENTRIES =
+        mapOf(
+            "tasks" to WellKnownIds.ROOT_TASK.value,
+            "lists" to WellKnownIds.ROOT_LIST.value,
+            "cells" to WellKnownIds.ROOT_CELL.value,
+        )
+
+    private inline fun <reified T> decodeMigrating(text: String): T =
+        if (!text.contains(LEGACY_PAYLOAD_MARKER)) {
+            json.decodeFromString(text)
+        } else {
+            json.decodeFromJsonElement(migrateLegacyRoot(json.parseToJsonElement(text)))
+        }
+
+    private fun decodePersisted(text: String): PersistedState = decodeMigrating(text)
+
+    /**
+     * The decoded state with the PRD §2 root shape healed onto it — the ONE place a payload becomes a live
+     * state, so a tree that predates the root cell (or the root task's current id) can never reach the app
+     * unhealed. See [SchedulerDomain.withRoot].
+     */
+    private fun PersistedState.toHealedState(): SchedulerState = SchedulerDomain.withRoot(toState())
+
+    private fun migrateLegacyRoot(element: JsonElement): JsonElement =
+        when (element) {
+            is JsonObject ->
+                JsonObject(
+                    element.entries.associate { (key, value) ->
+                        migrateLegacyId(key) to
+                            migrateLegacyRoot(
+                                LEGACY_DROPPED_ENTRIES[key]?.let { dropped -> value.withoutEntry(dropped) }
+                                    ?: value,
+                            )
+                    },
+                )
+            is JsonArray -> JsonArray(element.map(::migrateLegacyRoot))
+            is JsonPrimitive ->
+                if (element.isString) JsonPrimitive(migrateLegacyId(element.content)) else element
+        }
+
+    private fun migrateLegacyId(value: String): String =
+        when (value) {
+            LEGACY_ROOT_TASK_ID -> WellKnownIds.ROOT_TASK.value
+            LEGACY_ROOT_LIST_ID -> WellKnownIds.ROOT_LIST.value
+            else -> value
+        }
+
+    /** [this] with the array element carrying `id == [id]` removed; anything but an array is untouched. */
+    private fun JsonElement.withoutEntry(id: String): JsonElement =
+        if (this !is JsonArray) {
+            this
+        } else {
+            JsonArray(
+                filterNot { entry ->
+                    entry is JsonObject && (entry["id"] as? JsonPrimitive)?.stringOrNull() == id
+                },
+            )
+        }
+
+    private fun JsonPrimitive.stringOrNull(): String? = if (isString) content else null
 
     /**
      * Splits a [SchedulerState] into the structured [PersistedSnapshot] the SQLite store persists: the
@@ -165,7 +262,8 @@ object SchedulerStateCodec {
     /** Rebuilds a [SchedulerState] from a [PersistedSnapshot], or `null` if the payload is corrupt. */
     fun decodeSnapshot(snapshot: PersistedSnapshot): SchedulerState? =
         runCatching {
-            json.decodeFromString<PersistedState>(snapshot.statePayload).toState()
+            decodePersisted(snapshot.statePayload)
+                .toHealedState()
                 .copy(histories = buildHistories(snapshot.history, snapshot.pointers))
         }.getOrNull()
 
@@ -197,7 +295,7 @@ object SchedulerStateCodec {
                         HistoryUnit(
                             timeMillis = row.timeMillis,
                             chronoId = row.chronoId,
-                            delta = json.decodeFromString<PersistedDelta>(row.deltaJson).toDelta(),
+                            delta = decodeMigrating<PersistedDelta>(row.deltaJson).toDelta(),
                             debugTainted = row.debugTainted,
                         ).also {
                             // Seed the memo from the text we were just handed: re-serializing a unit the
@@ -384,6 +482,13 @@ object SchedulerStateCodec {
             // A rule's scope is a CELL, and `scopeTaskId` is still written beside it: that field is what a
             // build made before the scope was a cell reads, and the task the cell points at is exactly the
             // answer such a build gave. A newer build prefers `scopeCellId` and never looks at it.
+            //
+            // The **whole-tree** scope writes the empty string rather than the root task's id. It used to
+            // write `task/main`, and writing `task/root` in its place would have been the one thing the
+            // root rename could not migrate: a pre-rename build reading this payload does not know that id,
+            // would fail to resolve it to an occurrence, and would drop the rule. The empty string is read
+            // as "the whole tree" by every build that has ever existed, so the account-wide rules survive a
+            // downgrade — and `main` leaves the wire entirely.
             categories =
                 categories.map { category ->
                     PersistedCategory(
@@ -395,12 +500,7 @@ object SchedulerStateCodec {
                                 .map { rule ->
                                     PersistedCategoryRule(
                                         scopeTaskId =
-                                            rule.scopeCellId?.let { cells[it]?.taskId?.value }
-                                                ?: if (rule.scopeCellId == null) {
-                                                    WellKnownIds.MAIN_TASK.value
-                                                } else {
-                                                    ""
-                                                },
+                                            rule.scopeCellId?.let { cells[it]?.taskId?.value }.orEmpty(),
                                         scopeCellId = rule.scopeCellId?.value,
                                         share = rule.share,
                                     )
@@ -455,9 +555,11 @@ object SchedulerStateCodec {
         var nextCell = startCellCounter
 
         tasks[WellKnownIds.ROOT_TASK] =
-            Task(id = WellKnownIds.ROOT_TASK, title = "root", childTaskIds = listOf(WellKnownIds.MAIN_TASK))
-        tasks[WellKnownIds.MAIN_TASK] =
-            Task(id = WellKnownIds.MAIN_TASK, title = "main", childListId = WellKnownIds.MAIN_LIST)
+            Task(
+                id = WellKnownIds.ROOT_TASK,
+                title = SchedulerDomain.ROOT_TASK_TITLE,
+                childListId = WellKnownIds.ROOT_LIST,
+            )
 
         // Returns the ids of the cells it placed, in order, so the caller can wire up its list.
         fun buildList(listId: CellListId, parentCellId: CellId?, source: List<PersistedDefaultSubtreeNode>) {
@@ -493,12 +595,12 @@ object SchedulerStateCodec {
             lists[listId] = CellList(id = listId, parentCellId = parentCellId, cellIds = placed)
         }
 
-        buildList(WellKnownIds.MAIN_LIST, null, nodes)
+        buildList(WellKnownIds.ROOT_LIST, null, nodes)
 
         // childTaskIds is denormalized off the cells that were just placed.
         for ((listId, list) in lists) {
             val parentTaskId =
-                if (listId == WellKnownIds.MAIN_LIST) WellKnownIds.MAIN_TASK
+                if (listId == WellKnownIds.ROOT_LIST) WellKnownIds.ROOT_TASK
                 else list.parentCellId?.let { cells[it]?.taskId } ?: continue
             val childIds = list.cellIds.mapNotNull { cells[it]?.taskId }
             tasks[parentTaskId]?.let { tasks[parentTaskId] = it.copy(childTaskIds = childIds) }
@@ -1691,8 +1793,9 @@ private fun decodeResilience(p: PersistedTask): Map<String, Double> {
  * sub-LIST so two cells of one mirrored task collapse into one rule here as well).
  *
  * A rule's scope is **migrated** the same way: a payload written while the scope was a *task* is read
- * through [SchedulerDomain.firstTaskOccurrence], the same cell "go to task" lands on, and `task/main`
- * becomes the whole tree. A legacy rule about a task no cell points at names no place the new model can
+ * through [SchedulerDomain.firstTaskOccurrence], the same cell "go to task" lands on, and a blank (which
+ * is what the whole-tree scope has always been written as, and what a pre-root-rename payload's `task/main`
+ * is rewritten to) becomes the whole tree. A legacy rule about a task no cell points at names no place the new model can
  * express, and is dropped — decode heals what an older payload holds rather than surfacing it.
  */
 private fun List<PersistedCategory>.toCategories(scopeSource: SchedulerState): List<Category> {
@@ -1708,7 +1811,7 @@ private fun List<PersistedCategory>.toCategories(scopeSource: SchedulerState): L
             val scope: CellId? =
                 when {
                     r.scopeCellId != null -> CellId(r.scopeCellId)
-                    legacy.isBlank() || legacy == WellKnownIds.MAIN_TASK.value -> null
+                    legacy.isBlank() || legacy == WellKnownIds.ROOT_TASK.value -> null
                     else ->
                         SchedulerDomain.firstTaskOccurrence(scopeSource, TaskId(legacy))?.cellId
                             ?: continue
@@ -1735,8 +1838,12 @@ private data class PersistedCategory(
 private data class PersistedCategoryRule(
     /**
      * PRD §5: the scope as a build made before it was a cell reads it — the task the scope cell points at,
-     * `task/main` for the whole tree. Still written so such a build keeps holding the rule; never read when
+     * and **blank for the whole tree**. Still written so such a build keeps holding the rule; never read when
      * [scopeCellId] is there.
+     *
+     * Blank rather than the root task's own id: a blank has decoded as "the whole tree" in every build there
+     * has ever been, where the root's id moved (`task/main` before the root rename, `task/root` after) and a
+     * pre-rename build handed the new one would fail to resolve it and drop the rule.
      */
     val scopeTaskId: String = "",
     /** The scope CELL, absent only in a payload written before the scope was one (and for the whole tree). */

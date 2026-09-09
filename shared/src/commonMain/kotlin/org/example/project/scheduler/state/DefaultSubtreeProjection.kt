@@ -37,7 +37,7 @@ import org.example.project.scheduler.model.WellKnownIds
  *
  * Ids cannot collide across the two trees except at the root. A child list is `{taskId}/children` and a task
  * is `task/user/{n}`, so both are globally unique; a cell is `cell/{listId}/{n}` off a shared counter.
- * The only shared ids are [WellKnownIds.MAIN_LIST], [WellKnownIds.MAIN_TASK] and [WellKnownIds.ROOT_TASK] —
+ * The only shared ids are [WellKnownIds.ROOT_LIST] and [WellKnownIds.ROOT_TASK] —
  * every tree in the account is rooted at those, exactly as a stored [TaskTreeEntry] is. The template **wins**
  * those keys, so the projection's root is the template's root and the live tree's own root becomes
  * unreachable within it. That is what makes the projection a view of the template and not a mixture.
@@ -70,7 +70,7 @@ import org.example.project.scheduler.model.WellKnownIds
 val SchedulerState.defaultSubtreeIsEmpty: Boolean
     get() {
         val tree = defaultSubtree.tree
-        return tree.lists[WellKnownIds.MAIN_LIST]?.cellIds.orEmpty().none { cellId ->
+        return tree.lists[WellKnownIds.ROOT_LIST]?.cellIds.orEmpty().none { cellId ->
             val taskId = tree.cells[cellId]?.taskId ?: return@none false
             (tree.tasks[taskId] ?: tasks[taskId])?.title?.isNotBlank() == true
         }
@@ -84,7 +84,7 @@ fun SchedulerState.projectDefaultSubtree(): SchedulerState {
     val template = defaultSubtree
     val mergedTasks = tasks + template.tree.tasks
     return copy(
-        rootListId = WellKnownIds.MAIN_LIST,
+        rootListId = WellKnownIds.ROOT_LIST,
         cells = cells + template.tree.cells,
         lists = lists + template.tree.lists,
         tasks = mergedTasks,
@@ -108,7 +108,7 @@ fun SchedulerState.defaultSubtreePriorities(): Map<TaskId, Double> {
     val mergedTasks = tasks + template.tree.tasks
     return SchedulerDomain.absoluteTaskPriorities(
         copy(
-            rootListId = WellKnownIds.MAIN_LIST,
+            rootListId = WellKnownIds.ROOT_LIST,
             cells = template.tree.cells,
             lists = template.tree.lists,
             tasks = mergedTasks,
@@ -131,10 +131,10 @@ fun SchedulerState.defaultSubtreePriorities(): Map<TaskId, Double> {
  */
 fun SchedulerState.withDefaultSubtreeCapturedFrom(projected: SchedulerState): SchedulerState {
     // "Owned by the live tree" is judged on the state as it was BEFORE the edit: anything minted during it
-    // belongs to the template. Root/main are shared by every tree and are never a mirror.
+    // belongs to the template. The root task is shared by every tree and is never a mirror.
     val ownedByLive =
         tasks.keys - defaultSubtree.tree.tasks.keys -
-            setOf(WellKnownIds.ROOT_TASK, WellKnownIds.MAIN_TASK)
+            setOf(WellKnownIds.ROOT_TASK)
 
     val cells = LinkedHashMap<CellId, Cell>()
     val lists = LinkedHashMap<CellListId, CellList>()
@@ -156,11 +156,9 @@ fun SchedulerState.withDefaultSubtreeCapturedFrom(projected: SchedulerState): Sc
         }
     }
 
-    // The root pair every tree carries, then the tree itself.
-    for (id in listOf(WellKnownIds.ROOT_TASK, WellKnownIds.MAIN_TASK)) {
-        projected.tasks[id]?.let { capturedTasks[id] = it }
-    }
-    visitList(WellKnownIds.MAIN_LIST)
+    // The root task every tree carries, then the tree itself.
+    projected.tasks[WellKnownIds.ROOT_TASK]?.let { capturedTasks[WellKnownIds.ROOT_TASK] = it }
+    visitList(WellKnownIds.ROOT_LIST)
 
     val tree =
         TreeSnapshot(

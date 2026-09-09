@@ -203,11 +203,11 @@ object TaskRelationsDomain {
      * (it is the tree itself, not a row in it).
      */
     private fun exists(state: SchedulerState, taskId: TaskId): Boolean =
-        taskId == WellKnownIds.MAIN_TASK || state.tasks[taskId]?.title?.isNotBlank() == true
+        taskId == WellKnownIds.ROOT_TASK || state.tasks[taskId]?.title?.isNotBlank() == true
 
     /** How a pair's two halves are named — the same two answers the relative-priority window prints. */
     fun label(state: SchedulerState, taskId: TaskId): String =
-        if (taskId == WellKnownIds.MAIN_TASK) {
+        if (taskId == WellKnownIds.ROOT_TASK) {
             ROOT_LABEL
         } else {
             state.tasks[taskId]?.title.orEmpty().ifBlank { UNTITLED_LABEL }

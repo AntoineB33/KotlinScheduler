@@ -86,8 +86,8 @@ object TaskTreeSearch {
                 val cell = state.cells[cellId] ?: continue
                 val taskId = cell.taskId ?: continue
                 val task = state.tasks[taskId] ?: continue
-                // The conceptual root/main cells are not rows the user can select or rename; their
-                // sub-list is still walked (it is the tree the viewport shows).
+                // The root cell is drawn but is not a row the user can select or rename; its sub-list
+                // is still walked (it is the tree the viewport shows).
                 if (SchedulerDomain.isSelectableCell(state, cellId)) {
                     for (range in ranges(task.title, query, options)) {
                         result += Match(

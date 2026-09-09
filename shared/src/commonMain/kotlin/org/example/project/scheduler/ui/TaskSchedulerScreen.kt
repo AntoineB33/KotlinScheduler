@@ -173,6 +173,13 @@ private val WEIGHT_COLUMN_WIDTH = 130.dp
 private val MIN_TIME_COLUMN_WIDTH = 72.dp
 
 /**
+ * PRD §2: the height of the **root strip** — the one row drawn with no title and no columns, so the expand
+ * arrow's own 20 dp box IS the row. Short enough to read as a header for the tree rather than as a row of
+ * it, and big enough to right-click, which is what the row is for.
+ */
+private val COMPACT_ROW_MIN_HEIGHT = 20.dp
+
+/**
  * Renders a priority fraction (0..1) as a percentage with at most one decimal: 50%, 33.3%, 0.4%.
  *
  * `internal`, not private: the "All tasks" window prints the very same absolute priority, and a second
@@ -456,6 +463,11 @@ internal fun CellListSection(
         val cell = state.cells[cellId] ?: return@forEach
         val title = cell.taskId?.let { state.tasks[it]?.title }.orEmpty()
         val selectable = SchedulerDomain.isSelectableCell(state, cellId)
+        // PRD §2: the one inert row the tree is drawn under. It is drawn COMPACT — no title, no percentage,
+        // no minimum time, no categories — because it names nothing the user wrote: it stands for the tree
+        // itself. What is left is a small strip carrying the expand arrow (collapsing it collapses the
+        // tree) and the right-click target its menu hangs off.
+        val isRootRow = SchedulerDomain.isRootTask(cell.taskId)
         val showHighlight =
             SchedulerDomain.shouldShowSelectionHighlight(state.selection, cellId, renderVia)
         val isMainSelection = selectable && showHighlight && state.selection.main == cellId
@@ -487,6 +499,7 @@ internal fun CellListSection(
             isMainSelection = isMainSelection,
             isInSelectionRange = isInSelectionRange,
             selectable = selectable,
+            compact = isRootRow,
             isEditing = isEditing,
             hasChildren = hasChildren,
             expanded = expanded,
@@ -513,11 +526,16 @@ internal fun CellListSection(
             textOverflow = (cellTextPx[cellId] ?: 0) > priorityColumnPx,
             minMinutes = cell.taskId?.let { state.tasks[it]?.minimumMinutes } ?: 0,
             minTimeEditing = minTimeEditCellId == cellId,
-            // PRD §13: the contextual menu appears for any populated cell (leaf or parent); null for
-            // empty cells and the root/main cell.
+            // PRD §13: the contextual menu appears for any populated cell (leaf or parent) and on the
+            // PRD §2 root row; null only for an empty placeholder, which holds no task to act on.
+            //
+            // The root row is the one cell that is NOT selectable and still has a menu. That is the whole
+            // reason it is drawn: it is a small right-click target for the actions that are about the tree
+            // as a whole ("collapse sub-trees" first among them). What it does not get is "edit task" —
+            // see [TaskCellMenuActions.onEdit].
             cellMenu =
                 cell.taskId
-                    ?.takeIf { selectable }
+                    ?.takeIf { selectable || isRootRow }
                     ?.let { taskId ->
                         TaskCellMenuActions(
                             // PRD §13 "start this task now": the plan puts this task at the now-line. It names
@@ -529,7 +547,7 @@ internal fun CellListSection(
                                 } else {
                                     null
                                 },
-                            onEdit = { onOpenTaskEdit(taskId) },
+                            onEdit = if (isRootRow) null else ({ onOpenTaskEdit(taskId) }),
                             // PRD §7/§8: offered only where the surface is NOT the tree — the "All tasks"
                             // window today. Same entry, same name and the same RevealCell primitive the
                             // calendar panel's menu uses.
@@ -665,7 +683,10 @@ internal fun CellListSection(
             CellListSection(
                 state = state,
                 listId = childListId,
-                renderVia = cellId,
+                // The PRD §2 root cell is not a render-via ([SchedulerDomain.renderViaOf]): its children are
+                // the tree's top-level rows and keep the null via that means "the root viewport", so the
+                // same selection highlights here, in the "All tasks" window and in the template window.
+                renderVia = SchedulerDomain.renderViaOf(state, cellId),
                 depth = depth + 1,
                 visibleOrder = visibleOrder,
                 priorities = priorities,
@@ -2058,9 +2079,9 @@ internal fun RelativePriorityWindow(
 ) {
     val taskId = state.cells[cellId]?.taskId ?: return
     val options = RelativePriorityDomain.relativeToOptions(state, cellId)
-    var relativeTo by remember(cellId) { mutableStateOf(WellKnownIds.MAIN_TASK) }
+    var relativeTo by remember(cellId) { mutableStateOf(WellKnownIds.ROOT_TASK) }
     // An ancestor can disappear under the window (the tree is live); fall back to the root then.
-    if (relativeTo !in options) relativeTo = WellKnownIds.MAIN_TASK
+    if (relativeTo !in options) relativeTo = WellKnownIds.ROOT_TASK
     var relativeToMenuOpen by remember(cellId) { mutableStateOf(false) }
 
     val chains = RelativePriorityDomain.occurrenceChains(state, taskId, relativeTo)
@@ -2225,7 +2246,7 @@ private fun quoted(title: String): String = "\"" + title.ifBlank { "(untitled)" 
 
 /** The drop-down's label for a `t_r` choice: the conceptual root is named, every other task is its title. */
 private fun relativeToLabel(state: SchedulerState, taskId: TaskId): String =
-    if (taskId == WellKnownIds.MAIN_TASK) {
+    if (taskId == WellKnownIds.ROOT_TASK) {
         "root"
     } else {
         state.tasks[taskId]?.title.orEmpty().ifBlank { "(untitled)" }
@@ -2509,6 +2530,16 @@ internal fun TaskRow(
     minTimeEditing: Boolean,
     /** PRD §13: the right-click contextual menu's actions; null for a cell that has no menu. */
     cellMenu: TaskCellMenuActions?,
+    /**
+     * PRD §2: draw this row as the **root strip** — the expand arrow and nothing else. No title column, no
+     * percentage, no minimum time, no categories, and the row does not stretch across the tree's width.
+     *
+     * It is the shape of the one row that names nothing the user wrote: the root stands for the whole tree,
+     * so a title ("root") and a percentage (always 100 %) would be two labels stating what the row's
+     * POSITION already says, and a full-width band would read as a separator rather than as a cell. What is
+     * left is the arrow that collapses the tree and enough of a target to right-click.
+     */
+    compact: Boolean = false,
     /** PRD §5: clicking the percentage opens the sub-list's priority-weight window. */
     onTogglePriorityWeights: () -> Unit,
     /** PRD §5: the percentage's own right-click menu opens this cell's relative-priority window. */
@@ -2762,11 +2793,12 @@ internal fun TaskRow(
         }
         Row(
             modifier = Modifier
-                .fillMaxWidth()
+                // The root strip wraps its content instead: a full-width band would read as a separator.
+                .then(if (compact) Modifier else Modifier.fillMaxWidth())
                 // PRD §2: guide-lines on the left illustrate the parent-child hierarchy.
                 .taskSheetGuideLines(depth)
                 .padding(start = (depth * INDENT_STEP_DP).dp)
-                .defaultMinSize(minHeight = 28.dp)
+                .defaultMinSize(minHeight = if (compact) COMPACT_ROW_MIN_HEIGHT else 28.dp)
                 .background(cellBackground)
                 .then(cellBorder)
                 .then(selectionPointerModifier())
@@ -2804,13 +2836,15 @@ internal fun TaskRow(
                     }
                     // PRD §13: named "edit task" — the calendar's panel menu offers the very same window
                     // beside its own panel "Edit" (PRD §8), so the two surfaces must not call it two things.
-                    DropdownMenuItem(
-                        text = { Text("edit task") },
-                        onClick = {
-                            contextMenuOpen = false
-                            cellMenu.onEdit()
-                        },
-                    )
+                    cellMenu.onEdit?.let { edit ->
+                        DropdownMenuItem(
+                            text = { Text("edit task") },
+                            onClick = {
+                                contextMenuOpen = false
+                                edit()
+                            },
+                        )
+                    }
                     // PRD §7/§8: the calendar panel's entry under its own name, offered by any surface that
                     // is not the tree itself. Only the "All tasks" window passes it today.
                     cellMenu.onGoToTaskTree?.let { goToTaskTree ->
@@ -2864,7 +2898,9 @@ internal fun TaskRow(
                     onToggle = onToggleExpand,
                 )
             }
-            if (isEditing) {
+            if (compact) {
+                // Nothing after the arrow: the root strip is the arrow and the space around it.
+            } else if (isEditing) {
                 var textFieldValue by remember(cellId) { mutableStateOf(TextFieldValue()) }
                 SideEffect {
                     if (!isEditing) {
@@ -3195,7 +3231,12 @@ internal fun contextMenuModifier(
  */
 internal class TaskCellMenuActions(
     val onStartNow: (() -> Unit)?,
-    val onEdit: () -> Unit,
+    /**
+     * PRD §13 **"edit task"** — null on the PRD §2 root row, the one row with a menu but no task to edit:
+     * it stands for the tree itself, and the edit window is about a task's screen switch, schedule unit and
+     * text document, none of which the root has.
+     */
+    val onEdit: (() -> Unit)?,
     /**
      * PRD §7/§8 **"go to task tree"** — null in the account's own tree (you are already there) and in the §4
      * template, non-null in the "All tasks" window, whose rows are the tree's cells shown in the sorter's

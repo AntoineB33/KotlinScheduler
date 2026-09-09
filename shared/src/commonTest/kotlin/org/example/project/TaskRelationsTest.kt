@@ -87,16 +87,16 @@ class TaskRelationsTest {
     @Test
     fun opening_the_window_files_the_pair_as_opened_and_changing_the_percentage_moves_it_to_edited() {
         val f = fixture()
-        val key = TaskRelationKey(f.write, WellKnownIds.MAIN_TASK)
+        val key = TaskRelationKey(f.write, WellKnownIds.ROOT_TASK)
 
         // Section 3: the window settled on the pair and reported the percentage unchanged.
-        var s = SchedulerReducer.reduce(f.state, SchedulerIntent.RecordTaskRelation(f.write, WellKnownIds.MAIN_TASK, false))
+        var s = SchedulerReducer.reduce(f.state, SchedulerIntent.RecordTaskRelation(f.write, WellKnownIds.ROOT_TASK, false))
         assertEquals(TaskRelationsDomain.Section.Opened, rowOf(s, key)?.section)
         assertEquals("Write", rowOf(s, key)?.taskTitle)
         assertEquals(TaskRelationsDomain.ROOT_LABEL, rowOf(s, key)?.targetTitle)
 
         // Section 2: the same window session ended on a different number.
-        s = SchedulerReducer.reduce(s, SchedulerIntent.RecordTaskRelation(f.write, WellKnownIds.MAIN_TASK, true))
+        s = SchedulerReducer.reduce(s, SchedulerIntent.RecordTaskRelation(f.write, WellKnownIds.ROOT_TASK, true))
         assertEquals(TaskRelationsDomain.Section.Edited, rowOf(s, key)?.section)
         assertTrue(rowOf(s, key)!!.retargeted)
     }
@@ -104,11 +104,11 @@ class TaskRelationsTest {
     @Test
     fun a_percentage_typed_and_put_back_leaves_the_pair_in_section_three() {
         val f = fixture()
-        val key = TaskRelationKey(f.write, WellKnownIds.MAIN_TASK)
+        val key = TaskRelationKey(f.write, WellKnownIds.ROOT_TASK)
         // The window commits every keystroke, so it reports the verdict on each one: changed, then back.
-        var s = SchedulerReducer.reduce(f.state, SchedulerIntent.RecordTaskRelation(f.write, WellKnownIds.MAIN_TASK, false))
-        s = SchedulerReducer.reduce(s, SchedulerIntent.RecordTaskRelation(f.write, WellKnownIds.MAIN_TASK, true))
-        s = SchedulerReducer.reduce(s, SchedulerIntent.RecordTaskRelation(f.write, WellKnownIds.MAIN_TASK, false))
+        var s = SchedulerReducer.reduce(f.state, SchedulerIntent.RecordTaskRelation(f.write, WellKnownIds.ROOT_TASK, false))
+        s = SchedulerReducer.reduce(s, SchedulerIntent.RecordTaskRelation(f.write, WellKnownIds.ROOT_TASK, true))
+        s = SchedulerReducer.reduce(s, SchedulerIntent.RecordTaskRelation(f.write, WellKnownIds.ROOT_TASK, false))
         assertEquals(TaskRelationsDomain.Section.Opened, rowOf(s, key)?.section)
     }
 
@@ -264,8 +264,8 @@ class TaskRelationsTest {
     @Test
     fun a_pair_whose_task_is_deleted_is_broken() {
         val f = fixture()
-        val key = TaskRelationKey(f.write, WellKnownIds.MAIN_TASK)
-        var s = SchedulerReducer.reduce(f.state, SchedulerIntent.KeepTaskRelation(f.write, WellKnownIds.MAIN_TASK))
+        val key = TaskRelationKey(f.write, WellKnownIds.ROOT_TASK)
+        var s = SchedulerReducer.reduce(f.state, SchedulerIntent.KeepTaskRelation(f.write, WellKnownIds.ROOT_TASK))
         // PRD §4: emptying a cell blanks its task's title, and a blank title is what deletes.
         s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(f.writeUnderChapter, ""))
 
@@ -306,7 +306,7 @@ class TaskRelationsTest {
     fun the_rows_come_out_section_by_section_then_by_title() {
         val f = fixture()
         var s = SchedulerReducer.reduce(f.state, SchedulerIntent.RecordTaskRelation(f.read, f.book, true))
-        s = SchedulerReducer.reduce(s, SchedulerIntent.RecordTaskRelation(f.write, WellKnownIds.MAIN_TASK, false))
+        s = SchedulerReducer.reduce(s, SchedulerIntent.RecordTaskRelation(f.write, WellKnownIds.ROOT_TASK, false))
         s = SchedulerReducer.reduce(s, SchedulerIntent.RecordTaskRelation(f.write, f.book, true))
         s = SchedulerReducer.reduce(s, SchedulerIntent.KeepTaskRelation(f.write, f.book))
 
@@ -324,12 +324,12 @@ class TaskRelationsTest {
     fun the_pairs_are_persisted_and_synced_and_an_older_payload_decodes_without_them() {
         val f = fixture()
         var kept = SchedulerReducer.reduce(f.state, SchedulerIntent.KeepTaskRelation(f.write, f.book))
-        kept = SchedulerReducer.reduce(kept, SchedulerIntent.RecordTaskRelation(f.read, WellKnownIds.MAIN_TASK, false))
+        kept = SchedulerReducer.reduce(kept, SchedulerIntent.RecordTaskRelation(f.read, WellKnownIds.ROOT_TASK, false))
 
         val decoded = SchedulerStateCodec.decode(SchedulerStateCodec.encode(kept))!!
         assertEquals(kept.taskRelations, decoded.taskRelations)
         // An all-false mark is the "opened, never changed" fact, so it must survive the round trip.
-        assertTrue(TaskRelationKey(f.read, WellKnownIds.MAIN_TASK) in decoded.taskRelations)
+        assertTrue(TaskRelationKey(f.read, WellKnownIds.ROOT_TASK) in decoded.taskRelations)
 
         // Authoritative user data: which pairs are worth keeping is a judgement the other devices must see.
         assertNotEquals(

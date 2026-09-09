@@ -33,7 +33,7 @@ import org.example.project.scheduler.model.CellListId
  *
  * Two root walks must NOT follow it, and neither does:
  *  - [org.example.project.scheduler.domain.SchedulerDomain.pruneDetachedTree] seeds from
- *    [org.example.project.scheduler.model.WellKnownIds.MAIN_LIST] as well as `rootListId`, because a cell the
+ *    [org.example.project.scheduler.model.WellKnownIds.ROOT_LIST] as well as `rootListId`, because a cell the
  *    real root holds that is not one of the first occurrences is reachable from neither the synthetic root
  *    nor a detached parent — and without that seed the first edit boundary in this window would delete it;
  *  - the colours ([org.example.project.scheduler.domain.TaskColorSpace]) are read off the **live** state by

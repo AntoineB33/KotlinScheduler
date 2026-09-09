@@ -93,7 +93,7 @@ class DefaultSubtreeTest {
                 build(row.children, childListId)
             }
         }
-        build(rows, WellKnownIds.MAIN_LIST)
+        build(rows, WellKnownIds.ROOT_LIST)
         s = SchedulerReducer.reduce(s, SchedulerIntent.SetDefaultSubtreeEnabled(true))
         // Fixture setup, not user actions: hand back the history the caller started with so a test can count
         // the units ITS OWN gesture recorded.
@@ -109,7 +109,7 @@ class DefaultSubtreeTest {
         )
 
     /** The titles of the template's top-level rows, ignoring the trailing empty placeholder. */
-    private fun templateTitles(state: SchedulerState, listId: CellListId = WellKnownIds.MAIN_LIST): List<String> {
+    private fun templateTitles(state: SchedulerState, listId: CellListId = WellKnownIds.ROOT_LIST): List<String> {
         val tree = state.defaultSubtree.tree
         return tree.lists[listId]?.cellIds.orEmpty()
             .mapNotNull { tree.cells[it]?.taskId }
@@ -393,7 +393,7 @@ class DefaultSubtreeTest {
         assertEquals(listOf("Plan"), templateTitles(s))
 
         val planCell =
-            s.defaultSubtree.tree.lists[WellKnownIds.MAIN_LIST]!!.cellIds
+            s.defaultSubtree.tree.lists[WellKnownIds.ROOT_LIST]!!.cellIds
                 .first { s.defaultSubtree.tree.cells[it]?.taskId != null }
         s = reduceInTemplate(s, SchedulerIntent.SetCellTitle(planCell, ""))
 
@@ -439,7 +439,7 @@ class DefaultSubtreeTest {
         // PRD §4: on = a brand new task id at every graft, off = every grafted cell mirrors the row's task.
         var s = withTemplate(listOf(node("dst/0", "Plan")))
         val planCell =
-            s.defaultSubtree.tree.lists[WellKnownIds.MAIN_LIST]!!.cellIds
+            s.defaultSubtree.tree.lists[WellKnownIds.ROOT_LIST]!!.cellIds
                 .first { s.defaultSubtree.tree.cells[it]?.taskId != null }
         assertFalse(planCell in s.defaultSubtree.boundCells, "a row starts with its switch ON")
 
@@ -478,7 +478,7 @@ class DefaultSubtreeTest {
         val mainUnits = s.histories.forCategory(HistoryCategory.Main).units.size
 
         val target =
-            s.defaultSubtree.tree.lists[WellKnownIds.MAIN_LIST]!!.cellIds
+            s.defaultSubtree.tree.lists[WellKnownIds.ROOT_LIST]!!.cellIds
                 .last { s.defaultSubtree.tree.cells[it]?.taskId == null }
         s = reduceInTemplate(s, SchedulerIntent.SetCellTitle(target, "Do"))
 
@@ -540,7 +540,7 @@ class DefaultSubtreeTest {
         val shares = s.defaultSubtreePriorities()
         val tree = s.defaultSubtree.tree
         val rows =
-            tree.lists[WellKnownIds.MAIN_LIST]!!.cellIds
+            tree.lists[WellKnownIds.ROOT_LIST]!!.cellIds
                 .mapNotNull { tree.cells[it]?.taskId }
                 .filter { tree.tasks[it]?.title?.isNotBlank() == true }
         assertEquals(2, rows.size)
@@ -600,7 +600,7 @@ class DefaultSubtreeTest {
 
         // It is a real tree now: the rows have tasks, and the nesting survived.
         val planCell =
-            decoded.defaultSubtree.tree.lists[WellKnownIds.MAIN_LIST]!!.cellIds
+            decoded.defaultSubtree.tree.lists[WellKnownIds.ROOT_LIST]!!.cellIds
                 .first { decoded.defaultSubtree.tree.cells[it]?.taskId != null }
         val planTask = decoded.defaultSubtree.tree.cells[planCell]!!.taskId!!
         val planChildren = decoded.defaultSubtree.tree.tasks[planTask]!!.childListId!!

@@ -607,7 +607,11 @@ internal fun TaskTreeView(
         ) {
             CellListSection(
                 state = state,
-                listId = state.rootListId,
+                // PRD §2: the drawing starts one level ABOVE the tree's top-level list, at the list holding
+                // the single inert root row — so the root is a row like any other, with the tree indented
+                // under it and its arrow collapsing the whole thing. The two projections that have no root
+                // row (the §4 template, §7's "All tasks") fall back to their own root list here.
+                listId = SchedulerDomain.displayRootListId(state),
                 renderVia = null,
                 depth = 0,
                 visibleOrder = visibleOrder,

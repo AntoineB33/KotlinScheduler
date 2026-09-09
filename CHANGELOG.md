@@ -11,6 +11,82 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### One root, drawn as a row — `main` folded into `root` — 2026-09-09
+
+`model/WellKnownIds.kt` (`ROOT_TASK` / `ROOT_LIST` / `ROOT_CELL` / `ROOT_CELL_LIST`; `MAIN_TASK` and
+`MAIN_LIST` deleted), `domain/SchedulerDomain.kt` (`withRoot` — the one definition of the shape —
+`rootCellId`, `displayRootListId`, `renderViaOf`, `isMainTask` deleted, `ancestorTaskIds` and
+`absoluteTaskPriorities` fenced off from the root, `pruneDetachedTree` seeding `ROOT_CELL_LIST`),
+`domain/RelativePriority.kt` (`ancestorCells` stops at the root), `state/SchedulerState.kt` (`empty`,
+`keepingRoot` on all three tree swaps), `state/DefaultSubtreeProjection.kt`,
+`persistence/SchedulerStateCodec.kt` (the JSON id migration + `toHealedState`), `sync/SnapshotMerge.kt`
+(`repair` heals), `ui/TaskTreeView.kt` + `ui/TaskSchedulerScreen.kt` (the drawing starts at the root row),
+new `RootCellTest` and `RootTaskMigrationTest`, `SchedulerReducerTest`, `GoToTaskTreeTest`,
+`docs/PRD_TaskScheduler.md` §2/§3/§4/§5/§6/§13, `docs/invariants/task-tree.md`,
+`docs/invariants/priorities.md`, ADR 0004 and ADR 0012.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy. It DOES migrate the local
+DB and the synced payload on load: every device must be rebuilt, and a device left on an older build will not
+understand the new ids (see *Downgrading* below).**
+
+Two changes that had to be made together.
+
+**The tree is drawn under one inert `root` row.** It is drawn **compact** — the expand arrow and nothing
+else, wrapping its content rather than spanning the tree's width: no title, no percentage, no minimum time,
+no categories. It names nothing the user wrote, so a title (`root`) and a percentage (always 100 %) would
+only restate what the row's position already says, and a full-width band would read as a separator. What is
+left is the arrow, which collapses the whole tree, and enough of a target to right-click — because it is
+also **the one cell that is not selectable and still has a contextual menu** (`TaskCellMenuActions.onEdit`
+is nullable for it), holding the entries that are about the tree as a whole. "Edit task" is not among them:
+that window is a task's screen switch, schedule unit and text document, and the root has none of those.
+
+Underneath, it is a real cell of the tree (`ROOT_CELL`, alone in `ROOT_CELL_LIST` one level above
+`rootListId`), not a synthetic header — so exactly one thing draws a task
+row, one thing decides the visible order, and the expansion set answers for the root as it does for every
+other parent: collapsing it collapses the tree. `rootListId` deliberately did **not** move onto it; it still
+names the list of the tree's *top-level tasks*, which is what the priority walk, the colour ring, the category
+scopes and the path labels all mean by "the root". The root cell is reached the other way round — it is that
+list's `parentCellId` — and a null there is exactly what says "this drawing has no root row", which is how
+PRD §4's template and PRD §7's "All tasks" window keep drawing without one.
+
+**And there is now only one root.** There used to be a conceptual `task/root` whose single child was
+`task/main`, whose cells lived in `list/main`. That second level existed so sibling trees could hang beside
+`main` — and named task trees (PRD §6) are how the account actually holds several trees, so it answered
+nothing. `task/main` and `list/main` are gone; the survivor is `task/root` / `list/root`, titled `root`.
+
+The hazard was never the rename, it was that **a real cell at the top of the tree is one more level whose
+sub-tree is the whole tree**. Three answers had to be fenced off from it, and each was a real bug for the
+length of one test run:
+
+- `ancestorTaskIds` / `ancestorCells` now **stop** at the root cell. Counting it made every task an ancestor
+  of every cell, so `assignCollisionScope` refused **every** assignment — no cell could be pointed at any task
+  again — and every category scope label grew a `root / ` prefix.
+- `absoluteTaskPriorities` **leaves the root out** of its map. It answers `1.0` so the walk terminates, but it
+  is what the percentages are a share *of*, not a row holding one: returning it put a second `1.0` beside the
+  tasks dividing that `1.0` up, and every caller summing the map counted the tree twice (the leaves summed
+  to 2.0).
+- The root cell is **not a render-via** (`renderViaOf`). A render-via names which occurrence of a *mirrored*
+  parent a row is drawn under, and the root can never be mirrored. Left as one, the top-level rows would have
+  taken a non-null via in the tree while the "All tasks" window and the template still drew them with none —
+  one selection, highlighted in one drawing and invisible in the other two.
+
+**The migration runs on the parsed JSON, not on the typed model** — because `task/main` is named from far
+more places than the tree: relative-priority pin keys, task-relation keys, a category rule's legacy
+`scopeTaskId`, every stored task tree, the default sub-tree, and the whole tree snapshot inside **each history
+unit**, which is its own row and its own decode call. One pass over the JSON at every decode entry point is
+the only shape that reaches all of them (one rule, one funnel). It rewrites an id only where the string is the
+whole value or the whole map key: cell ids embed their list's id (`cell/list/main/3`) and survive byte for
+byte, or every expansion, selection and rule scope in the payload would stop resolving. The one accepted false
+positive is a task *titled* `task/main`, which is retitled. `SchedulerDomain.withRoot` then heals the shape
+itself, and is called from the four places a tree can arrive: `empty`, the codec, `SnapshotMerge.repair`, and
+`applyTree` — that last one because an undo into pre-upgrade history replaces the cells, lists and tasks
+wholesale and would otherwise take the root away with them.
+
+**Downgrading.** The whole-tree category scope is written **blank** rather than as the root's id: a blank has
+decoded as "the whole tree" in every build there has ever been, where `task/root` would be unresolvable to a
+pre-rename build, which drops the rule instead of keeping it account-wide. Nothing else is downgrade-safe —
+an older build reading a migrated payload finds no `task/main` and rebuilds an empty root — so this is a
+one-way migration for the account, and every device should be rebuilt together.
+
 ### The hover bubble names a reminder — 2026-09-06
 
 `ui/CalendarUi.kt` (`CalendarBubbleSection.Kind.Reminder` + the re-numbered ranks, `reminderBubbleSection`,

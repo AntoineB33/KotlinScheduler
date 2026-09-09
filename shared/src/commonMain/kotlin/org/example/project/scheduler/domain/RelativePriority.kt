@@ -105,12 +105,18 @@ object RelativePriorityDomain {
         return state.lists[cell.parentListId]?.parentCellId
     }
 
-    /** [cellId]'s ancestor cells, outermost first (the root-list cell) down to its immediate parent. */
+    /**
+     * [cellId]'s ancestor cells, outermost first (the root-list cell) down to its immediate parent.
+     *
+     * The PRD §2 **root cell is not one of them**: it stands for the whole tree rather than being a row
+     * inside it, so counting it would prefix every scope label with `root /` and add one to every scope
+     * depth. The walk stops there — exactly where it stopped when the top list had no parent cell at all.
+     */
     fun ancestorCells(state: SchedulerState, cellId: CellId): List<CellId> {
         val chain = ArrayDeque<CellId>()
         var current = parentCellOf(state, cellId)
         val guard = HashSet<CellId>()
-        while (current != null && guard.add(current)) {
+        while (current != null && SchedulerDomain.isSelectableCell(state, current) && guard.add(current)) {
             chain.addFirst(current)
             current = parentCellOf(state, current)
         }
@@ -123,10 +129,10 @@ object RelativePriorityDomain {
      * ancestor tasks from the root-most one down to its closest parent.
      */
     fun relativeToOptions(state: SchedulerState, cellId: CellId): List<TaskId> {
-        val result = mutableListOf(WellKnownIds.MAIN_TASK)
+        val result = mutableListOf(WellKnownIds.ROOT_TASK)
         for (ancestor in ancestorCells(state, cellId)) {
             val taskId = state.cells[ancestor]?.taskId ?: continue
-            if (taskId == WellKnownIds.MAIN_TASK || taskId in result) continue
+            if (taskId == WellKnownIds.ROOT_TASK || taskId in result) continue
             result.add(taskId)
         }
         return result
@@ -159,8 +165,9 @@ object RelativePriorityDomain {
             while (guard.add(current)) {
                 val parentCell = parentCellOf(state, current)
                 if (parentCell == null) {
-                    // Walked out of the top of the tree: the enclosing task is the root/MAIN task.
-                    reached = relativeTo == WellKnownIds.MAIN_TASK
+                    // Walked out of the top of the tree (a drawing with no root row): the enclosing
+                    // task is the tree's root.
+                    reached = relativeTo == WellKnownIds.ROOT_TASK
                     break
                 }
                 if (state.cells[parentCell]?.taskId == relativeTo) {

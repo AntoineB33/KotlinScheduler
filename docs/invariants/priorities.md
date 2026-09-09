@@ -253,8 +253,11 @@ relative-priority window's number said once and then **kept**.
   task id), and `CategoryRules.scopeKey` is that reading — the ONE place two scopes are compared. A rule
   sleeps once the cell it was written about is gone, even where the task still appears elsewhere: the user
   pointed at a place. A payload written when the scope was a *task* is migrated on decode through
-  `firstTaskOccurrence` (`task/main` ⇒ the whole tree), and `scopeTaskId` is still written beside the cell so
-  an older build can still read the rule.
+  `firstTaskOccurrence`, and `scopeTaskId` is still written beside the cell so an older build can still read
+  the rule. **The whole-tree scope is written BLANK** — a blank has always decoded as "the whole tree", in
+  every build there has ever been, where the root's own id (`task/main` before the root rename, `task/root`
+  after it) is a moving target a pre-rename build cannot resolve and would drop the rule over. A payload that
+  still spells it `task/main` is rewritten by the root-id migration (`task-tree.md`) before it is read.
 - **At most one rule per scope, and the scope is the LIST** (`scopeKey`, not the cell): `SetCategoryRule`
   replaces, so a rule written about one occurrence of a mirrored task replaces the rule written about
   another. Two statements about one sub-tree are the plainest contradiction there is — and two cells of one

@@ -290,33 +290,30 @@ data class DefaultSubtreeTemplate(
 
         /** The bare tree of [empty], reused by the codec when it migrates an older template shape. */
         fun emptyTree(): TreeSnapshot {
-            val placeholderId = CellId("cell/main/0")
+            val placeholderId = CellId("cell/root/0")
+            // The template is a drawing with NO root row (its root list is parentless — see
+            // [SchedulerDomain.rootCellId]), but it still carries the root task itself: that is what
+            // `projectDefaultSubtree` roots the template at, and what its percentages are a share of.
             val tasks =
                 mapOf(
                     WellKnownIds.ROOT_TASK to
                         Task(
                             id = WellKnownIds.ROOT_TASK,
-                            title = "root",
-                            childTaskIds = listOf(WellKnownIds.MAIN_TASK),
-                        ),
-                    WellKnownIds.MAIN_TASK to
-                        Task(
-                            id = WellKnownIds.MAIN_TASK,
-                            title = "main",
-                            childListId = WellKnownIds.MAIN_LIST,
+                            title = SchedulerDomain.ROOT_TASK_TITLE,
+                            childListId = WellKnownIds.ROOT_LIST,
                         ),
                 )
             return TreeSnapshot(
                 cells =
                     mapOf(
                         placeholderId to
-                            Cell(id = placeholderId, parentListId = WellKnownIds.MAIN_LIST, taskId = null),
+                            Cell(id = placeholderId, parentListId = WellKnownIds.ROOT_LIST, taskId = null),
                     ),
                 lists =
                     mapOf(
-                        WellKnownIds.MAIN_LIST to
+                        WellKnownIds.ROOT_LIST to
                             CellList(
-                                id = WellKnownIds.MAIN_LIST,
+                                id = WellKnownIds.ROOT_LIST,
                                 parentCellId = null,
                                 cellIds = listOf(placeholderId),
                             ),
@@ -744,17 +741,33 @@ data class SchedulerState(
         )
 
     fun applyTree(snapshot: TreeSnapshot): SchedulerState =
-        copy(
-            cells = snapshot.cells,
-            lists = snapshot.lists,
-            tasks =
-                snapshot.tasks.mapValues { (id, task) ->
-                    task.copy(record = tasks[id]?.record ?: emptyList())
-                },
-            titleToTaskIds = snapshot.titleToTaskIds,
-            nextTaskCounter = snapshot.nextTaskCounter,
-            nextCellCounter = snapshot.nextCellCounter,
+        keepingRoot(
+            copy(
+                cells = snapshot.cells,
+                lists = snapshot.lists,
+                tasks =
+                    snapshot.tasks.mapValues { (id, task) ->
+                        task.copy(record = tasks[id]?.record ?: emptyList())
+                    },
+                titleToTaskIds = snapshot.titleToTaskIds,
+                nextTaskCounter = snapshot.nextTaskCounter,
+                nextCellCounter = snapshot.nextCellCounter,
+            ),
         )
+
+    /**
+     * The PRD §2 root — the root task and the row the tree is drawn under — survives a whole-tree swap: a
+     * snapshot written before it existed (a history unit from an older build, a task tree stored then) would
+     * otherwise take both away with it, and nothing would put them back. That is the case the id migration
+     * cannot reach on its own: `applyTree` replaces the cells, lists and tasks wholesale, so an undo into
+     * pre-upgrade history is the one moment a healed state can go back to an unhealed tree.
+     *
+     * Conditioned on the receiver having a root cell, which is what keeps it off the drawings that must not
+     * grow one: the §4 template's own root list is parentless, so a reduction dispatched in that window
+     * never installs a root cell into the template.
+     */
+    private fun keepingRoot(next: SchedulerState): SchedulerState =
+        if (SchedulerDomain.rootCellId(this) == null) next else SchedulerDomain.withRoot(next)
 
     /**
      * The live tree **with the tasks' records kept** — what a [TaskTreeEntry] stores. [captureTree] strips
@@ -777,13 +790,15 @@ data class SchedulerState(
      * adopting a tree whose counter is lower would re-mint ids another tree already uses.
      */
     fun applyTreeWithRecords(snapshot: TreeSnapshot): SchedulerState =
-        copy(
-            cells = snapshot.cells,
-            lists = snapshot.lists,
-            tasks = snapshot.tasks,
-            titleToTaskIds = snapshot.titleToTaskIds,
-            nextTaskCounter = maxOf(nextTaskCounter, snapshot.nextTaskCounter),
-            nextCellCounter = maxOf(nextCellCounter, snapshot.nextCellCounter),
+        keepingRoot(
+            copy(
+                cells = snapshot.cells,
+                lists = snapshot.lists,
+                tasks = snapshot.tasks,
+                titleToTaskIds = snapshot.titleToTaskIds,
+                nextTaskCounter = maxOf(nextTaskCounter, snapshot.nextTaskCounter),
+                nextCellCounter = maxOf(nextCellCounter, snapshot.nextCellCounter),
+            ),
         )
 
     /** The selected task tree's entry, or null when the live tree has never been named. */
@@ -813,11 +828,13 @@ data class SchedulerState(
      * cleared — every id it names belongs to the tree being left. Callers must have flushed first.
      */
     fun withTaskTreeLoaded(entry: TaskTreeEntry): SchedulerState =
-        applyTreeWithRecords(entry.tree).copy(
-            activeTaskTreeId = entry.id,
-            expanded = entry.expanded.filter { it in entry.tree.cells }.toSet(),
-            selection = SchedulerSelection(),
-            editSession = null,
+        keepingRoot(
+            applyTreeWithRecords(entry.tree).copy(
+                activeTaskTreeId = entry.id,
+                expanded = entry.expanded.filter { it in entry.tree.cells }.toSet(),
+                selection = SchedulerSelection(),
+                editSession = null,
+            ),
         )
 
     /** The task-tree fields as one value, for the reducer's undoable `TaskTreeDelta`. */
@@ -915,41 +932,33 @@ data class SchedulerState(
         }
 
         fun empty(): SchedulerState {
-            val placeholderId = CellId("cell/main/0")
+            val placeholderId = CellId("cell/root/0")
             val placeholder =
                 Cell(
                     id = placeholderId,
-                    parentListId = WellKnownIds.MAIN_LIST,
+                    parentListId = WellKnownIds.ROOT_LIST,
                     taskId = null,
                 )
-            val mainList =
+            val rootList =
                 CellList(
-                    id = WellKnownIds.MAIN_LIST,
+                    id = WellKnownIds.ROOT_LIST,
                     parentCellId = null,
                     cellIds = listOf(placeholderId),
                 )
-            val mainTask =
-                Task(
-                    id = WellKnownIds.MAIN_TASK,
-                    title = "main",
-                    childListId = WellKnownIds.MAIN_LIST,
-                )
-            val rootTask =
-                Task(
-                    id = WellKnownIds.ROOT_TASK,
-                    title = "root",
-                    childTaskIds = listOf(WellKnownIds.MAIN_TASK),
-                )
-            val tasks = mapOf(WellKnownIds.ROOT_TASK to rootTask, WellKnownIds.MAIN_TASK to mainTask)
-            return SchedulerState(
-                rootListId = WellKnownIds.MAIN_LIST,
-                lists = mapOf(WellKnownIds.MAIN_LIST to mainList),
-                cells = mapOf(placeholderId to placeholder),
-                tasks = tasks,
-                titleToTaskIds = SchedulerDomain.buildTitleIndex(tasks),
-                expanded = emptySet(),
-                selection = SchedulerSelection(),
-                histories = SchedulerHistories(),
+            // The PRD §2 root task and the root cell are added by [SchedulerDomain.withRoot] rather than
+            // spelled out here: it is the same shape an upgraded account is healed into, and one definition
+            // of it is what keeps a fresh account and an old one indistinguishable.
+            return SchedulerDomain.withRoot(
+                SchedulerState(
+                    rootListId = WellKnownIds.ROOT_LIST,
+                    lists = mapOf(WellKnownIds.ROOT_LIST to rootList),
+                    cells = mapOf(placeholderId to placeholder),
+                    tasks = emptyMap(),
+                    titleToTaskIds = emptyMap(),
+                    expanded = emptySet(),
+                    selection = SchedulerSelection(),
+                    histories = SchedulerHistories(),
+                ),
             )
         }
     }
