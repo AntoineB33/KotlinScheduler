@@ -7,9 +7,16 @@ Global rules that always apply: `CLAUDE.md`.
 
 ### Adding a History Unit is ONE INSERT
 
-→ ADR 0007. A History Unit is **immutable once committed**, and the only things that happen to a category's
-list are an append, a redo branch discarding the tail, and the cap evicting the head. Persisting it must cost
-what those are worth — one row — and every piece below exists because it did not.
+→ ADR 0007. A History Unit is **immutable once committed** — with one named exception below — and the only
+things that happen to a category's list are an append, a redo branch discarding the tail, and the cap evicting
+the head. Persisting it must cost what those are worth — one row — and every piece below exists because it did
+not.
+
+The exception: a unit whose gesture is still open (`Delta.coalesceKey` — a field being typed into live, see
+`docs/invariants/alarms-and-timers.md`) is **replaced at the pointer** by the next keystroke's unit rather than
+appended after it. It costs the alignment below nothing special: the replacement's `(length, hash)` differ, so
+the digest diff simply ends the matched run there and the row is rewritten — one delete plus one insert, which
+is what the append it replaces would have cost anyway, and the list does not grow.
 
 - **The `history_unit` row's key is a stable `seq`, NOT the unit's position.** It is allocated once, when the
   unit is first written, and never renumbered; the list order is the seq order and the dense index the rest

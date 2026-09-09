@@ -57,8 +57,13 @@ enum class HistoryCategory { Edit, Selection, Calendar, Main, WindowNav }
  * PRD §7: the focus targets the user navigates between — the task tree plus the floating windows. The
  * focused window is the top layer except when the task tree is focused. Persisted with the rest of the
  * app state.
+ *
+ * A floating window earns an entry here when it owns the keyboard or has History Units of its own to walk:
+ * [Alarms] has both — Ctrl+Z inside it must reach the Main stack its alarm/timer units are on, and
+ * SchedulerReducer.contentCategory only lands there while the focus is on neither an Edit session nor the
+ * calendar. The windows not listed claim no app-wide focus and leave it where it was.
  */
-enum class AppWindow { Tree, Calendar, Reminders, History }
+enum class AppWindow { Tree, Calendar, Reminders, History, Alarms }
 
 /**
  * PRD §5/§6: every History Unit lives in one shared timeline; the categories are just how the History
@@ -182,6 +187,31 @@ sealed interface Delta {
      * when the unit carries no meaningful per-item detail.
      */
     val details: List<String> get() = emptyList()
+
+    /**
+     * PRD §5/§6: the **field-focus session** this unit belongs to, or `null` (the default) for a unit that
+     * stands alone.
+     *
+     * A window whose fields are edited *live* — the Alarms window pushes its whole list on every keystroke —
+     * would otherwise commit one History Unit per character, and Ctrl+Z would walk a five-letter label back
+     * five times. Two consecutive units of the same category carrying the same non-null key are the SAME
+     * gesture (one field, one focus session) and are merged into one unit by `commitDelta`; a structural
+     * change (add / remove / a switch) carries `null` and so can never be absorbed into a text edit.
+     *
+     * Deliberately **not persisted**: a unit reloaded from the DB has closed its gesture, so nothing may
+     * merge into it and a key minted in a later session can never collide with it.
+     */
+    val coalesceKey: String? get() = null
+
+    /**
+     * Merge this unit onto [previous] — the unit currently at the category's pointer — returning the single
+     * unit the two together are, or `null` when they must stay two (a different delta kind, or a different
+     * [coalesceKey]). Only ever asked when this unit's [coalesceKey] is non-null.
+     *
+     * The merged unit keeps [previous]'s *before* side, which is what makes one Ctrl+Z walk the whole
+     * gesture back to what the field held when it took the focus.
+     */
+    fun coalesceOnto(previous: Delta): Delta? = null
 
     fun undo(state: SchedulerState): SchedulerState
     fun redo(state: SchedulerState): SchedulerState

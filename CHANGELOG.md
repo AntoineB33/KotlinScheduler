@@ -11,6 +11,89 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### Ctrl+Shift+Z redoes — one reading of the undo/redo chords — 2026-09-09
+
+`ui/KeyboardShortcuts.kt` (new `undoRedoIntentFor`, and the catalogue entry split in two),
+`scheduler/ui/TaskTreeView.kt`, `ui/CalendarUi.kt`, `ui/AlarmWindow.kt` (all three route through it),
+new `UndoRedoChordTest`, `docs/invariants/shortcuts.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy.**
+
+Reported as: delete a timer with a title, Ctrl+Z brings it back, Ctrl+Z takes the title off, **Ctrl+Shift+Z
+deletes the timer again** — a third undo where every other application redoes.
+
+The three surfaces that own the keyboard each spelled the chord test out for themselves, and all three wrote
+`ctrl && key == Z -> undo` without looking at Shift, so Ctrl+Shift+Z fell into the undo branch. It was never
+an Alarms-window bug: the tree and the calendar had answered Ctrl+Shift+Z with a second undo for as long as
+they have had the handler. Three copies of one rule agreeing on something wrong is the failure mode
+`CLAUDE.md` calls *one rule, one funnel*, so the fix is the funnel and not three edits: `undoRedoIntentFor`
+now reads **Ctrl+Z → undo, Ctrl+Shift+Z → redo, Ctrl+Y → redo** (Cmd counting as Ctrl), and the three
+surfaces call it. The rule proper takes the four facts that decide it and the `KeyEvent` overload is only the
+adapter, so the contract is pinned by an ordinary unit test rather than by a synthetic key event.
+
+### The Alarms window's two lists are undoable — 2026-09-09
+
+`state/SchedulerState.kt` (`Delta.coalesceKey` / `Delta.coalesceOnto`, `AppWindow.Alarms`),
+`state/SchedulerIntent.kt` (`SetAlarms` / `SetTimers` carry an `editKey`), `state/SchedulerReducer.kt`
+(new `AlarmsDelta` / `TimersDelta`, `reduceSetAlarms` / `reduceSetTimers` commit them, `commitDelta`
+merges a unit onto the one at the pointer when both carry the same key),
+`persistence/SchedulerStateCodec.kt` (`PersistedDelta.Alarms` / `.Timers` + shared row converters),
+`ui/AlarmWindow.kt` (re-seeds its local rows from an outside change, reports each field's focus session,
+and catches Ctrl+Z / Ctrl+Y itself), `App.kt` (`appWindowOf(Alarms)`), new `AlarmHistoryTest`,
+`AlarmTest` / `TimerTest` (the two tests asserting the old rule now assert the new one),
+`docs/invariants/alarms-and-timers.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy.**
+
+Reported as: the bin button on a timer row was pressed by mistake, Ctrl+Z did not bring it back, and the
+History window showed nothing. Both were true and neither was a bug in Undo — `reduceSetAlarms` and
+`reduceSetTimers` said in their own KDoc that they were "not routed through the Undo/Redo history" and
+committed no unit at all, so there was nothing to walk and nothing to list.
+
+**What is now a unit** (all on `Main`, so Ctrl+Z / Ctrl+Y; nothing in this window is a *selection*, so
+Alt+←/→ walks none of it): adding a row, striking one off with the bin, and every settings field of both
+sections — an alarm's time, label, weekdays, ring length, vibrate, repeat and its on/off switch; a timer's
+duration, label, ring length and vibrate.
+
+**What is deliberately not**: the five timer run-state writes (start/resume, pause, reset, a countdown
+component typed, a ± nudge). Their currency is an absolute due instant measured against a moving now-line,
+so a delta replayed later does not mean what it meant when recorded — undoing a pause would restore an
+instant now in the past and the timer would ring on the spot. They also already carry their own inverses on
+the row, which the bin does not. Nor is anything the app authors itself: the engine disarming a one-off that
+has rung (`SetAlarmEnabled`), the reset after a ring, a healed row, a peer's pull.
+
+**One unit per field-focus session, not per keystroke.** The window pushes its whole list on every keystroke,
+so a five-letter label would otherwise be five units of the 1000-unit cap for Ctrl+Z to walk back one
+character at a time. `Delta.coalesceKey` names the gesture (`"{rowId}/{field}@{epoch}"`, minted when the
+field takes the focus) and `commitDelta` merges a unit onto the one at the pointer when the keys match,
+keeping that one's `before` side. A structural change carries no key and so can never be absorbed into the
+text edit before it. The key is **not persisted**: a unit reloaded from the DB has closed its gesture, so a
+key minted in a later session cannot collide with it.
+
+**Follow-up, same day — the chord still reached nobody.** The first cut made the window focusable only while
+it was the front one and requested the focus once, when that flag flipped. The bin defeats it: the user
+clicks the new row's label field (the focus goes into that `TextField`), then clicks the bin, which removes
+the row **and the focused field with it** — Compose clears the focus, nothing re-requests it, and Ctrl+Z
+reaches no handler. Diagnosed off a read-only copy of the release DB: the `timers` units were all there
+(`timer-11` added, labelled, removed — twice, 110 s apart) with the Main pointer never moving, `editSession`
+null and `focusedWindow` `Alarms` throughout, so the routing was right and the keystroke simply was not
+delivered. The fix is the calendar's rule, which this window should have copied in the first place:
+unconditionally `focusable()`, focus claimed on open, and **reclaimed on every press inside the window**
+through the same `raiseOnPress` that raises it (the Initial pass, which does not consume the press, so a
+field under it still takes the caret). `keyboardActive` is gone.
+
+Two things had to be fixed with it, or the units would have been unreachable:
+
+- **The window's local row copies never re-seeded.** They were `remember {}` with no key, seeded once, so an
+  undo (or a sync pull, or the engine's disarm) changed `state.alarms` without the window ever hearing —
+  the struck-off row would have stayed on screen and been pushed back at the next keystroke. They now re-seed
+  exactly when the incoming list is not the one this window last pushed (for timers: not the one it last
+  pushed *the settings of*, so a start never reformats a half-typed duration).
+- **Ctrl+Z could not reach the window.** The chord lives on the task tree's and the calendar's key handlers
+  and there is no app-level one, so a keystroke aimed at a floating window reached nobody. The window now
+  previews it itself, and is focusable while it is the front window — which is also why `AppWindow` grew an
+  `Alarms` entry: `contentCategory` only lands on `Main` when the focus is on neither an Edit session nor the
+  calendar, so without it a Ctrl+Z after touching the calendar would have walked the calendar's stack and
+  skipped these units entirely.
+
 ### One root, drawn as a row — `main` folded into `root` — 2026-09-09
 
 `model/WellKnownIds.kt` (`ROOT_TASK` / `ROOT_LIST` / `ROOT_CELL` / `ROOT_CELL_LIST`; `MAIN_TASK` and

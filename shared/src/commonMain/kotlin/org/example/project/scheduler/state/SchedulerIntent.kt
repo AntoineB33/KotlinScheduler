@@ -512,16 +512,30 @@ sealed interface SchedulerIntent {
     /**
      * PRD §18 Alarms: replace the whole alarm list with [entries] (rows are edited live in the Alarms
      * window). Blank ids are filled in with a fresh `alarm-{n}`. Authoritative — persisted and synced, so
-     * every phone of the account arms the new times; not part of the tree Undo/Redo history.
+     * every phone of the account arms the new times — and recorded as a **Main History Unit**, so adding a
+     * row, striking one off with the bin, or changing any of its settings is Ctrl+Z-undoable and shows in
+     * the History window. This is the route the row's on/off switch takes too (it is one of the row's
+     * settings); [SetAlarmEnabled] is the engine's own disarm and is deliberately not a unit.
+     *
+     * [editKey] names the **field-focus session** a live text edit belongs to (`"{rowId}/{field}@{n}"`), so
+     * the keystrokes of one field collapse into one History Unit ([Delta.coalesceKey]). It is null for a
+     * structural change — an added or removed row, a switch, a weekday — which must never be absorbed into
+     * the text edit before it.
      */
     data class SetAlarms(
         val entries: List<org.example.project.scheduler.model.AlarmEntry>,
+        val editKey: String? = null,
     ) : SchedulerIntent
 
     /**
-     * PRD §18 Alarms: arm/disarm one alarm by id. Dispatched by the user's row switch and by the engine when
-     * a **one-off** alarm has rung (it disarms itself, leaving the row for re-arming). A no-op when the alarm
-     * is unknown or already in that state.
+     * PRD §18 Alarms: arm/disarm one alarm by id — the engine's own write, dispatched when a **one-off**
+     * alarm has rung (it disarms itself, leaving the row for re-arming). A no-op when the alarm is unknown
+     * or already in that state.
+     *
+     * **Not a History Unit**, and that is the rule and not an omission: it is authored by the ring sweep, not
+     * by the user, so a unit here would sit on top of the Main stack and turn the next Ctrl+Z into
+     * "un-ring the alarm" instead of "undo what I just typed". The user's row switch is a row *setting* and
+     * travels with the rest of them through [SetAlarms], which IS undoable.
      */
     data class SetAlarmEnabled(
         val id: String,
@@ -537,9 +551,17 @@ sealed interface SchedulerIntent {
      * running is moved only by [StartTimer] / [PauseTimer] / [ResetTimer] / [SetTimerCountdownField] /
      * [NudgeTimerRemaining], so editing a row's settings while it counts down cannot disturb its end
      * instant.
+     *
+     * Recorded as a **Main History Unit** — the bin button is the whole reason: striking a timer off by
+     * mistake is Ctrl+Z-undoable and shows in the History window. The run-state writes above are
+     * deliberately *not* units (see [StartTimer]).
+     *
+     * [editKey] is [SetAlarms.editKey]'s rule for this list: the field-focus session a live text edit
+     * belongs to, null for a structural change.
      */
     data class SetTimers(
         val entries: List<org.example.project.scheduler.model.TimerEntry>,
+        val editKey: String? = null,
     ) : SchedulerIntent
 
     /**
@@ -547,6 +569,16 @@ sealed interface SchedulerIntent {
      * dialled in before it was ever started) — it becomes due at
      * [nowMillis] plus whatever is left. [nowMillis] is passed in rather than read, so the reducer stays a
      * pure function of its inputs. A no-op when the timer is unknown or already running.
+     *
+     * **The five run-state writes are not History Units, and that is a rule** — this one, [PauseTimer],
+     * [ResetTimer], [SetTimerCountdownField] and [NudgeTimerRemaining]. Their currency is
+     * [org.example.project.scheduler.model.TimerEntry.endsAtMillis], an ABSOLUTE instant measured against a
+     * now-line that keeps moving, so a delta replayed later does not mean what it meant when it was recorded:
+     * undoing a pause would restore a due instant now in the past and the timer would ring on the spot. A
+     * History Unit must be replayable; these are not. They also already carry their own inverses on the row
+     * (Pause ↔ Resume, Reset ↔ Start), which the bin button — [SetTimers], and undoable — does not. And
+     * [ResetTimer] is dispatched by the engine after a ring, so a unit here would put a machine-authored
+     * step on top of the user's stack.
      */
     data class StartTimer(
         val id: String,

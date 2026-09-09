@@ -88,3 +88,20 @@ a plain `Box`. Today: the lateral menu's "Look away now" / "Switch task" / "I'm 
 
 ---
 
+## Undo/redo chords are read in ONE place
+
+- **`undoRedoIntentFor` (`ui/KeyboardShortcuts.kt`) is the only reading of Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y in
+  the app.** Every surface that owns the keyboard answers them — the task tree, the calendar, the Alarms
+  window — and each used to spell the test out for itself. Three copies of one rule is exactly how they came
+  to agree on something wrong: none looked at Shift, so **Ctrl+Shift+Z fell into the `Ctrl+Z` branch and
+  undid a third time** where every other application redoes. A fourth surface calls this function; it does
+  not re-spell it.
+- The rule proper takes the four facts that decide it (`key`, `keyDown`, `ctrlOrMeta`, `shift`) and the
+  `KeyEvent` overload is only the adapter, so `UndoRedoChordTest` can hold it to the contract without a
+  synthetic key event. **Cmd counts as Ctrl**, as everywhere else.
+- Which *stack* the intent then walks is not decided here: that is `SchedulerReducer.contentCategory`, off
+  whichever surface has the focus.
+- `Alt + ← / →` (selection history) is a separate rule and lives on the tree, which is the only surface with
+  a selection to walk.
+
+---

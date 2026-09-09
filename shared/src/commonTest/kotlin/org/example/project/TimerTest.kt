@@ -10,6 +10,7 @@ import org.example.project.scheduler.domain.TimerDomain
 import org.example.project.scheduler.model.AlarmEntry
 import org.example.project.scheduler.model.TimerEntry
 import org.example.project.scheduler.persistence.SchedulerStateCodec
+import org.example.project.scheduler.state.HistoryCategory
 import org.example.project.scheduler.state.SchedulerIntent
 import org.example.project.scheduler.state.SchedulerReducer
 import org.example.project.scheduler.state.SchedulerState
@@ -608,14 +609,20 @@ class TimerTest {
         assertEquals(endsAt, renamed.timers.single().endsAtMillis)
     }
 
+    /**
+     * PRD §5: the timer LIST is routed through Undo/Redo, like the alarms beside it — the bin is why. The
+     * **run state** is not, and deliberately: its currency is an absolute due instant, which does not mean the
+     * same thing when a delta is replayed later. `AlarmHistoryTest` is the whole of it.
+     */
     @Test
-    fun editing_timers_is_not_part_of_the_tree_undo_history() {
-        // Like the alarms beside them: authoritative, but not routed through the Undo/Redo stacks.
+    fun the_timer_list_is_undoable_and_the_run_state_is_not() {
         val s0 = SchedulerState.empty()
         val s1 = SchedulerReducer.reduce(s0, SchedulerIntent.SetTimers(listOf(timer())))
-        assertEquals(s0.histories, s1.histories)
+        assertEquals(1, s1.histories.forCategory(HistoryCategory.Main).units.size)
+        assertTrue(SchedulerReducer.reduce(s1, SchedulerIntent.Undo).timers.isEmpty())
+
         val s2 = SchedulerReducer.reduce(s1, SchedulerIntent.StartTimer("timer-0", now))
-        assertEquals(s0.histories, s2.histories)
+        assertEquals(s1.histories, s2.histories)
     }
 
     // ----- persistence --------------------------------------------------------------------------

@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,8 +37,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -47,6 +57,7 @@ import kotlinx.datetime.DayOfWeek
 import kotlinx.datetime.isoDayNumber
 import org.example.project.scheduler.domain.AlarmDomain
 import org.example.project.scheduler.domain.TimerDomain
+import org.example.project.scheduler.state.SchedulerIntent
 import org.example.project.scheduler.model.AlarmEntry
 import org.example.project.scheduler.model.TimerEntry
 
@@ -77,11 +88,16 @@ import org.example.project.scheduler.model.TimerEntry
 @Composable
 fun AlarmWindow(
     alarms: List<AlarmEntry>,
-    onChange: (List<AlarmEntry>) -> Unit,
+    /**
+     * Persists + syncs the alarm list, and records it as a History Unit. The second argument is the
+     * **field-focus session** a live text edit belongs to (null for a structural change — an added or removed
+     * row, a switch, a weekday), which is what collapses the keystrokes of one field into one Ctrl+Z.
+     */
+    onChange: (List<AlarmEntry>, String?) -> Unit,
     /** PRD §18 Timers: the account's countdowns, including which of them are running. */
     timers: List<TimerEntry>,
-    /** Persists + syncs the timer rows' settings (label, duration, ring length, vibration). */
-    onTimersChange: (List<TimerEntry>) -> Unit,
+    /** Persists + syncs the timer rows' settings (label, duration, ring length, vibration), as [onChange]. */
+    onTimersChange: (List<TimerEntry>, String?) -> Unit,
     /** Start the timer with this id, or resume it from where a pause left it. */
     onStartTimer: (String) -> Unit,
     /** Hold the timer with this id where it is. */
@@ -105,6 +121,13 @@ fun AlarmWindow(
      */
     nowMillis: () -> Long,
     onDismiss: () -> Unit,
+    /**
+     * PRD §5: Ctrl+Z / Ctrl+Y from inside this window. They are the app's own — the units this window
+     * commits are on the Main stack — but the chord has to be caught here: it lives on the task tree's and
+     * the calendar's key handlers, and neither of them can see a keystroke aimed at a floating window.
+     */
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
     modifier: Modifier = Modifier,
     /** Initial position relative to centered; staggered per window so they open in a clickable cascade. */
     initialOffset: Offset = Offset.Zero,
@@ -117,48 +140,77 @@ fun AlarmWindow(
 ) {
     var offset by remember { mutableStateOf(initialOffset) }
     // Per-row editable text for the parsed fields, so an in-progress "7:" / "" isn't reformatted on each
-    // keystroke. Seeded once from the incoming alarms; live edits drive both this and the pushed list.
-    val rows = remember {
-        mutableStateListOf<AlarmRow>().apply {
-            addAll(
-                alarms.map {
-                    AlarmRow(
-                        id = it.id,
-                        timeText = formatAlarmTime(it.timeOfDayMinutes),
-                        label = it.label,
-                        soundText = it.soundSeconds.toString(),
-                        vibrate = it.vibrate,
-                        days = it.days,
-                        repeats = it.repeats,
-                        enabled = it.enabled,
-                    )
-                },
-            )
+    // keystroke. Seeded from the incoming alarms; live edits drive both this and the pushed list.
+    val rows = remember { mutableStateListOf<AlarmRow>().apply { addAll(alarms.map(::alarmRowOf)) } }
+    // What this window last pushed. The local copy above is the truth for what the FIELDS show, so it cannot
+    // simply follow [alarms] — every keystroke would be overwritten by the round-trip of its own push, and a
+    // half-typed "7:" would be reformatted to "0:00" under the caret. But it must not ignore the list either:
+    // an **undo** (or a peer's sync pull, or the engine disarming a one-off that rang) changes the account's
+    // alarms without going through this window, and a local copy that never heard of it would go on showing
+    // the row the user just struck off — and push it back at the next keystroke. So: re-seed exactly when the
+    // incoming list is not the one this window last sent.
+    var pushedAlarms by remember { mutableStateOf(alarms) }
+    LaunchedEffect(alarms) {
+        if (alarms != pushedAlarms) {
+            pushedAlarms = alarms
+            rows.clear()
+            rows.addAll(alarms.map(::alarmRowOf))
         }
     }
     // The same, for the timers — their SETTINGS only. Whether a row is running is read live off [timers]
     // below, because it is moved by the start/pause/reset callbacks (and by a peer over sync), not by typing
     // here; keeping it in this local copy is what would let a keystroke overwrite a running countdown.
-    val timerRows = remember {
-        mutableStateListOf<TimerRow>().apply {
-            addAll(
-                timers.map {
-                    TimerRow(
-                        id = it.id,
-                        durationText = formatDuration(it.durationSeconds),
-                        label = it.label,
-                        soundText = it.soundSeconds.toString(),
-                        vibrate = it.vibrate,
-                    )
-                },
-            )
+    val timerRows = remember { mutableStateListOf<TimerRow>().apply { addAll(timers.map(::timerRowOf)) } }
+    // The alarms' re-seed rule, told against the SETTINGS only: the run state moves on its own (a start, a
+    // pause, the ring that resets a row) and none of it is drawn from this copy, so re-seeding on it would
+    // reformat a half-typed duration every time a countdown was started.
+    var pushedTimerSettings by remember { mutableStateOf(timers.map(::timerRowOf)) }
+    val timerSettings = timers.map(::timerRowOf)
+    LaunchedEffect(timerSettings) {
+        if (timerSettings != pushedTimerSettings) {
+            pushedTimerSettings = timerSettings
+            timerRows.clear()
+            timerRows.addAll(timerSettings)
         }
     }
+
+    // PRD §5: the field-focus session a live text edit belongs to. The window pushes its whole list on every
+    // keystroke, so without this a five-letter label would be five History Units for Ctrl+Z to walk back one
+    // character at a time. The epoch makes each visit to a field its own session, so leaving a field and
+    // coming back to it is two units and not one.
+    var editEpoch by remember { mutableStateOf(0) }
+    var editKey by remember { mutableStateOf<String?>(null) }
+    fun onFieldFocus(field: String, focused: Boolean) {
+        if (focused) {
+            editEpoch++
+            editKey = field + "@" + editEpoch
+        } else if (editKey?.substringBeforeLast('@') == field) {
+            // Only if it is still this field's: Compose may report the gain before the loss when the focus
+            // moves between two fields (the same rule the countdown's draft follows).
+            editKey = null
+        }
+    }
+    /** The key a live edit of [field] on [rowId] commits under, or null when that field does not hold it. */
+    fun sessionKeyFor(rowId: String, field: String?): String? {
+        if (field == null) return null
+        return editKey?.takeIf { it.substringBeforeLast('@') == rowId + "/" + field }
+    }
+
+    // PRD §5/§8: this window owns the keyboard while it is the active surface, so its Ctrl+Z / Ctrl+Y reach
+    // the Main stack its own units are on. The calendar's rule exactly, and for the reason the calendar has
+    // it: focus is claimed when the window opens and **RECLAIMED ON EVERY PRESS INSIDE IT** (below, through
+    // the same `raiseOnPress` that raises it). Claiming it once is not enough and the bin is the proof — a
+    // press on a row's bin destroys the row, and with it whichever of its fields held the focus, so the
+    // window would be left holding no focus at all and the very Ctrl+Z that undoes the deletion would reach
+    // nobody. That is the bug this pair of lines exists to prevent; do not make either of them conditional.
+    val windowFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { windowFocus.requestFocus() } }
 
     // The countdown's own clock. The engine's now-line ticks once per production tick (30 s), which would
     // make a countdown jump in half-minutes, so this window polls the app clock itself — but only while a
     // timer is actually running, and only while the window is open. Display-only Compose state, like the
     // calendar's zoom: nothing here is persisted, synced or scheduled.
+
     var displayNowMillis by remember { mutableStateOf(nowMillis()) }
     val anyRunning = timers.any { it.running }
     LaunchedEffect(anyRunning) {
@@ -169,8 +221,8 @@ fun AlarmWindow(
         }
     }
 
-    fun push() {
-        onChange(
+    fun push(editKey: String? = null) {
+        val entries =
             rows.map { row ->
                 AlarmEntry(
                     id = row.id,
@@ -184,12 +236,14 @@ fun AlarmWindow(
                     repeats = row.repeats,
                     enabled = row.enabled,
                 )
-            },
-        )
+            }
+        // Remember what went out, so the round-trip of this very push is not mistaken for an outside change.
+        pushedAlarms = entries
+        onChange(entries, editKey)
     }
 
-    fun pushTimers() {
-        onTimersChange(
+    fun pushTimers(editKey: String? = null) {
+        val entries =
             timerRows.map { row ->
                 // Carry the run state through untouched: this push is about the settings, and the row may be
                 // counting down while the user edits its label.
@@ -205,8 +259,9 @@ fun AlarmWindow(
                     endsAtMillis = live?.endsAtMillis,
                     remainingMillis = live?.remainingMillis,
                 )
-            },
-        )
+            }
+        pushedTimerSettings = entries.map(::timerRowOf)
+        onTimersChange(entries, editKey)
     }
 
     Surface(
@@ -219,8 +274,28 @@ fun AlarmWindow(
             // requiredWidth (not width) so the window keeps its fixed width and does not adapt to the app's
             // width when the content area is narrower than it.
             .requiredWidth(440.dp)
-            // Raise on press AFTER the offset so the hit region tracks the (possibly dragged) window.
-            .raiseOnPress(onRaise),
+            .focusRequester(windowFocus)
+            .focusable()
+            // PRD §5: the window's own undo/redo, read by the app's ONE interpreter of those chords. A
+            // *preview* handler, so the chord is caught whichever field inside holds the focus rather than
+            // being swallowed by a text field. Everything else falls through untouched.
+            .onPreviewKeyEvent { event ->
+                when (undoRedoIntentFor(event)) {
+                    SchedulerIntent.Undo -> onUndo()
+                    SchedulerIntent.Redo -> onRedo()
+                    else -> return@onPreviewKeyEvent false
+                }
+                true
+            }
+            // Raise on press AFTER the offset so the hit region tracks the (possibly dragged) window — and
+            // reclaim the keyboard with it, on the Initial pass, so a press that DESTROYS the focused node
+            // (the bin striking off the row whose field was being typed into) still leaves the window
+            // holding the focus its Ctrl+Z needs. `raiseOnPress` does not consume the press, so the field
+            // under it still takes the caret afterwards.
+            .raiseOnPress {
+                onRaise()
+                runCatching { windowFocus.requestFocus() }
+            },
     ) {
         Column(Modifier.fillMaxWidth()) {
             // Title bar doubles as the drag handle for moving the window.
@@ -264,14 +339,15 @@ fun AlarmWindow(
                 rows.forEachIndexed { index, row ->
                     AlarmRowEditor(
                         row = row,
-                        onRowChange = {
-                            rows[index] = it
-                            push()
+                        onRowChange = { updated, field ->
+                            rows[index] = updated
+                            push(sessionKeyFor(row.id, field))
                         },
                         onRemove = {
                             rows.removeAt(index)
                             push()
                         },
+                        onFieldFocus = { field, focused -> onFieldFocus(row.id + "/" + field, focused) },
                     )
                     if (index != rows.lastIndex) {
                         Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
@@ -321,9 +397,9 @@ fun AlarmWindow(
                         // between adding a row and the push landing.
                         entry = timers.firstOrNull { it.id == row.id },
                         nowMillis = displayNowMillis,
-                        onRowChange = {
-                            timerRows[index] = it
-                            pushTimers()
+                        onRowChange = { updated, field ->
+                            timerRows[index] = updated
+                            pushTimers(sessionKeyFor(row.id, field))
                         },
                         onStart = { onStartTimer(row.id) },
                         onPause = { onPauseTimer(row.id) },
@@ -334,6 +410,7 @@ fun AlarmWindow(
                             timerRows.removeAt(index)
                             pushTimers()
                         },
+                        onFieldFocus = { field, focused -> onFieldFocus(row.id + "/" + field, focused) },
                     )
                     if (index != timerRows.lastIndex) {
                         Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
@@ -382,27 +459,34 @@ private fun SectionHeader(text: String) {
 @Composable
 private fun AlarmRowEditor(
     row: AlarmRow,
-    onRowChange: (AlarmRow) -> Unit,
+    /**
+     * The edited row, and the **text field** the edit came from — [FIELD_TIME], [FIELD_LABEL], [FIELD_SOUND]
+     * — or null for a structural change (a switch, a weekday), which must never be absorbed into the History
+     * Unit of the text edit before it.
+     */
+    onRowChange: (AlarmRow, String?) -> Unit,
     onRemove: () -> Unit,
+    /** A text field of this row gained (true) or lost (false) the focus — one History Unit per session. */
+    onFieldFocus: (String, Boolean) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Switch(checked = row.enabled, onCheckedChange = { onRowChange(row.copy(enabled = it)) })
+            Switch(checked = row.enabled, onCheckedChange = { onRowChange(row.copy(enabled = it), null) })
             Spacer(Modifier.width(8.dp))
             OutlinedTextField(
                 value = row.timeText,
-                onValueChange = { onRowChange(row.copy(timeText = it)) },
+                onValueChange = { onRowChange(row.copy(timeText = it), FIELD_TIME) },
                 singleLine = true,
                 isError = parseAlarmTime(row.timeText) == null,
-                modifier = Modifier.width(92.dp),
+                modifier = Modifier.width(92.dp).editSession(FIELD_TIME, onFieldFocus),
             )
             Spacer(Modifier.width(8.dp))
             OutlinedTextField(
                 value = row.label,
-                onValueChange = { onRowChange(row.copy(label = it)) },
+                onValueChange = { onRowChange(row.copy(label = it), FIELD_LABEL) },
                 singleLine = true,
                 placeholder = { Text("Label", style = MaterialTheme.typography.bodySmall) },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).editSession(FIELD_LABEL, onFieldFocus),
             )
             Spacer(Modifier.width(4.dp))
             Box(
@@ -430,7 +514,7 @@ private fun AlarmRowEditor(
                         )
                         .clickable {
                             val next = if (selected) row.days - day else row.days + day
-                            if (next.isNotEmpty()) onRowChange(row.copy(days = next))
+                            if (next.isNotEmpty()) onRowChange(row.copy(days = next), null)
                         },
                     contentAlignment = Alignment.Center,
                 ) {
@@ -455,20 +539,20 @@ private fun AlarmRowEditor(
             Spacer(Modifier.width(6.dp))
             OutlinedTextField(
                 value = row.soundText,
-                onValueChange = { onRowChange(row.copy(soundText = it)) },
+                onValueChange = { onRowChange(row.copy(soundText = it), FIELD_SOUND) },
                 singleLine = true,
                 isError = parseSoundSeconds(row.soundText) == null,
-                modifier = Modifier.width(76.dp),
+                modifier = Modifier.width(76.dp).editSession(FIELD_SOUND, onFieldFocus),
             )
             Spacer(Modifier.width(4.dp))
             Text(text = "s", style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.width(12.dp))
             Text(text = "Vibrate", style = MaterialTheme.typography.bodySmall)
-            Switch(checked = row.vibrate, onCheckedChange = { onRowChange(row.copy(vibrate = it)) })
+            Switch(checked = row.vibrate, onCheckedChange = { onRowChange(row.copy(vibrate = it), null) })
             Spacer(Modifier.width(8.dp))
             // Off = a one-off: it rings at the next of its days and then disarms itself.
             Text(text = "Repeat", style = MaterialTheme.typography.bodySmall)
-            Switch(checked = row.repeats, onCheckedChange = { onRowChange(row.copy(repeats = it)) })
+            Switch(checked = row.repeats, onCheckedChange = { onRowChange(row.copy(repeats = it), null) })
         }
     }
 }
@@ -486,13 +570,15 @@ private fun TimerRowEditor(
     row: TimerRow,
     entry: TimerEntry?,
     nowMillis: Long,
-    onRowChange: (TimerRow) -> Unit,
+    /** [AlarmRowEditor]'s rule: the edited row, and the text field it came from (null for a switch). */
+    onRowChange: (TimerRow, String?) -> Unit,
     onStart: () -> Unit,
     onPause: () -> Unit,
     onReset: () -> Unit,
     onSetCountdownField: (TimerDomain.TimerField, Int) -> Unit,
     onNudge: (Long) -> Unit,
     onRemove: () -> Unit,
+    onFieldFocus: (String, Boolean) -> Unit,
 ) {
     val running = entry?.running == true
     val paused = entry?.paused == true
@@ -522,18 +608,18 @@ private fun TimerRowEditor(
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = row.durationText,
-                onValueChange = { onRowChange(row.copy(durationText = it)) },
+                onValueChange = { onRowChange(row.copy(durationText = it), FIELD_DURATION) },
                 singleLine = true,
                 isError = parseDurationSeconds(row.durationText) == null,
-                modifier = Modifier.width(92.dp),
+                modifier = Modifier.width(92.dp).editSession(FIELD_DURATION, onFieldFocus),
             )
             Spacer(Modifier.width(8.dp))
             OutlinedTextField(
                 value = row.label,
-                onValueChange = { onRowChange(row.copy(label = it)) },
+                onValueChange = { onRowChange(row.copy(label = it), FIELD_LABEL) },
                 singleLine = true,
                 placeholder = { Text("Label", style = MaterialTheme.typography.bodySmall) },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).editSession(FIELD_LABEL, onFieldFocus),
             )
             Spacer(Modifier.width(4.dp))
             Box(
@@ -609,19 +695,58 @@ private fun TimerRowEditor(
             Spacer(Modifier.width(6.dp))
             OutlinedTextField(
                 value = row.soundText,
-                onValueChange = { onRowChange(row.copy(soundText = it)) },
+                onValueChange = { onRowChange(row.copy(soundText = it), FIELD_SOUND) },
                 singleLine = true,
                 isError = parseSoundSeconds(row.soundText) == null,
-                modifier = Modifier.width(76.dp),
+                modifier = Modifier.width(76.dp).editSession(FIELD_SOUND, onFieldFocus),
             )
             Spacer(Modifier.width(4.dp))
             Text(text = "s", style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.width(12.dp))
             Text(text = "Vibrate", style = MaterialTheme.typography.bodySmall)
-            Switch(checked = row.vibrate, onCheckedChange = { onRowChange(row.copy(vibrate = it)) })
+            Switch(checked = row.vibrate, onCheckedChange = { onRowChange(row.copy(vibrate = it), null) })
         }
     }
 }
+
+/**
+ * PRD §5: report this field's focus, so every visit to it is one **edit session** and therefore one History
+ * Unit however many characters are typed into it. The names are the window's own and only ever travel with a
+ * row id in front of them.
+ */
+private fun Modifier.editSession(field: String, onFieldFocus: (String, Boolean) -> Unit): Modifier =
+    this.onFocusChanged { onFieldFocus(field, it.isFocused) }
+
+private const val FIELD_TIME = "time"
+private const val FIELD_LABEL = "label"
+private const val FIELD_SOUND = "sound"
+private const val FIELD_DURATION = "duration"
+
+/** The editable text row an alarm shows as — the seeding both the first composition and a re-seed use. */
+private fun alarmRowOf(entry: AlarmEntry): AlarmRow =
+    AlarmRow(
+        id = entry.id,
+        timeText = formatAlarmTime(entry.timeOfDayMinutes),
+        label = entry.label,
+        soundText = entry.soundSeconds.toString(),
+        vibrate = entry.vibrate,
+        days = entry.days,
+        repeats = entry.repeats,
+        enabled = entry.enabled,
+    )
+
+/**
+ * The editable text row a timer shows as — its **settings** only, which is also what says whether an incoming
+ * list differs from this window's own copy in a way the fields must follow (the run state never does).
+ */
+private fun timerRowOf(entry: TimerEntry): TimerRow =
+    TimerRow(
+        id = entry.id,
+        durationText = formatDuration(entry.durationSeconds),
+        label = entry.label,
+        soundText = entry.soundSeconds.toString(),
+        vibrate = entry.vibrate,
+    )
 
 /**
  * PRD §18 Timers: one of the three countdown components, as a field.

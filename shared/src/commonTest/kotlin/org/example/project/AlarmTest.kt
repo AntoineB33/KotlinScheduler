@@ -278,11 +278,19 @@ class AlarmTest {
         assertEquals(s1, SchedulerReducer.reduce(s1, SchedulerIntent.SetAlarmEnabled("alarm-0", false)))
     }
 
+    /**
+     * PRD §5: the alarm list IS routed through Undo/Redo — a row added or struck off with the bin comes back
+     * with Ctrl+Z. The engine's own disarm of a rung one-off is the exception, and the rule: it is the app's
+     * write, not the user's, so it leaves no unit for Ctrl+Z to find. `AlarmHistoryTest` is the whole of it.
+     */
     @Test
-    fun editing_alarms_is_not_part_of_the_tree_undo_history() {
+    fun editing_alarms_is_undoable_but_the_engines_own_disarm_is_not() {
         val withAlarms = SchedulerReducer.reduce(SchedulerState.empty(), SchedulerIntent.SetAlarms(listOf(alarm())))
-        val undone = SchedulerReducer.reduce(withAlarms, SchedulerIntent.Undo)
-        assertEquals(withAlarms.alarms, undone.alarms)
+        assertTrue(withAlarms.alarms.isNotEmpty())
+        assertTrue(SchedulerReducer.reduce(withAlarms, SchedulerIntent.Undo).alarms.isEmpty())
+
+        val disarmed = SchedulerReducer.reduce(withAlarms, SchedulerIntent.SetAlarmEnabled("alarm-0", false))
+        assertEquals(withAlarms.histories, disarmed.histories)
     }
 
     // ----- persistence --------------------------------------------------------------------------

@@ -568,7 +568,10 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
             FloatingWindow.Reminders -> AppWindow.Reminders
             FloatingWindow.History -> AppWindow.History
             FloatingWindow.Sleep -> null
-            FloatingWindow.Alarms -> null
+            // PRD §5/§7: the Alarms window commits History Units of its own (its lists are authoritative
+            // user state), so it has to claim the app-wide focus — that is what routes its Ctrl+Z to the
+            // Main stack rather than to the calendar's, and what hands it the keyboard.
+            FloatingWindow.Alarms -> AppWindow.Alarms
             FloatingWindow.TaskTrees -> null
             FloatingWindow.TaskList -> null
             FloatingWindow.TaskRelations -> null
@@ -2018,9 +2021,13 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                     if (alarmWindowOpen) {
                         AlarmWindow(
                             alarms = schedulerState.alarms,
-                            onChange = { vm.dispatch(SchedulerIntent.SetAlarms(it)) },
+                            onChange = { entries, editKey ->
+                                vm.dispatch(SchedulerIntent.SetAlarms(entries, editKey))
+                            },
                             timers = schedulerState.timers,
-                            onTimersChange = { vm.dispatch(SchedulerIntent.SetTimers(it)) },
+                            onTimersChange = { entries, editKey ->
+                                vm.dispatch(SchedulerIntent.SetTimers(entries, editKey))
+                            },
                             // The run-state writes are dispatched with the clock's instant, not the display
                             // now-line: a countdown started at 17:00:00.4 must end 5 minutes after that, not
                             // after the quantized tick the calendar is drawn against — and the same holds for
@@ -2041,6 +2048,11 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             // production tick, which is far too coarse for a countdown.
                             nowMillis = { clock.nowMillis() },
                             onDismiss = { alarmWindowOpen = false },
+                            // PRD §5: the window's own lists are undoable, so the chord has to work from
+                            // inside it — the tree's and the calendar's handlers never see a keystroke aimed
+                            // at a floating window.
+                            onUndo = { vm.dispatch(SchedulerIntent.Undo) },
+                            onRedo = { vm.dispatch(SchedulerIntent.Redo) },
                             // Pre-fill a newly added alarm's Time field with the current clock time.
                             newRowTimeOfDayMinutes = {
                                 val t = Instant.fromEpochMilliseconds(clock.nowMillis()).toLocalDateTime(tz)

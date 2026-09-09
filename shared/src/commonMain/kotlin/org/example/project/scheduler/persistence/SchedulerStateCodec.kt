@@ -46,6 +46,7 @@ import org.example.project.scheduler.model.TaskRelationMark
 import org.example.project.scheduler.model.TaskTimeRange
 import org.example.project.scheduler.model.WellKnownIds
 import org.example.project.scheduler.model.TaskTreeId
+import org.example.project.scheduler.state.AlarmsDelta
 import org.example.project.scheduler.state.AppWindow
 import org.example.project.scheduler.state.CellEditMode
 import org.example.project.scheduler.state.Delta
@@ -80,6 +81,7 @@ import org.example.project.scheduler.state.TaskTreeStateSnapshot
 import org.example.project.scheduler.state.SetExpandedDelta
 import org.example.project.scheduler.state.ToggleExpandDelta
 import org.example.project.scheduler.state.TreeMutationDelta
+import org.example.project.scheduler.state.TimersDelta
 import org.example.project.scheduler.state.TreeSnapshot
 
 /**
@@ -396,26 +398,11 @@ object SchedulerStateCodec {
             nextPanelCounter = nextPanelCounter,
             automaticSchedule = automaticSchedule,
             chores = chores.map { PersistedChoreEntry(it.title, it.spanDays, it.timeOfDayMinutes, it.daysFormula, it.recurrenceUnit, it.id, it.constrainedToReminderId) },
-            alarms =
-                alarms.map {
-                    PersistedAlarm(
-                        it.id, it.label, it.timeOfDayMinutes, it.soundSeconds, it.vibrate,
-                        // Sorted ISO day numbers, so the encoded payload (and therefore the sync fingerprint)
-                        // is stable whatever order the set iterates in.
-                        it.days.map { day -> day.isoDayNumber }.sorted(),
-                        it.repeats, it.enabled,
-                    )
-                },
+            alarms = alarms.map { it.toPersisted() },
             // PRD §18 Timers: the run state rides along with the settings — `endsAtMillis` is an absolute
             // instant nothing else can recompute, so it is authoritative and belongs on the wire (CLAUDE.md
             // § State). The remaining time never is: it is derived from that instant and the now-line.
-            timers =
-                timers.map {
-                    PersistedTimer(
-                        it.id, it.label, it.durationSeconds, it.soundSeconds, it.vibrate,
-                        it.endsAtMillis, it.remainingMillis,
-                    )
-                },
+            timers = timers.map { it.toPersisted() },
             // PRD §5: the relative-priority window's pinned cells, sorted so the encoded payload (and the
             // sync fingerprint with it) does not depend on the map's iteration order.
             relativePriorityPins =
@@ -689,6 +676,10 @@ object SchedulerStateCodec {
                 )
             is ShortcutBindingDelta ->
                 PersistedDelta.ShortcutBindings(before.toPersistedRows(), after.toPersistedRows())
+            is AlarmsDelta ->
+                PersistedDelta.Alarms(before.map { it.toPersisted() }, after.map { it.toPersisted() })
+            is TimersDelta ->
+                PersistedDelta.Timers(before.map { it.toPersisted() }, after.map { it.toPersisted() })
             NoOpDelta -> PersistedDelta.NoOp
         }
 
@@ -932,38 +923,12 @@ object SchedulerStateCodec {
             ),
             // PRD §18 Alarms: a payload written before alarms existed decodes to an empty list; a row whose
             // id was somehow blank gets one minted here (the same healing the reminders get above).
-            alarms = AlarmDomain.assignAlarmIds(
-                alarms.map {
-                    AlarmEntry(
-                        id = it.id,
-                        label = it.label,
-                        timeOfDayMinutes = it.timeOfDayMinutes,
-                        soundSeconds = it.soundSeconds,
-                        vibrate = it.vibrate,
-                        // A payload written before the days existed (null) rings every day — what it did.
-                        days = it.days?.mapNotNullTo(mutableSetOf(), ::dayOfWeekOrNull) ?: AlarmEntry.EVERY_DAY,
-                        repeats = it.repeats,
-                        enabled = it.enabled,
-                    )
-                },
-            ),
+            alarms = AlarmDomain.assignAlarmIds(alarms.map { it.toAlarmEntry() }),
             // PRD §18 Timers: a payload written before timers existed decodes to an empty list. Every row
             // is healed on the way in (CLAUDE.md: decode heals a shape an older build wrote rather than
             // surfacing it) — a blank id gets one minted, and a row holding BOTH run fields keeps only the
             // instant it is due at.
-            timers = TimerDomain.assignTimerIds(
-                timers.map {
-                    TimerEntry(
-                        id = it.id,
-                        label = it.label,
-                        durationSeconds = it.durationSeconds,
-                        soundSeconds = it.soundSeconds,
-                        vibrate = it.vibrate,
-                        endsAtMillis = it.endsAtMillis,
-                        remainingMillis = it.remainingMillis,
-                    )
-                },
-            ).map(TimerDomain::healed),
+            timers = TimerDomain.assignTimerIds(timers.map { it.toTimerEntry() }).map(TimerDomain::healed),
             // PRD §5: a payload written before the relative-priority window existed decodes to no pins.
             relativePriorityPins =
                 relativePriorityPins
@@ -1112,6 +1077,18 @@ object SchedulerStateCodec {
                 SleepDelta(
                     before?.let { SleepSchedule(it.wakeMinutes, it.goalWakeMinutes, it.sleepDurationMinutes, it.anchorEpochDay) },
                     SleepSchedule(after.wakeMinutes, after.goalWakeMinutes, after.sleepDurationMinutes, after.anchorEpochDay),
+                )
+            is PersistedDelta.Alarms ->
+                // Healed on the way in like the live list is: an older build's row keeps ringing the way it
+                // did, and a blank id gets one, so an undo can never install a shape the invariants forbid.
+                AlarmsDelta(
+                    AlarmDomain.assignAlarmIds(before.map { it.toAlarmEntry() }),
+                    AlarmDomain.assignAlarmIds(after.map { it.toAlarmEntry() }),
+                )
+            is PersistedDelta.Timers ->
+                TimersDelta(
+                    TimerDomain.assignTimerIds(before.map { it.toTimerEntry() }).map(TimerDomain::healed),
+                    TimerDomain.assignTimerIds(after.map { it.toTimerEntry() }).map(TimerDomain::healed),
                 )
             is PersistedDelta.ShortcutBindings ->
                 ShortcutBindingDelta(before.toShortcutBindings(), after.toShortcutBindings())
@@ -1455,6 +1432,50 @@ private data class PersistedTaskRelation(
 )
 
 /**
+ * PRD §18 Alarms: the persisted form of one alarm row. One function, because the row is written in two
+ * places now — the account's live list and the before/after sides of an [AlarmsDelta] History Unit — and two
+ * spellings of it would be two shapes to keep in step.
+ */
+private fun AlarmEntry.toPersisted(): PersistedAlarm =
+    PersistedAlarm(
+        id, label, timeOfDayMinutes, soundSeconds, vibrate,
+        // Sorted ISO day numbers, so the encoded payload (and therefore the sync fingerprint) is stable
+        // whatever order the set iterates in.
+        days.map { day -> day.isoDayNumber }.sorted(),
+        repeats, enabled,
+    )
+
+/** The inverse of [AlarmEntry.toPersisted]. A blank id is minted by the caller's `assignAlarmIds`. */
+private fun PersistedAlarm.toAlarmEntry(): AlarmEntry =
+    AlarmEntry(
+        id = id,
+        label = label,
+        timeOfDayMinutes = timeOfDayMinutes,
+        soundSeconds = soundSeconds,
+        vibrate = vibrate,
+        // A payload written before the days existed (null) rings every day — what it did.
+        days = days?.mapNotNullTo(mutableSetOf(), ::dayOfWeekOrNull) ?: AlarmEntry.EVERY_DAY,
+        repeats = repeats,
+        enabled = enabled,
+    )
+
+/** PRD §18 Timers: the persisted form of one timer row — [AlarmEntry.toPersisted]'s rule for the timers. */
+private fun TimerEntry.toPersisted(): PersistedTimer =
+    PersistedTimer(id, label, durationSeconds, soundSeconds, vibrate, endsAtMillis, remainingMillis)
+
+/** The inverse of [TimerEntry.toPersisted]. The caller heals the run fields ([TimerDomain.healed]). */
+private fun PersistedTimer.toTimerEntry(): TimerEntry =
+    TimerEntry(
+        id = id,
+        label = label,
+        durationSeconds = durationSeconds,
+        soundSeconds = soundSeconds,
+        vibrate = vibrate,
+        endsAtMillis = endsAtMillis,
+        remainingMillis = remainingMillis,
+    )
+
+/**
  * PRD §18 Alarms: one persisted alarm. Every field carries a default so a payload written by an older shape
  * (or by a build before a field existed) decodes cleanly.
  */
@@ -1627,6 +1648,30 @@ private sealed interface PersistedDelta {
     data class ShortcutBindings(
         val before: List<PersistedShortcutBinding>,
         val after: List<PersistedShortcutBinding>,
+    ) : PersistedDelta
+
+    /**
+     * PRD §18 Alarms: the account's alarm list before and after one change in the Alarms window. New in
+     * 1.6.0 — a history written by an older build simply holds none of these, and every older unit still
+     * decodes, since this is a new [PersistedDelta] subtype and not a field on an existing one.
+     *
+     * The delta's `coalesceKey` is deliberately **not** here: it names a field-focus session in the window
+     * that wrote it, and a unit read back from the DB has closed its gesture — nothing may merge into it, so
+     * it decodes with no key at all.
+     */
+    @Serializable
+    @SerialName("alarms")
+    data class Alarms(
+        val before: List<PersistedAlarm>,
+        val after: List<PersistedAlarm>,
+    ) : PersistedDelta
+
+    /** PRD §18 Timers: [Alarms]' rule for the timer list. New in 1.6.0, and additive in the same way. */
+    @Serializable
+    @SerialName("timers")
+    data class Timers(
+        val before: List<PersistedTimer>,
+        val after: List<PersistedTimer>,
     ) : PersistedDelta
 
     @Serializable

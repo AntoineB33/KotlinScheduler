@@ -289,9 +289,9 @@ object SchedulerReducer {
             is SchedulerIntent.SetChores -> reduceSetChores(state, intent.entries, intent.todayStartMillis, intent.nowMillis)
             is SchedulerIntent.SetReminderChecked -> reduceSetReminderChecked(state, intent.panelId, intent.checked, intent.nowMillis)
             is SchedulerIntent.AddReminder -> reduceAddReminder(state, intent.reminderId, intent.title, intent.atMillis, intent.checked, intent.pinned)
-            is SchedulerIntent.SetAlarms -> reduceSetAlarms(state, intent.entries)
+            is SchedulerIntent.SetAlarms -> reduceSetAlarms(state, intent.entries, intent.editKey)
             is SchedulerIntent.SetAlarmEnabled -> reduceSetAlarmEnabled(state, intent.id, intent.enabled)
-            is SchedulerIntent.SetTimers -> reduceSetTimers(state, intent.entries)
+            is SchedulerIntent.SetTimers -> reduceSetTimers(state, intent.entries, intent.editKey)
             is SchedulerIntent.StartTimer -> reduceTimerTransition(state, intent.id) {
                 TimerDomain.started(it, intent.nowMillis)
             }
@@ -817,19 +817,33 @@ object SchedulerReducer {
     }
 
     /**
-     * PRD §18 Alarms: store the alarm list (minting an id for any blank row). Authoritative state, but — like
-     * the reminders list — it is not routed through the Undo/Redo history; it changes the schedule of nothing,
-     * so no panels are regenerated either.
+     * PRD §18 Alarms: store the alarm list (minting an id for any blank row). Authoritative state, and — the
+     * whole list being the user's own authorship — recorded as a **Main History Unit**, so an added row, a
+     * row struck off with the bin, and every settings change on a row are Ctrl+Z-undoable and show in the
+     * History window. It changes the schedule of nothing, so no panels are regenerated.
+     *
+     * [editKey] is the field-focus session a live text edit belongs to: the window pushes the whole list on
+     * every keystroke, so without it a five-letter label would be five units to walk back (see
+     * [Delta.coalesceKey]). Null for a structural change — an added or removed row, a switch, a weekday.
      */
     private fun reduceSetAlarms(
         state: SchedulerState,
         entries: List<org.example.project.scheduler.model.AlarmEntry>,
+        editKey: String? = null,
     ): SchedulerState {
         val withIds = AlarmDomain.assignAlarmIds(entries)
-        return if (state.alarms == withIds) state else state.copy(alarms = withIds)
+        if (state.alarms == withIds) return state
+        return commitDelta(state, AlarmsDelta(state.alarms, withIds, editKey))
     }
 
-    /** PRD §18 Alarms: arm/disarm one alarm (the row switch, and a one-off disarming itself after it rang). */
+    /**
+     * PRD §18 Alarms: the engine disarming a **one-off** alarm that has rung.
+     *
+     * No History Unit, deliberately: this is authored by the ring sweep, not by the user, and a unit here
+     * would sit on top of the Main stack so the next Ctrl+Z would un-ring the alarm instead of undoing what
+     * the user last did. The row's own on/off switch is a setting and travels through [reduceSetAlarms],
+     * which does record one.
+     */
     private fun reduceSetAlarmEnabled(state: SchedulerState, id: String, enabled: Boolean): SchedulerState {
         val alarm = state.alarms.firstOrNull { it.id == id } ?: return state
         if (alarm.enabled == enabled) return state
@@ -838,18 +852,22 @@ object SchedulerReducer {
 
     /**
      * PRD §18 Timers: store the timer list (minting an id for any blank row, and healing the run fields into
-     * the one shape they are allowed to be in). Authoritative state, and — like the alarms beside it — not
-     * routed through the Undo/Redo history.
+     * the one shape they are allowed to be in). Authoritative state, and recorded as a **Main History Unit**
+     * on the same rule as the alarms above — the bin button is why: a timer struck off by mistake comes back
+     * with Ctrl+Z.
      *
      * The rows carry their own run state, so a live text edit round-trips it untouched; the transitions below
-     * are what actually move it.
+     * are what actually move it — and they record nothing, because an absolute due instant undone later is
+     * not the instant that was recorded (see [SchedulerIntent.StartTimer]).
      */
     private fun reduceSetTimers(
         state: SchedulerState,
         entries: List<org.example.project.scheduler.model.TimerEntry>,
+        editKey: String? = null,
     ): SchedulerState {
         val withIds = TimerDomain.assignTimerIds(entries).map(TimerDomain::healed)
-        return if (state.timers == withIds) state else state.copy(timers = withIds)
+        if (state.timers == withIds) return state
+        return commitDelta(state, TimersDelta(state.timers, withIds, editKey))
     }
 
     /**
@@ -2432,6 +2450,33 @@ object SchedulerReducer {
         val retained =
             if (history.pointer == history.units.lastIndex) history.units
             else history.units.take(history.pointer + 1)
+
+        // PRD §5/§6: a live-edited field commits on every keystroke, so a unit carrying a
+        // [Delta.coalesceKey] is offered to the unit at the pointer first — the same field, in the same
+        // focus session, is ONE History Unit and one Ctrl+Z. The merged unit keeps the previous one's
+        // timestamp (the gesture began there) and its `before` side, so undoing walks the whole edit back
+        // to what the field held when it took the focus. Nothing is appended, so the cap cannot bite here.
+        if (forward.coalesceKey != null) {
+            val previous = retained.lastOrNull()
+            val merged = previous?.let { forward.coalesceOnto(it.delta) }
+            if (merged != null) {
+                val absorbed =
+                    retained.dropLast(1) +
+                        previous.copy(
+                            delta = merged,
+                            // A gesture that began on the real clock and ended on the diverged one is
+                            // tainted: the restart rollback must still reach it.
+                            debugTainted = previous.debugTainted || debugTainting(),
+                        )
+                return newState.copy(
+                    histories =
+                        state.histories.withCategory(
+                            category,
+                            history.copy(pointer = absorbed.lastIndex, units = absorbed),
+                        ),
+                )
+            }
+        }
 
         // PRD §6: stamp the change's wall-clock time; chronoId stays 0 unless an already-retained unit
         // shares this exact timestamp, in which case it is the next tie-break index (1, 2, …).
@@ -4493,6 +4538,171 @@ internal data class SleepDelta(
         return h.toString().padStart(2, '0') + ":" + m.toString().padStart(2, '0')
     }
 }
+
+/**
+ * PRD §18 Alarms: a change to the account's **alarm list** — a row added, a row struck off with the bin, or
+ * any of a row's settings edited (its time, label, days, ring length, vibration, repeat, on/off switch).
+ * Authoritative user intent (persisted + synced), so it is routed through Undo/Redo and shows in the History
+ * window, exactly like the sleep schedule beside it.
+ *
+ * [coalesceKey] is the field-focus session a live text edit belongs to. The Alarms window pushes its whole
+ * list on **every keystroke**, so without it typing a five-letter label would leave five units for Ctrl+Z to
+ * walk back one character at a time; two consecutive units carrying the same key are one gesture and are
+ * merged by [SchedulerReducer]'s commit. It is null for a structural change — an added or removed row, a
+ * switch, a weekday — which must never be absorbed into the text edit before it. Never persisted (see
+ * [Delta.coalesceKey]).
+ */
+internal data class AlarmsDelta(
+    val before: List<org.example.project.scheduler.model.AlarmEntry>,
+    val after: List<org.example.project.scheduler.model.AlarmEntry>,
+    override val coalesceKey: String? = null,
+) : Delta {
+    override val label: String
+        get() = listLabel(before.map { it.id }, after.map { it.id }, "alarm")
+
+    override val details: List<String>
+        get() = alarmDetails(before, after)
+
+    override fun coalesceOnto(previous: Delta): Delta? =
+        if (previous is AlarmsDelta && previous.coalesceKey == coalesceKey) copy(before = previous.before)
+        else null
+
+    override fun undo(state: SchedulerState): SchedulerState = state.copy(alarms = before)
+
+    override fun redo(state: SchedulerState): SchedulerState = state.copy(alarms = after)
+}
+
+/**
+ * PRD §18 Timers: a change to the account's **timer list** — a row added, a row struck off with the bin, or
+ * any of a row's settings edited (duration, label, ring length, vibration). [AlarmsDelta]'s rule for the
+ * second section of the same window, the coalescing key included.
+ *
+ * It carries the rows as they are, run state included, so undoing a **deletion** brings the timer back
+ * exactly as it was — a running one still running, and still due at the instant it was due at. What it never
+ * records is a run-state *transition*: those are not units at all (see [SchedulerIntent.StartTimer]).
+ */
+internal data class TimersDelta(
+    val before: List<org.example.project.scheduler.model.TimerEntry>,
+    val after: List<org.example.project.scheduler.model.TimerEntry>,
+    override val coalesceKey: String? = null,
+) : Delta {
+    override val label: String
+        get() = listLabel(before.map { it.id }, after.map { it.id }, "timer")
+
+    override val details: List<String>
+        get() = timerDetails(before, after)
+
+    override fun coalesceOnto(previous: Delta): Delta? =
+        if (previous is TimersDelta && previous.coalesceKey == coalesceKey) copy(before = previous.before)
+        else null
+
+    override fun undo(state: SchedulerState): SchedulerState = state.copy(timers = before)
+
+    override fun redo(state: SchedulerState): SchedulerState = state.copy(timers = after)
+}
+
+/**
+ * The label an [AlarmsDelta] / [TimersDelta] reads under in the History window: what the user did to the
+ * list, named after the [noun] the list holds. Rows are identified by id, so a row edited in place is neither
+ * an add nor a removal however much of it changed.
+ */
+private fun listLabel(before: List<String>, after: List<String>, noun: String): String {
+    val added = after.count { it !in before }
+    val removed = before.count { it !in after }
+    return when {
+        added > 0 && removed == 0 -> "Add " + noun
+        removed > 0 && added == 0 -> "Remove " + noun
+        added > 0 || removed > 0 -> "Change " + noun + "s"
+        else -> "Edit " + noun
+    }
+}
+
+/** PRD §18: the per-row lines an [AlarmsDelta] shows under its label — one per row added, removed or edited. */
+private fun alarmDetails(
+    before: List<org.example.project.scheduler.model.AlarmEntry>,
+    after: List<org.example.project.scheduler.model.AlarmEntry>,
+): List<String> {
+    fun name(a: org.example.project.scheduler.model.AlarmEntry): String =
+        hhmmOfDay(a.timeOfDayMinutes) + if (a.label.isBlank()) "" else " " + a.label
+    return listDetails(before.associateBy { it.id }, after.associateBy { it.id }, ::name) { b, a ->
+        buildList {
+            if (b.timeOfDayMinutes != a.timeOfDayMinutes)
+                add("time " + hhmmOfDay(b.timeOfDayMinutes) + " -> " + hhmmOfDay(a.timeOfDayMinutes))
+            if (b.label != a.label) add("label " + quoted(b.label) + " -> " + quoted(a.label))
+            if (b.days != a.days) add("days " + dayInitials(b.days) + " -> " + dayInitials(a.days))
+            if (b.soundSeconds != a.soundSeconds)
+                add("rings for " + b.soundSeconds + " s -> " + a.soundSeconds + " s")
+            if (b.vibrate != a.vibrate) add("vibrate " + onOff(b.vibrate) + " -> " + onOff(a.vibrate))
+            if (b.repeats != a.repeats) add("repeat " + onOff(b.repeats) + " -> " + onOff(a.repeats))
+            if (b.enabled != a.enabled) add(onOff(b.enabled) + " -> " + onOff(a.enabled))
+        }
+    }
+}
+
+/** PRD §18: the per-row lines a [TimersDelta] shows under its label. The run state is carried, never listed. */
+private fun timerDetails(
+    before: List<org.example.project.scheduler.model.TimerEntry>,
+    after: List<org.example.project.scheduler.model.TimerEntry>,
+): List<String> {
+    fun name(t: org.example.project.scheduler.model.TimerEntry): String =
+        TimerDomain.formatDuration(t.durationSeconds) + if (t.label.isBlank()) "" else " " + t.label
+    return listDetails(before.associateBy { it.id }, after.associateBy { it.id }, ::name) { b, a ->
+        buildList {
+            if (b.durationSeconds != a.durationSeconds)
+                add(
+                    "duration " + TimerDomain.formatDuration(b.durationSeconds) + " -> " +
+                        TimerDomain.formatDuration(a.durationSeconds),
+                )
+            if (b.label != a.label) add("label " + quoted(b.label) + " -> " + quoted(a.label))
+            if (b.soundSeconds != a.soundSeconds)
+                add("rings for " + b.soundSeconds + " s -> " + a.soundSeconds + " s")
+            if (b.vibrate != a.vibrate) add("vibrate " + onOff(b.vibrate) + " -> " + onOff(a.vibrate))
+        }
+    }
+}
+
+/**
+ * The shared shape of both lists' [Delta.details]: one line per row added, one per row removed, and one per
+ * row that stayed and changed — that last one naming the row and then the fields [fieldChanges] found. A row
+ * whose only change is one this delta does not list (a timer started while its label was being typed) yields
+ * no line rather than an empty one.
+ */
+private fun <T> listDetails(
+    before: Map<String, T>,
+    after: Map<String, T>,
+    name: (T) -> String,
+    fieldChanges: (T, T) -> List<String>,
+): List<String> = buildList {
+    for ((id, row) in after) if (id !in before) add("added " + name(row))
+    for ((id, row) in before) if (id !in after) add("removed " + name(row))
+    for ((id, b) in before) {
+        val a = after[id] ?: continue
+        if (a == b) continue
+        val changes = fieldChanges(b, a)
+        if (changes.isNotEmpty()) add(name(b) + ": " + changes.joinToString(", "))
+    }
+}
+
+/** `hh:mm` of a minutes-since-midnight time of day, for the alarm detail lines. */
+private fun hhmmOfDay(minutes: Int): String {
+    val h = (minutes / 60) % 24
+    val m = minutes % 60
+    return h.toString().padStart(2, '0') + ":" + m.toString().padStart(2, '0')
+}
+
+/** The alarm's ringing days as the window draws them (`MTWTFSS` order), or `none` for an empty set. */
+private fun dayInitials(days: Set<kotlinx.datetime.DayOfWeek>): String =
+    if (days.isEmpty()) {
+        "none"
+    } else {
+        kotlinx.datetime.DayOfWeek.entries
+            .filter { it in days }
+            .joinToString("") { it.name.take(1) }
+    }
+
+private fun quoted(text: String): String = "\"" + text + "\""
+
+private fun onOff(value: Boolean): String = if (value) "on" else "off"
 
 // ---------------------------------------------------------------------------
 // PRD §5/§6 History Manager: per-delta "all the data" lines. Each derives the concrete changes of a unit

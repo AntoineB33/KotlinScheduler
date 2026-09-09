@@ -156,6 +156,7 @@ import org.example.project.scheduler.state.CalendarEdge
 import org.example.project.scheduler.state.HistoryCategory
 import org.example.project.scheduler.state.HistoryUnit
 import org.example.project.scheduler.state.NotificationLogEntry
+import org.example.project.scheduler.state.SchedulerIntent
 import org.example.project.scheduler.state.SupabaseUsageEntry
 import org.example.project.scheduler.state.SchedulerHistories
 import org.example.project.scheduler.ui.contextMenuModifier
@@ -2766,16 +2767,18 @@ fun CalendarFloatingWindow(
                 ctrlHeld = event.isCtrlPressed || event.isMetaPressed
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 val mod = ctrlHeld
+                // PRD §5: Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y, read by the app's ONE interpreter of them.
+                val undoRedo = undoRedoIntentFor(event)
                 when {
                     event.key == Key.O && !mod -> {
                         onToggleOverlap()
                         true
                     }
-                    mod && event.key == Key.Z -> {
+                    undoRedo == SchedulerIntent.Undo -> {
                         onUndo()
                         true
                     }
-                    mod && event.key == Key.Y -> {
+                    undoRedo == SchedulerIntent.Redo -> {
                         onRedo()
                         true
                     }

@@ -1,8 +1,64 @@
 package org.example.project.ui
 
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import org.example.project.scheduler.platform.GlobalShortcut
 import org.example.project.scheduler.platform.GlobalShortcutBindings
 import org.example.project.scheduler.platform.ShortcutBinding
+import org.example.project.scheduler.state.SchedulerIntent
+
+/**
+ * PRD §5: what an undo/redo chord means — **the one reading of it in the app**.
+ *
+ * Every surface that owns the keyboard answers Ctrl+Z and Ctrl+Y (the task tree, the calendar, the Alarms
+ * window), and each used to spell the test out for itself. Three copies of one rule is how they came to
+ * disagree with the user: none of them looked at Shift, so **Ctrl+Shift+Z — redo on every other application
+ * — fell into the `Ctrl + Z` branch and undid a third time**. The rule lives here now and the surfaces route
+ * through it; a fourth surface must call this and never re-spell it.
+ *
+ * The chords, and all of them:
+ *  - **Ctrl+Z** (no Shift) → [SchedulerIntent.Undo]
+ *  - **Ctrl+Shift+Z** → [SchedulerIntent.Redo]
+ *  - **Ctrl+Y** → [SchedulerIntent.Redo]
+ *
+ * `Cmd` counts as `Ctrl` throughout, as it does everywhere else in the app. Which *stack* the intent then
+ * walks is not decided here — that is `SchedulerReducer.contentCategory`, off whichever surface has the
+ * focus. Returns null for anything else, so the caller lets the event fall through untouched.
+ */
+fun undoRedoIntentFor(event: KeyEvent): SchedulerIntent? =
+    undoRedoIntentFor(
+        key = event.key,
+        keyDown = event.type == KeyEventType.KeyDown,
+        // Cmd counts as Ctrl, as it does everywhere else in the app.
+        ctrlOrMeta = event.isCtrlPressed || event.isMetaPressed,
+        shift = event.isShiftPressed,
+    )
+
+/**
+ * The rule itself, on the four things about a key stroke that decide it — which is what
+ * `UndoRedoChordTest` holds to the contract above. The overload taking a `KeyEvent` is the adapter every
+ * surface calls; nothing but these four facts may ever enter the decision.
+ */
+fun undoRedoIntentFor(
+    key: Key,
+    keyDown: Boolean,
+    ctrlOrMeta: Boolean,
+    shift: Boolean,
+): SchedulerIntent? {
+    if (!keyDown || !ctrlOrMeta) return null
+    return when {
+        key == Key.Z && !shift -> SchedulerIntent.Undo
+        key == Key.Z -> SchedulerIntent.Redo
+        key == Key.Y -> SchedulerIntent.Redo
+        else -> null
+    }
+}
 
 /** One line of the keyboard-shortcuts window: the chord, and what striking it does. */
 data class KeyboardShortcut(val keys: String, val description: String)
@@ -135,7 +191,8 @@ object KeyboardShortcutCatalog {
                 title = "History",
                 note = "Undo and redo are routed to whichever surface has the focus.",
                 shortcuts = listOf(
-                    KeyboardShortcut("Ctrl + Z / Ctrl + Y", "Undo / redo"),
+                    KeyboardShortcut("Ctrl + Z", "Undo"),
+                    KeyboardShortcut("Ctrl + Shift + Z / Ctrl + Y", "Redo"),
                     KeyboardShortcut("Alt + ← / Alt + →", "Undo / redo the selection alone"),
                 ),
             ),

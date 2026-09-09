@@ -110,5 +110,46 @@ arming loop, a second sweep, a second ring path or a second notification funnel.
     thing each one is. `TimerDomain.formatDuration` / `formatCountdown` are that spelling, and they are the
     Alarms window's own: the window delegates to them so the two readouts cannot disagree.
 
+### Both lists are Undo/Redo history, and the run state is not
+
+→ `docs/invariants/task-tree.md` for the four-stack architecture the units live on.
+
+- **Everything the user does to either LIST is one Main History Unit** — a row added, a row struck off with
+  the bin, and every settings field of both sections (`AlarmsDelta` / `TimersDelta`, committed by
+  `reduceSetAlarms` / `reduceSetTimers`). Ctrl+Z, therefore, and never Alt+←/→: that pair walks the
+  *Selection* stack, and this window has no selection.
+- **The five run-state writes are not units, and that is the rule.** `StartTimer` / `PauseTimer` /
+  `ResetTimer` / `SetTimerCountdownField` / `NudgeTimerRemaining` write `endsAtMillis`, an ABSOLUTE instant
+  measured against a now-line that keeps moving: a delta replayed later does not mean what it meant when it
+  was recorded, and undoing a pause would restore an instant now in the past and ring the timer on the spot.
+  A History Unit must be replayable. They also already carry their own inverses on the row (Pause ↔ Resume,
+  Reset ↔ Start), which the bin does not.
+- **Nothing the app authors itself is a unit**: the engine disarming a one-off that has rung
+  (`SetAlarmEnabled` — the row's own switch is a *setting* and travels through `SetAlarms`, which is
+  undoable), the reset after a ring, `healed`, a peer's pull. A machine-authored unit would sit on top of the
+  Main stack and turn the next Ctrl+Z into "un-ring that".
+- **A live-edited field is ONE unit per focus session.** The window pushes its whole list on every keystroke,
+  so the unit carries a `Delta.coalesceKey` (`"{rowId}/{field}@{epoch}"`, minted when the field takes the
+  focus) and `commitDelta` merges it onto the unit at the pointer when the keys match, keeping that one's
+  `before` side. A structural change carries no key, so a switch flipped while a field still holds the focus
+  can never be absorbed into that field's unit. The key is never persisted — a unit reloaded from the DB has
+  closed its gesture.
+- **The window's local row copies must re-seed from an outside change.** They hold unparsed text (`"7:"`), so
+  they cannot simply follow the incoming list — every keystroke would be overwritten by the round-trip of its
+  own push. They re-seed exactly when the incoming list is not the one this window last pushed; for the
+  timers that comparison is the **settings only**, so a start never reformats a half-typed duration. Without
+  it an undone deletion stays on screen and is pushed back at the next keystroke.
+- **The window catches Ctrl+Z / Ctrl+Y itself and claims `AppWindow.Alarms`.** The chord lives on the tree's
+  and the calendar's key handlers, and there is no app-level one — a keystroke aimed at a floating window
+  reaches nobody. And `contentCategory` only lands on `Main` while the focus is on neither an Edit session nor
+  the calendar, so the window has to own the app-wide focus or its units are skipped.
+- **It claims the keyboard when it opens and RECLAIMS IT ON EVERY PRESS INSIDE IT** — the calendar's rule,
+  through the same `raiseOnPress` that raises the window, and unconditionally focusable like the calendar is.
+  Claiming it once is not enough, **and the bin is the proof**: a press on a row's bin destroys the row and
+  with it whichever of its fields held the focus, so a window that only grabbed focus when it became the
+  front one is left holding none — and the very Ctrl+Z that would undo the deletion reaches nobody. That is
+  not hypothetical; it shipped, and the History rows showed the units committed with the pointer never
+  moving. Do not gate either the `focusable()` or the reclaim on "is this the focused window".
+
 ---
 

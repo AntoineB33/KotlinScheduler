@@ -54,6 +54,7 @@ import org.example.project.scheduler.platform.isDeadKey
 import org.example.project.scheduler.platform.readSystemClipboardText
 import org.example.project.scheduler.platform.writeSystemClipboardText
 import org.example.project.scheduler.state.AppWindow
+import org.example.project.ui.undoRedoIntentFor
 import org.example.project.scheduler.state.SchedulerIntent
 import org.example.project.scheduler.state.SchedulerState
 import org.example.project.scheduler.state.SelectionNavigate
@@ -387,12 +388,9 @@ internal fun TaskTreeView(
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 val mod = event.isCtrlPressed || event.isMetaPressed
-                if (mod && event.key == Key.Z) {
-                    onIntent(SchedulerIntent.Undo)
-                    return@onPreviewKeyEvent true
-                }
-                if (mod && event.key == Key.Y) {
-                    onIntent(SchedulerIntent.Redo)
+                // PRD §5: Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y, read by the app's ONE interpreter of them.
+                undoRedoIntentFor(event)?.let {
+                    onIntent(it)
                     return@onPreviewKeyEvent true
                 }
                 // PRD §4 Find & replace. Above the Edit-Mode and min-time gates on purpose: Ctrl+F opens
