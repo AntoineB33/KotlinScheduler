@@ -47,6 +47,7 @@ class SqlDelightSchedulerStore(private val database: SchedulerDatabase) :
                             chronoId = row.chrono_id,
                             debugTainted = row.debug_tainted != 0L,
                             deltaJson = row.delta,
+                            window = row.window,
                         )
                     }
                 }
@@ -181,6 +182,7 @@ class SqlDelightSchedulerStore(private val database: SchedulerDatabase) :
                 delta = row.deltaJson,
                 delta_length = row.deltaJson.length.toLong(),
                 delta_hash = row.digestHash(),
+                window = row.window,
             )
         }
     }

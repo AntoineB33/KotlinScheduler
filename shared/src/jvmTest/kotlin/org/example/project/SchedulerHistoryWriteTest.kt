@@ -5,7 +5,9 @@ import org.example.project.scheduler.model.CellId
 import org.example.project.scheduler.persistence.SchedulerStateCodec
 import org.example.project.scheduler.persistence.SqlDelightSchedulerStore
 import org.example.project.scheduler.persistence.db.SchedulerDatabase
+import org.example.project.scheduler.persistence.HistoryDigest
 import org.example.project.scheduler.state.HistoryUnit
+import org.example.project.scheduler.state.HistoryWindow
 import org.example.project.scheduler.state.SchedulerHistories
 import org.example.project.scheduler.state.SchedulerHistory
 import org.example.project.scheduler.state.SchedulerState
@@ -250,6 +252,100 @@ class SchedulerHistoryWriteTest {
         assertEquals("SENTINEL-B", after[1], "an upgraded row must be reused, not rewritten")
         // …and it is healed in passing, so the next save aligns on the full identity.
         assertNotNull(storedDeltaHash(seq = 0), "the reused row was given the digest it lacked")
+    }
+
+    /**
+     * PRD §6 + persisted-DB compatibility (CLAUDE.md): the window a History Unit was made in survives a
+     * round trip through the `history_unit` table, and a unit that names none comes back naming none.
+     */
+    @Test
+    fun a_units_window_survives_the_store() {
+        val store = openStore()
+        val stamped = unit(100, "a").copy(window = HistoryWindow.Categories)
+        save(store, listOf(stamped, unit(200, "b")))
+
+        val reloaded = SchedulerStateCodec.decodeSnapshot(store.load()!!)!!.histories.main.units
+        assertEquals(HistoryWindow.Categories, reloaded[0].window)
+        assertNull(reloaded[1].window, "a unit committed with no active window claims none afterwards")
+    }
+
+    /**
+     * Persisted-DB compatibility (CLAUDE.md): a DB written by the previous schema (v11 — `history_unit`
+     * without the PRD §6 `window` column) must still load, its units reading as "no window recorded", and
+     * the first save must REUSE its rows: `window` takes no part in the digest that decides row reuse, so
+     * adding it may not cost the release account a rewrite of its whole history.
+     */
+    @Test
+    fun upgrades_a_v11_db_and_reuses_its_history_rows() {
+        val units = listOf(unit(100, "a"), unit(200, "b"), unit(300, "c"))
+        val snapshot = SchedulerStateCodec.encodeSnapshot(stateWith(units))
+        writeV11Database(snapshot.statePayload, snapshot.history)
+
+        val store = openStore()
+
+        val loaded = store.load()!!
+        assertEquals(snapshot.statePayload, loaded.statePayload)
+        val decoded = SchedulerStateCodec.decodeSnapshot(loaded)!!.histories.main.units
+        assertEquals(units.map { it.delta }, decoded.map { it.delta })
+        assertTrue(decoded.all { it.window == null }, "the app cannot know where an old change was made")
+
+        stampSentinel(seq = 1, text = "SENTINEL-B")
+        save(store, units + unit(400, "d").copy(window = HistoryWindow.Tree))
+
+        val after = storedMainRows()
+        assertEquals(listOf(0L, 1L, 2L, 3L), after.keys.toList())
+        assertEquals("SENTINEL-B", after[1], "an upgraded row must be reused, not rewritten")
+        // The upgraded column is writable: the newly appended unit lands with its window on it, while the
+        // carried-up rows keep the NULL the migration gave them.
+        assertEquals(listOf(null, null, null, "Tree"), storedMainWindows())
+    }
+
+    /** The `window` column of every Main row, in seq order, read straight from the table. */
+    private fun storedMainWindows(): List<String?> {
+        val windows = mutableListOf<String?>()
+        DriverManager.getConnection(url, Properties()).use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeQuery(
+                    "SELECT window FROM history_unit WHERE category = 'Main' ORDER BY seq",
+                ).use { result ->
+                    while (result.next()) windows.add(result.getString(1))
+                }
+            }
+        }
+        return windows
+    }
+
+    /** The v11 on-disk shape, exactly as the previous build wrote it (no `window` column). */
+    private fun writeV11Database(payload: String, history: List<org.example.project.scheduler.persistence.HistoryRow>) {
+        writeV10Database(payload, history)
+        DriverManager.getConnection(url, Properties()).use { connection ->
+            connection.createStatement().use { statement ->
+                statement.execute("DROP TABLE history_unit")
+                statement.execute(
+                    "CREATE TABLE history_unit (account_id TEXT NOT NULL, category TEXT NOT NULL, " +
+                        "seq INTEGER NOT NULL, time_millis INTEGER NOT NULL, chrono_id INTEGER NOT NULL, " +
+                        "debug_tainted INTEGER NOT NULL, delta_length INTEGER NOT NULL DEFAULT -1, " +
+                        "delta_hash INTEGER, delta TEXT NOT NULL, PRIMARY KEY (account_id, category, seq))",
+                )
+            }
+            connection.prepareStatement(
+                "INSERT INTO history_unit(account_id, category, seq, time_millis, chrono_id, " +
+                    "debug_tainted, delta_length, delta_hash, delta) VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?)",
+            ).use { insert ->
+                history.forEach { row ->
+                    insert.setString(1, row.category)
+                    insert.setLong(2, row.ordinal.toLong())
+                    insert.setLong(3, row.timeMillis)
+                    insert.setLong(4, row.chronoId)
+                    insert.setLong(5, if (row.debugTainted) 1L else 0L)
+                    insert.setLong(6, row.deltaJson.length.toLong())
+                    insert.setLong(7, HistoryDigest.hash(row.deltaJson))
+                    insert.setString(8, row.deltaJson)
+                    insert.executeUpdate()
+                }
+            }
+            connection.createStatement().use { it.execute("PRAGMA user_version = 11") }
+        }
     }
 
     private fun storedDeltaHash(seq: Long): Long? =

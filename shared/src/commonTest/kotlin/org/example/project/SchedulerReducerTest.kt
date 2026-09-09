@@ -9,6 +9,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.example.project.scheduler.domain.RelativePriorityDomain
 import org.example.project.scheduler.domain.SchedulerDomain
+import org.example.project.scheduler.model.AlarmEntry
 import org.example.project.scheduler.model.WellKnownIds
 import org.example.project.scheduler.persistence.PersistedSnapshot
 import org.example.project.scheduler.persistence.SchedulerStateCodec
@@ -16,7 +17,11 @@ import org.example.project.scheduler.persistence.SchedulerStore
 import org.example.project.scheduler.state.AppWindow
 import org.example.project.scheduler.state.CellEditMode
 import org.example.project.scheduler.state.HistoryCategory
+import org.example.project.scheduler.state.HistorySource
+import org.example.project.scheduler.state.HistoryWindow
 import org.example.project.scheduler.state.NotificationLogEntry
+import org.example.project.scheduler.state.SchedulerRunEntry
+import org.example.project.scheduler.state.SupabaseUsageEntry
 import org.example.project.scheduler.state.EditExitNavigation
 import org.example.project.scheduler.state.SchedulerIntent
 import org.example.project.scheduler.state.SchedulerReducer
@@ -77,25 +82,93 @@ class SchedulerReducerTest {
     }
 
     @Test
-    fun history_window_filter_matches_category_and_text_query() {
+    fun history_window_filter_matches_the_window_field_and_the_text_query() {
+        // PRD §6: the first field is a WINDOW drop-down, defaulting to "all windows" (null). The unit is
+        // stamped at commit from SchedulerReducer.activeWindow, which the shell feeds from its window stack.
+        val previous = SchedulerReducer.activeWindow
+        SchedulerReducer.activeWindow = { HistoryWindow.Tree }
+        try {
+            var s = SchedulerState.empty()
+            val cellId = s.lists[s.rootListId]!!.cellIds.first()
+            s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(cellId, "Daily"))
+            SchedulerReducer.activeWindow = { HistoryWindow.Alarms }
+            s = SchedulerReducer.reduce(s, SchedulerIntent.ToggleExpand(cellId))
+
+            // "All windows": both units, whichever window they were made in.
+            val all = filteredHistoryUnits(s.histories, HistoryFilterConfig())
+                .filterIsInstance<FilteredHistoryEntry.Unit>()
+            assertEquals(2, all.size)
+            assertTrue(all.any { it.category == HistoryCategory.Main && it.unit.delta.label == "Set title" })
+
+            // One window: only the units made there.
+            val tree = filteredHistoryUnits(s.histories, HistoryFilterConfig(window = HistoryWindow.Tree))
+                .filterIsInstance<FilteredHistoryEntry.Unit>()
+            assertEquals(listOf("Set title"), tree.map { it.unit.delta.label })
+            assertEquals(HistoryWindow.Tree, tree.single().unit.window)
+
+            // The window field and the query narrow together.
+            assertEquals(
+                emptyList(),
+                filteredHistoryUnits(
+                    s.histories,
+                    HistoryFilterConfig(window = HistoryWindow.Alarms, query = "title"),
+                ),
+            )
+            assertEquals(
+                1,
+                filteredHistoryUnits(
+                    s.histories,
+                    HistoryFilterConfig(window = HistoryWindow.Tree, query = "title"),
+                ).size,
+            )
+        } finally {
+            SchedulerReducer.activeWindow = previous
+        }
+    }
+
+    @Test
+    fun a_unit_with_no_recorded_window_is_still_listed_under_all_windows() {
+        // PRD §6: a unit written by a build older than the window field (or by a headless shell) carries
+        // none. It must stay reachable — "All windows" is the field's identity, not "the ones I know".
         var s = SchedulerState.empty()
         val cellId = s.lists[s.rootListId]!!.cellIds.first()
         s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(cellId, "Daily"))
 
-        val all = filteredHistoryUnits(s.histories, HistoryFilterConfig())
-        val units = all.filterIsInstance<FilteredHistoryEntry.Unit>()
-        assertTrue(units.any { it.category == HistoryCategory.Main && it.unit.delta.label == "Set title" })
+        val unit = s.histories.forCategory(HistoryCategory.Main).units.last()
+        assertNull(unit.window) // the default seam names no window
+        assertEquals(
+            1,
+            filteredHistoryUnits(s.histories, HistoryFilterConfig())
+                .filterIsInstance<FilteredHistoryEntry.Unit>().size,
+        )
+        // ...but it cannot claim a window it does not know.
+        assertEquals(
+            emptyList(),
+            filteredHistoryUnits(s.histories, HistoryFilterConfig(window = HistoryWindow.Tree)),
+        )
+    }
 
-        val filtered = filteredHistoryUnits(
-            s.histories,
-            HistoryFilterConfig(
-                categories = setOf(HistoryCategory.Main),
-                query = "title",
-            ),
-        ).filterIsInstance<FilteredHistoryEntry.Unit>()
-        assertEquals(1, filtered.size)
-        assertEquals(HistoryCategory.Main, filtered.single().category)
-        assertTrue(filtered.single().unit.delta.label.contains("title", ignoreCase = true))
+    @Test
+    fun one_gesture_keeps_the_window_it_began_in() {
+        // PRD §5/§6: a live-edited field commits per keystroke and coalesces into ONE unit. The merged unit
+        // keeps the first keystroke's timestamp and `before` side, so it must keep its window too.
+        val previous = SchedulerReducer.activeWindow
+        SchedulerReducer.activeWindow = { HistoryWindow.Alarms }
+        try {
+            val key = "alarm-0/label@1"
+            fun alarm(label: String) =
+                AlarmEntry(id = "alarm-0", label = label, timeOfDayMinutes = 7 * 60, enabled = true)
+            var s = SchedulerState.empty()
+            s = SchedulerReducer.reduce(s, SchedulerIntent.SetAlarms(listOf(alarm("Wa")), editKey = key))
+            SchedulerReducer.activeWindow = { HistoryWindow.Tree }
+            s = SchedulerReducer.reduce(s, SchedulerIntent.SetAlarms(listOf(alarm("Wake")), editKey = key))
+
+            val units = s.histories.forCategory(HistoryCategory.Main).units
+            assertEquals(1, units.size, "the two keystrokes are one gesture")
+            assertEquals(HistoryWindow.Alarms, units.single().window)
+        } finally {
+            SchedulerReducer.activeWindow = previous
+        }
     }
 
     @Test
@@ -128,7 +201,8 @@ class SchedulerReducerTest {
     @Test
     fun history_window_filter_can_isolate_the_notifications() {
         // PRD §7: the History window lists every notification the app decided to send, and the window's
-        // configuration menu must be able to ask for those ALONE — clearing the categories leaves them.
+        // configuration menu must be able to ask for those ALONE — the check box hands the filter to the
+        // other-sources field, and that field names them.
         var s = SchedulerState.empty()
         val cellId = s.lists[s.rootListId]!!.cellIds.first()
         s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(cellId, "Daily"))
@@ -137,16 +211,16 @@ class SchedulerReducerTest {
             NotificationLogEntry(timeMillis = 9_000, title = "Task to do now", message = "Daily"),
         )
 
-        // Everything on: the units and the notifications share one newest-first timeline.
-        val merged = filteredHistoryUnits(s.histories, HistoryFilterConfig(), log)
+        // "All sources": every app-produced row, newest-first, and no History Unit among them.
+        val merged = filteredHistoryUnits(s.histories, HistoryFilterConfig(filterBySource = true), log)
         assertEquals(2, merged.filterIsInstance<FilteredHistoryEntry.Notification>().size)
-        assertTrue(merged.any { it is FilteredHistoryEntry.Unit })
+        assertTrue(merged.none { it is FilteredHistoryEntry.Unit })
         assertEquals(merged.map { it.timeMillis }.sortedDescending(), merged.map { it.timeMillis })
 
-        // Only the notifications: no category selected, the notification source left on.
+        // The source named on its own gives the same two rows.
         val onlyNotifications = filteredHistoryUnits(
             s.histories,
-            HistoryFilterConfig(categories = emptySet(), notifications = true),
+            HistoryFilterConfig(filterBySource = true, source = HistorySource.Notification),
             log,
         )
         assertEquals(2, onlyNotifications.size)
@@ -158,18 +232,70 @@ class SchedulerReducerTest {
             listOf(5_000L),
             filteredHistoryUnits(
                 s.histories,
-                HistoryFilterConfig(categories = emptySet(), query = "20 sec"),
+                HistoryFilterConfig(filterBySource = true, query = "20 sec"),
                 log,
             ).map { it.timeMillis },
         )
+    }
 
-        // Notifications off: they are gone even though the log was handed over.
-        assertTrue(
+    @Test
+    fun the_check_box_partitions_the_window_units_from_the_other_sources() {
+        // PRD §6: the two fields are the two ORIGINS a row can have, and the check box says which one is
+        // filtering. Neither half may leak into the other's view — that is what keeps the Supabase log (one
+        // row per HTTP call) from drowning the units it would otherwise be listed beside.
+        var s = SchedulerState.empty()
+        val cellId = s.lists[s.rootListId]!!.cellIds.first()
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(cellId, "Daily"))
+        val notifications = listOf(NotificationLogEntry(5_000, "Look away", "20 seconds"))
+        val supabase = listOf(
+            SupabaseUsageEntry(6_000, "scheduler_snapshot", "push", 10, 20, 200),
+        )
+        val runs = listOf(
+            SchedulerRunEntry(
+                timeMillis = 7_000,
+                kind = SchedulerRunEntry.Kind.Replan,
+                horizonMillis = 8_000,
+                panelCount = 3,
+                rules = listOf("Deep work - priority 50.0%, minimum 45 min, resilience: on screen only"),
+            ),
+        )
+
+        // Box unchecked: the window field governs, and only History Units are listed.
+        val byWindow = filteredHistoryUnits(s.histories, HistoryFilterConfig(), notifications, supabase, runs)
+        assertTrue(byWindow.all { it is FilteredHistoryEntry.Unit })
+        assertEquals(1, byWindow.size)
+
+        // Box checked, "All sources": every app-produced row and no unit at all.
+        val bySource = filteredHistoryUnits(
+            s.histories,
+            HistoryFilterConfig(filterBySource = true),
+            notifications,
+            supabase,
+            runs,
+        )
+        assertEquals(3, bySource.size)
+        assertTrue(bySource.none { it is FilteredHistoryEntry.Unit })
+        assertEquals(listOf(7_000L, 6_000L, 5_000L), bySource.map { it.timeMillis }) // newest first
+
+        // One source: the scheduler engine alone, and its rules are searchable text like any other row.
+        val engine = filteredHistoryUnits(
+            s.histories,
+            HistoryFilterConfig(filterBySource = true, source = HistorySource.SchedulerEngine),
+            notifications,
+            supabase,
+            runs,
+        )
+        assertEquals(1, engine.size)
+        assertEquals(runs.single(), (engine.single() as FilteredHistoryEntry.SchedulerRun).entry)
+        assertEquals(
+            1,
             filteredHistoryUnits(
                 s.histories,
-                HistoryFilterConfig(notifications = false),
-                log,
-            ).none { it is FilteredHistoryEntry.Notification },
+                HistoryFilterConfig(filterBySource = true, query = "Deep work"),
+                notifications,
+                supabase,
+                runs,
+            ).size,
         )
     }
 

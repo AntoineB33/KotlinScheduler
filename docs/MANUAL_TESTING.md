@@ -151,8 +151,8 @@ the desktop app signed in as account 1). Default dev run enables debug tooling (
   - [ ] Switch it **off** → any OmniApp notification still on screen disappears (Android/iOS; a desktop tray
         balloon fades on its own and is expected to stay).
   - [ ] With it off, strike `Ctrl+Shift+Alt+E` from another application → **no** notification appears (not the
-        break's, not the "Shortcut received" receipt) — but the History window's **Notifications** column
-        lists both, and `diagnostics.log` marks each `[suppressed: notifications off]`.
+        break's, not the "Shortcut received" receipt) — but the History window's **Notifications** source
+        (tick the filter's check box and pick it) lists both, and `diagnostics.log` marks each `[suppressed: notifications off]`.
   - [ ] With another application focused, strike `Ctrl+Shift+Alt+N` → a **"Notifications on"** notification
         appears (that is the un-mute press's own receipt) and notifications resume.
   - [ ] The switch and the chord are one lever: flipping either moves the other, and the setting survives a
@@ -165,11 +165,28 @@ the desktop app signed in as account 1). Default dev run enables debug tooling (
 - [ ] **"I'm away" does not silence the app; a lock does (PRD §15).** With the machine **unlocked**, press
       **I'm away** and leave the app running: the ordinary notifications must keep arriving — wait for the
       schedule to move to another task and check the **"Task to do now"** notification appears (the History
-      window's Notifications column lists it either way, so judge this on the OS notification itself, not on
-      the column). Then lock the session (`Win+L`) over the same kind of boundary: nothing must be shown at
+      window's Notifications source lists it either way, so judge this on the OS notification itself, not on
+      the row). Then lock the session (`Win+L`) over the same kind of boundary: nothing must be shown at
       the lock screen, and `diagnostics.log` must carry a `suppressed: device locked` line for it. Unlock:
       the task the app could not announce must arrive within a tick, without the schedule having changed.
       An **alarm** set to ring while the session is locked must still ring — that exception is deliberate.
+- [ ] **The History window's two filter fields (PRD §6).** Open **History**. The check box is clear, the
+      **Window** field reads *All windows*, and the list holds only History Units. Rename a cell in the tree,
+      then open **Categories** and add one there: each row must carry the window tag it was made in
+      (*Task tree* / *Categories*). Pick **Categories** in the Window drop-down — only the category unit is
+      left; pick *All windows* — both are back. Units recorded before this build carry no window tag: they
+      must stay visible under *All windows* and vanish under any named one.
+- [ ] **The other-sources field.** Tick the check box: the Window field greys out, the units disappear and
+      the app's own rows take their place — **Scheduler**, **Notification** and **Supabase** rows in one
+      newest-first list. Pick each source in turn and check the list narrows to it. There must be at least one
+      **Scheduler** row (edit the tree to force a re-plan if not).
+- [ ] **Double click opens the information window, and every info copies.** Single-clicking a row must do
+      nothing but start a text selection. **Double-click** a History Unit: the window lists its label, window,
+      time, chrono id and every detail line, each with a *copy* button — click one and paste it somewhere to
+      confirm the clipboard took it. Then double-click a **Scheduler** row: its **Rules** info must list one
+      line per schedulable task with a priority share, a minimum time and a resilience; *copy* it and paste it
+      — that is "copy the current set of rules from the scheduler". **Copy all** must give every info as
+      `label: value` lines.
 
 ---
 

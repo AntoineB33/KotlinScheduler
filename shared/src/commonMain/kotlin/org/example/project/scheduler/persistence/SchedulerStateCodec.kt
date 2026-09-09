@@ -54,6 +54,7 @@ import org.example.project.scheduler.state.EmptyCellsDelta
 import org.example.project.scheduler.state.FocusDelta
 import org.example.project.scheduler.state.HistoryCategory
 import org.example.project.scheduler.state.HistoryUnit
+import org.example.project.scheduler.state.HistoryWindow
 import org.example.project.scheduler.state.NoOpDelta
 import org.example.project.scheduler.state.NotificationLogEntry
 import org.example.project.scheduler.state.SupabaseUsageEntry
@@ -228,6 +229,7 @@ object SchedulerStateCodec {
                         chronoId = unit.chronoId,
                         debugTainted = unit.debugTainted,
                         deltaJson = encoded.json,
+                        window = unit.window?.name,
                     ).also { it.deltaHash = encoded.hash },
                 )
             }
@@ -299,6 +301,11 @@ object SchedulerStateCodec {
                             chronoId = row.chronoId,
                             delta = decodeMigrating<PersistedDelta>(row.deltaJson).toDelta(),
                             debugTainted = row.debugTainted,
+                            // An unknown name (a window this build no longer has) heals to "no window":
+                            // the unit is still listed, under the drop-down's "All windows".
+                            window = row.window?.let { name ->
+                                runCatching { HistoryWindow.valueOf(name) }.getOrNull()
+                            },
                         ).also {
                             // Seed the memo from the text we were just handed: re-serializing a unit the
                             // store (or a peer's snapshot) already spelled out would be pure waste, and it
@@ -626,6 +633,7 @@ object SchedulerStateCodec {
                         timeMillis = unit.timeMillis,
                         chronoId = unit.chronoId,
                         debugTainted = unit.debugTainted,
+                        window = unit.window?.name,
                         delta = unit.delta.toPersisted(),
                     )
                 },
@@ -1033,6 +1041,9 @@ object SchedulerStateCodec {
                         chronoId = u.chronoId,
                         delta = u.delta.toDelta(),
                         debugTainted = u.debugTainted,
+                        window = u.window?.let { name ->
+                            runCatching { HistoryWindow.valueOf(name) }.getOrNull()
+                        },
                     )
                 },
         )
@@ -1548,6 +1559,8 @@ private data class PersistedHistoryUnit(
     val timeMillis: Long,
     val chronoId: Long = 0,
     val debugTainted: Boolean = false,
+    /** PRD §6: the [HistoryWindow] the unit was committed in; absent on payloads written before this field. */
+    val window: String? = null,
     val delta: PersistedDelta,
 )
 

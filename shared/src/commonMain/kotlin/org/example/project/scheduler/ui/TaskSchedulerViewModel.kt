@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.example.project.perf.Perf
 import org.example.project.scheduler.domain.SchedulerDomain
@@ -23,6 +24,7 @@ import org.example.project.scheduler.persistence.SchedulerStateCodec
 import org.example.project.scheduler.persistence.SchedulerStore
 import org.example.project.scheduler.state.SchedulerIntent
 import org.example.project.scheduler.state.SchedulerReducer
+import org.example.project.scheduler.state.SchedulerRunEntry
 import org.example.project.scheduler.state.SchedulerState
 import org.example.project.scheduler.state.TaskTreeEntry
 import org.example.project.scheduler.sync.AccountInfo
@@ -56,6 +58,19 @@ class TaskSchedulerViewModel(
     // from the empty DB (root → main).
     private val _state = MutableStateFlow(loadInitialState(store, initial))
     val state: StateFlow<SchedulerState> = _state.asStateFlow()
+
+    /**
+     * PRD §6/§9: the History window's [org.example.project.scheduler.state.HistorySource.SchedulerEngine]
+     * rows — one per run of the scheduler this session, newest last, carrying the set of rules the run read.
+     *
+     * **RAM-only and never persisted** (CLAUDE.md authoritative-vs-derived): the rules are a function of the
+     * state, so storing them would persist something re-derivable — and a rolling tail of one line per
+     * schedulable task would put hundreds of KB of text on the save path ADR 0007 exists to keep short. It
+     * is capped at [SchedulerRunEntry.MAX_ENTRIES] and starts empty on every launch, exactly like the
+     * per-session diagnostic it is.
+     */
+    private val _schedulerRuns = MutableStateFlow<List<SchedulerRunEntry>>(emptyList())
+    val schedulerRuns: StateFlow<List<SchedulerRunEntry>> = _schedulerRuns.asStateFlow()
 
     /** PRD §5 sync status for an indicator; null when sync is disabled. */
     val syncState: StateFlow<SyncState>? = syncEngine?.state
@@ -125,6 +140,12 @@ class TaskSchedulerViewModel(
         }
 
     init {
+        // PRD §6/§9: collect the scheduler's own runs. The reducer reduces plan intents on the plan
+        // dispatcher as well as on the caller's thread ([dispatch] publishes by compare-and-set), so the
+        // sink has to be safe off the main thread — `update` is.
+        SchedulerReducer.recordSchedulerRun = { entry ->
+            _schedulerRuns.update { runs -> (runs + entry).takeLast(SchedulerRunEntry.MAX_ENTRIES) }
+        }
         syncEngine?.let { engine ->
             // History-window "Supabase usage" column (local-only diagnostic): record every Supabase HTTP call
             // the transport makes. Subscribed FIRST — before restoreSession/reconcile below drive the launch's

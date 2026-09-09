@@ -54,6 +54,33 @@ object SchedulerReducer {
     var debugTainting: () -> Boolean = { false }
 
     /**
+     * PRD §6: **which window of the app the user is acting in**, stamped onto every History Unit this
+     * reducer commits ([HistoryUnit.window]) so the History window can filter by window.
+     *
+     * Injected, like [tpMode] and [noScreenEvidence], because the answer is the shell's: `App.kt` owns the
+     * floating-window stack and is the ONE place a window is raised (`bringWindowToFront`), so that is the
+     * one place this is fed from. It is deliberately NOT read off [SchedulerState.focusedWindow] — that is
+     * the PRD §7 *focus target*, which only five windows claim, so the seven that do not (Categories, Task
+     * relations, Shortcuts, …) would file their units under the tree.
+     *
+     * Defaults to `{ null }`: a shell that names no window (a headless host, a test) stamps nothing, and
+     * such a unit answers only to the drop-down's "All windows".
+     */
+    var activeWindow: () -> HistoryWindow? = { null }
+
+    /**
+     * PRD §6/§9: where a run of the scheduler is recorded ([SchedulerRunEntry] — the
+     * [HistorySource.SchedulerEngine] rows of the History window), including the set of rules it ran.
+     *
+     * An OUTPUT seam, unlike the input seams above, because this is the only place the rules exist: they are
+     * built inside [SchedulerDomain.fillSchedule], and only the two plan reductions here call it for the
+     * plan the app keeps. The ViewModel owns the (RAM-only, capped) list; the default `{}` means a shell
+     * that does not want the diagnostic pays nothing, since `fillSchedule` only renders the rules when a
+     * sink asks for them.
+     */
+    var recordSchedulerRun: (SchedulerRunEntry) -> Unit = {}
+
+    /**
      * The device's live ongoing/held pause ([SchedulerDomain.liveRestGap]), folded into screen-break
      * placement by every [SchedulerDomain.fillSchedule] call site via
      * [SchedulerDomain.liveRestPeriod] — so the placed screen-break grid moves with a pause the
@@ -2029,6 +2056,8 @@ object SchedulerReducer {
     private fun reduceRefreshSchedule(state: SchedulerState, nowMillis: Long): SchedulerState {
         val advanced = commitRecordChanges(state, advanceSchedule(state, nowMillis, noScreenEvidence()))
         if (!advanced.automaticSchedule) return advanced
+        val horizon = scheduleHorizonEndMillis(nowMillis)
+        var rules: List<String> = emptyList()
         val filled =
             SchedulerDomain.fillSchedule(
                 advanced,
@@ -2036,10 +2065,38 @@ object SchedulerReducer {
                 liveRest = liveRestGap(),
                 noScreenEvidence = noScreenEvidence(),
                 tpMode = tpMode(),
-                horizonMillis = scheduleHorizonEndMillis(nowMillis),
+                horizonMillis = horizon,
+                rulesSink = { rules = it },
             )
-        if (filled == advanced.panels) return advanced
-        return advanced.copy(panels = filled)
+        val result = if (filled == advanced.panels) advanced else advanced.copy(panels = filled)
+        recordRun(SchedulerRunEntry.Kind.Replan, nowMillis, horizon, result, rules)
+        return result
+    }
+
+    /**
+     * PRD §6/§9: hand one run of the scheduler to [recordSchedulerRun] — the History window's
+     * [HistorySource.SchedulerEngine] rows. Stamped on the same clock the History Units use, so an engine
+     * row and a unit committed beside it sort together in the one merged timeline.
+     *
+     * Recorded even when the fill changed nothing: the question the row answers is "what did the scheduler
+     * decide, and against which rules?", and a run that reproduced the same plan answered it too.
+     */
+    private fun recordRun(
+        kind: SchedulerRunEntry.Kind,
+        nowMillis: Long,
+        horizonMillis: Long,
+        result: SchedulerState,
+        rules: List<String>,
+    ) {
+        recordSchedulerRun(
+            SchedulerRunEntry(
+                timeMillis = clock.nowMillis(),
+                kind = kind,
+                horizonMillis = horizonMillis,
+                panelCount = result.panels.size,
+                rules = rules,
+            ),
+        )
     }
 
     /**
@@ -2095,6 +2152,8 @@ object SchedulerReducer {
         val advanced = commitRecordChanges(state, advanceSchedule(state, nowMillis, noScreenEvidence()))
         if (!advanced.automaticSchedule) return advanced
         val materializedUntil = SchedulerDomain.firstFreeMoment(advanced.panels, nowMillis)
+        val horizon = scheduleHorizonEndMillis(nowMillis)
+        var rules: List<String> = emptyList()
         val filled =
             SchedulerDomain.fillSchedule(
                 advanced,
@@ -2102,11 +2161,13 @@ object SchedulerReducer {
                 liveRest = liveRestGap(),
                 noScreenEvidence = noScreenEvidence(),
                 tpMode = tpMode(),
-                horizonMillis = scheduleHorizonEndMillis(nowMillis),
+                horizonMillis = horizon,
                 keepExistingUntilMillis = materializedUntil,
+                rulesSink = { rules = it },
             )
-        if (filled == advanced.panels) return advanced
-        return advanced.copy(panels = filled)
+        val result = if (filled == advanced.panels) advanced else advanced.copy(panels = filled)
+        recordRun(SchedulerRunEntry.Kind.Extension, nowMillis, horizon, result, rules)
+        return result
     }
 
     /**
@@ -2487,6 +2548,9 @@ object SchedulerReducer {
                 chronoId = retained.count { it.timeMillis == now }.toLong(),
                 delta = forward,
                 debugTainted = debugTainting(),
+                // PRD §6: where the change was made. A merged gesture above keeps the previous unit's
+                // window along with its timestamp — one gesture is one window.
+                window = activeWindow(),
             )
         val appendedUnits = retained + newUnit
         val appendedPointer = retained.size

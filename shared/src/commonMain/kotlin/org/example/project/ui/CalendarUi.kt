@@ -44,6 +44,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -133,6 +134,7 @@ import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.LocalTime
 import kotlinx.datetime.Month
+import kotlinx.coroutines.delay
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.daysUntil
 import kotlinx.datetime.isoDayNumber
@@ -154,11 +156,15 @@ import org.example.project.scheduler.platform.GlobalShortcutBindings
 import org.example.project.scheduler.platform.ShortcutBinding
 import org.example.project.scheduler.state.CalendarEdge
 import org.example.project.scheduler.state.HistoryCategory
+import org.example.project.scheduler.state.HistorySource
 import org.example.project.scheduler.state.HistoryUnit
+import org.example.project.scheduler.state.HistoryWindow
+import org.example.project.scheduler.state.SchedulerRunEntry
 import org.example.project.scheduler.state.NotificationLogEntry
 import org.example.project.scheduler.state.SchedulerIntent
 import org.example.project.scheduler.state.SupabaseUsageEntry
 import org.example.project.scheduler.state.SchedulerHistories
+import org.example.project.scheduler.platform.writeSystemClipboardText
 import org.example.project.scheduler.ui.contextMenuModifier
 
 /** PRD §7: visual language shared by the lateral menu and the calendar. */
@@ -1630,22 +1636,29 @@ fun ChoresManagerWindow(
 }
 
 /**
- * PRD §5/§6: what the History window's configuration menu is currently asking for — which of the history
- * categories to list, whether the local-only **notification** log is listed alongside them (PRD §7: "the
- * History window still lists every notification the app decided to send while it was off"), and a free-text
- * query. Compose-only state, like the calendar's zoom and the task list's sorter: a way of looking at the
- * history, never a fact about it.
+ * PRD §5/§6: what the History window's configuration menu is currently asking for. Compose-only state, like
+ * the calendar's zoom and the task list's sorter: a way of looking at the history, never a fact about it.
  *
- * [notifications] and [supabaseUsage] are sources of their own rather than further [HistoryCategory]s
- * because neither is a History Unit — they are not undoable, they carry no delta, and nothing in the app
- * walks them. Clearing every category and leaving [notifications] on is what "only the notifications" means.
- * [supabaseUsage] starts **off**: it is the free-plan draw-down diagnostic, one row per HTTP call, so it
- * would drown the units it is listed beside unless the user asks for it.
+ * The two drop-downs are the two ORIGINS a row can have, and they partition the list:
+ *
+ *  - [window] — the window of the app a **History Unit** was made in ([HistoryUnit.window]). `null` is the
+ *    default, "All windows", and admits every unit including the ones carrying no window (a unit written by
+ *    an older build, or by a headless shell), so nothing is ever unreachable.
+ *  - [source] — one of the things the **app itself** produced ([HistorySource]): a run of the scheduler, a
+ *    notification, a Supabase call. `null` is "All sources". None of these is a History Unit — nothing
+ *    undoes them and they carry no delta — which is exactly why they are the other field and not more
+ *    windows.
+ *
+ * [filterBySource] is the check box: it says which of the two fields is the one filtering. That is what
+ * keeps the default view — every window's units — from being drowned by the Supabase log, which is one row
+ * per HTTP call and would otherwise bury the units it sits beside.
+ *
+ * [query] is free text and applies whichever field is active, matched against everything the row *shows*.
  */
 data class HistoryFilterConfig(
-    val categories: Set<HistoryCategory> = HistoryCategory.entries.toSet(),
-    val notifications: Boolean = true,
-    val supabaseUsage: Boolean = false,
+    val filterBySource: Boolean = false,
+    val window: HistoryWindow? = null,
+    val source: HistorySource? = null,
     val query: String = "",
 )
 
@@ -1687,6 +1700,12 @@ sealed interface FilteredHistoryEntry {
         override val timeMillis: Long get() = entry.timeMillis
         override val chronoId: Long get() = 0
     }
+
+    /** One run of the scheduler engine, with the set of rules it read (see [SchedulerRunEntry]). */
+    data class SchedulerRun(val entry: SchedulerRunEntry) : FilteredHistoryEntry {
+        override val timeMillis: Long get() = entry.timeMillis
+        override val chronoId: Long get() = 0
+    }
 }
 
 /**
@@ -1713,27 +1732,51 @@ fun filteredHistoryUnits(
     filter: HistoryFilterConfig,
     notificationLog: List<NotificationLogEntry> = emptyList(),
     supabaseUsageLog: List<SupabaseUsageEntry> = emptyList(),
+    schedulerRuns: List<SchedulerRunEntry> = emptyList(),
 ): List<FilteredHistoryEntry> {
     val needle = filter.query.trim()
     fun matches(vararg haystack: String): Boolean =
         needle.isBlank() || haystack.any { it.contains(needle, ignoreCase = true) }
 
-    val units = histories.all()
-        .filter { (category, _) -> category in filter.categories }
-        .flatMap { (category, history) ->
-            history.units.mapIndexed { index, unit ->
-                FilteredHistoryEntry.Unit(
-                    category = category,
-                    unit = unit,
-                    position = index + 1,
-                    applied = index <= history.pointer,
-                    isCurrent = index == history.pointer,
-                )
-            }
+    // The window field: every History Unit, or only the ones made in one window. A unit carrying NO window
+    // (an older build's, or a headless shell's) answers to "All windows" and to nothing else - it is listed,
+    // never lost, but it cannot honestly claim a window it does not know.
+    val units =
+        if (filter.filterBySource) {
+            emptyList()
+        } else {
+            histories.all()
+                .flatMap { (category, history) ->
+                    history.units.mapIndexed { index, unit ->
+                        FilteredHistoryEntry.Unit(
+                            category = category,
+                            unit = unit,
+                            position = index + 1,
+                            applied = index <= history.pointer,
+                            isCurrent = index == history.pointer,
+                        )
+                    }
+                }
+                .filter { filter.window == null || it.unit.window == filter.window }
+                .filter { entry ->
+                    matches(entry.unit.delta.label, entry.unit.delta.details.joinToString("\n"))
+                }
         }
-        .filter { entry -> matches(entry.unit.delta.label, entry.unit.delta.details.joinToString("\n")) }
 
-    val notifications = if (!filter.notifications) {
+    // The source field: the rows the app produced. `null` is "All sources"; each source is otherwise
+    // isolated on its own, which is what PRD §7's "only the notifications" asks for.
+    fun sourceOn(source: HistorySource) =
+        filter.filterBySource && (filter.source == null || filter.source == source)
+
+    val runs = if (!sourceOn(HistorySource.SchedulerEngine)) {
+        emptyList()
+    } else {
+        schedulerRuns
+            .filter { matches(it.kind.label, it.rules.joinToString("\n")) }
+            .map { FilteredHistoryEntry.SchedulerRun(it) }
+    }
+
+    val notifications = if (!sourceOn(HistorySource.Notification)) {
         emptyList()
     } else {
         notificationLog
@@ -1741,7 +1784,7 @@ fun filteredHistoryUnits(
             .map { FilteredHistoryEntry.Notification(it) }
     }
 
-    val supabase = if (!filter.supabaseUsage) {
+    val supabase = if (!sourceOn(HistorySource.Api)) {
         emptyList()
     } else {
         supabaseUsageLog
@@ -1749,7 +1792,7 @@ fun filteredHistoryUnits(
             .map { FilteredHistoryEntry.SupabaseUsage(it) }
     }
 
-    return (units + notifications + supabase).sortedWith(
+    return (units + runs + notifications + supabase).sortedWith(
         compareByDescending<FilteredHistoryEntry> { it.timeMillis }
             .thenByDescending { it.chronoId },
     )
@@ -1769,8 +1812,10 @@ fun HistoryManagerWindow(
     modifier: Modifier = Modifier,
     /** The local-only diagnostic notification log, listed alongside the units and filterable on its own. */
     notificationLog: List<NotificationLogEntry> = emptyList(),
-    /** The local-only Supabase-usage diagnostic log, listed only when its own source chip is turned on. */
+    /** The local-only Supabase-usage diagnostic log, listed only when its own source is selected. */
     supabaseUsageLog: List<SupabaseUsageEntry> = emptyList(),
+    /** This session's runs of the scheduler engine, with the set of rules each one read (RAM-only). */
+    schedulerRuns: List<SchedulerRunEntry> = emptyList(),
     /** Initial position relative to centered; staggered per window so they open in a clickable cascade. */
     initialOffset: Offset = Offset.Zero,
     /** Persists the window's new drag position when a drag gesture ends (local-only geometry). */
@@ -1779,9 +1824,12 @@ fun HistoryManagerWindow(
     onRaise: () -> Unit = {},
 ) {
     var offset by remember { mutableStateOf(initialOffset) }
-    var infoUnit by remember { mutableStateOf<HistoryUnit?>(null) }
+    // PRD §6: the row whose information window is open — ANY row, not only a History Unit: a scheduler run
+    // holds the set of rules the user came here to copy, and a notification / Supabase call holds fields the
+    // row itself elides. Opened by a DOUBLE click.
+    var infoRow by remember { mutableStateOf<FilteredHistoryEntry?>(null) }
     var filter by remember { mutableStateOf(HistoryFilterConfig()) }
-    val rows = filteredHistoryUnits(histories, filter, notificationLog, supabaseUsageLog)
+    val rows = filteredHistoryUnits(histories, filter, notificationLog, supabaseUsageLog, schedulerRuns)
 
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -1837,80 +1885,63 @@ fun HistoryManagerWindow(
                             value = filter.query,
                             onValueChange = { filter = filter.copy(query = it) },
                             label = { Text("Filter") },
-                            placeholder = { Text("label, details, or notification text") },
+                            placeholder = { Text("a label, a detail line, a rule, a notification") },
                             singleLine = true,
                             modifier = Modifier.weight(1f),
                         )
                         Button(
-                            // Back to the default view: every source on, no query.
+                            // Back to the default view: all windows, no query.
                             onClick = { filter = HistoryFilterConfig() },
                         ) {
                             Text("Reset")
                         }
                     }
 
-                    // The configuration menu's source chips: the five history categories plus the two
-                    // local-only diagnostic logs, each toggled on its own. "All" / "None" are there
-                    // because isolating ONE source (PRD §7's "only the notifications") would otherwise
-                    // cost a click per source the user does not want.
+                    // PRD §6 configuration menu: the two origin fields, and the check box that says
+                    // which of them is filtering. The inactive field is greyed and inert rather than
+                    // hidden, so what the other half of the filter would ask stays readable.
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        HistoryCategory.entries.forEach { category ->
-                            HistorySourceChip(
-                                label = category.name,
-                                active = category in filter.categories,
-                                onToggle = {
-                                    val next = filter.categories.toMutableSet().apply {
-                                        if (contains(category)) remove(category) else add(category)
-                                    }
-                                    filter = filter.copy(categories = next)
-                                },
-                            )
-                        }
-                        HistorySourceChip(
-                            label = "Notifications",
-                            active = filter.notifications,
-                            onToggle = { filter = filter.copy(notifications = !filter.notifications) },
+                        HistoryDropdownField(
+                            label = "Window",
+                            // The whole point of the default: "All windows" is no restriction at all.
+                            selected = filter.window?.label ?: ALL_WINDOWS_LABEL,
+                            options =
+                                listOf(ALL_WINDOWS_LABEL to null) +
+                                    HistoryWindow.entries.map { it.label to it },
+                            enabled = !filter.filterBySource,
+                            onSelect = { filter = filter.copy(window = it) },
                         )
-                        HistorySourceChip(
-                            label = "Supabase usage",
-                            active = filter.supabaseUsage,
-                            onToggle = { filter = filter.copy(supabaseUsage = !filter.supabaseUsage) },
+                        HistoryDropdownField(
+                            label = "Other source",
+                            selected = filter.source?.label ?: ALL_SOURCES_LABEL,
+                            options =
+                                listOf(ALL_SOURCES_LABEL to null) +
+                                    HistorySource.entries.map { it.label to it },
+                            enabled = filter.filterBySource,
+                            onSelect = { filter = filter.copy(source = it) },
                         )
                         Spacer(Modifier.weight(1f))
-                        Text(
-                            text = "All",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = CalColors.accent,
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
-                                .clip(RoundedCornerShape(999.dp))
-                                .clickable {
-                                    filter = filter.copy(
-                                        categories = HistoryCategory.entries.toSet(),
-                                        notifications = true,
-                                        supabaseUsage = true,
-                                    )
-                                }
-                                .padding(horizontal = 8.dp, vertical = 5.dp),
-                        )
-                        Text(
-                            text = "None",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = CalColors.accent,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(999.dp))
-                                .clickable {
-                                    filter = filter.copy(
-                                        categories = emptySet(),
-                                        notifications = false,
-                                        supabaseUsage = false,
-                                    )
-                                }
-                                .padding(horizontal = 8.dp, vertical = 5.dp),
-                        )
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { filter = filter.copy(filterBySource = !filter.filterBySource) }
+                                .padding(end = 8.dp),
+                        ) {
+                            Checkbox(
+                                checked = filter.filterBySource,
+                                onCheckedChange = { filter = filter.copy(filterBySource = it) },
+                            )
+                            Text(
+                                text = "Filter by the other sources",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = CalColors.muted,
+                            )
+                        }
                     }
 
                     Box(
@@ -1937,15 +1968,18 @@ fun HistoryManagerWindow(
                                     verticalArrangement = Arrangement.spacedBy(8.dp),
                                 ) {
                                     rows.take(HISTORY_LIST_MAX_ROWS).forEach { row ->
+                                        // PRD §6: a DOUBLE click opens the row's information window. A
+                                        // single click is left alone so the list stays text-selectable.
+                                        val open = { infoRow = row }
                                         when (row) {
-                                            is FilteredHistoryEntry.Unit -> HistoryUnitRow(
-                                                entry = row,
-                                                onClick = { infoUnit = row.unit },
-                                            )
+                                            is FilteredHistoryEntry.Unit ->
+                                                HistoryUnitRow(entry = row, onOpen = open)
                                             is FilteredHistoryEntry.Notification ->
-                                                NotificationLogRow(entry = row.entry)
+                                                NotificationLogRow(entry = row.entry, onOpen = open)
                                             is FilteredHistoryEntry.SupabaseUsage ->
-                                                SupabaseUsageRow(entry = row.entry)
+                                                SupabaseUsageRow(entry = row.entry, onOpen = open)
+                                            is FilteredHistoryEntry.SchedulerRun ->
+                                                SchedulerRunRow(entry = row.entry, onOpen = open)
                                         }
                                     }
                                     if (rows.size > HISTORY_LIST_MAX_ROWS) {
@@ -1964,8 +1998,8 @@ fun HistoryManagerWindow(
                 }
             }
 
-            infoUnit?.let { unit ->
-                HistoryUnitInfoWindow(unit = unit, onDismiss = { infoUnit = null })
+            infoRow?.let { row ->
+                HistoryEntryInfoWindow(entry = row, onDismiss = { infoRow = null })
             }
         }
     }
@@ -1980,9 +2014,12 @@ fun HistoryManagerWindow(
  * not a History Unit, nothing undoes it, and everything it holds is already on the row.
  */
 @Composable
-private fun NotificationLogRow(entry: NotificationLogEntry) {
+private fun NotificationLogRow(entry: NotificationLogEntry, onOpen: () -> Unit) {
     Column(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp, horizontal = 4.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .historyRowOpen(onOpen)
+            .padding(vertical = 4.dp, horizontal = 4.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Row(
@@ -2011,24 +2048,70 @@ private fun NotificationLogRow(entry: NotificationLogEntry) {
     }
 }
 
+/** PRD §6: the window field's "no restriction" entry, and the default the window drop-down opens on. */
+const val ALL_WINDOWS_LABEL = "All windows"
+
+/** PRD §6: the same for the other-sources field. */
+const val ALL_SOURCES_LABEL = "All sources"
+
 /**
- * One source chip of the History window's configuration menu — a history category, or one of the two
- * local-only diagnostic logs. One drawing for all of them, so a source can never look like a different kind
- * of control from its neighbours.
+ * PRD §6: one field of the History window's configuration menu — a label and a drop-down of [options],
+ * each a display name paired with the value it selects (`null` being the field's "all" entry).
+ *
+ * One drawing for both fields, so the window dimension and the source dimension can never look like
+ * different kinds of control. [enabled] is the check box's answer: the field the box did not select is
+ * greyed and does not open, which is what makes "one of the two fields" visible rather than merely true.
  */
 @Composable
-private fun HistorySourceChip(label: String, active: Boolean, onToggle: () -> Unit) {
-    Text(
-        text = label,
-        modifier = Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(if (active) Color(0xFFEEF3FF) else Color(0xFFF2F3F5))
-            .clickable(onClick = onToggle)
-            .padding(horizontal = 10.dp, vertical = 5.dp),
-        color = if (active) CalColors.accent else CalColors.muted,
-        style = MaterialTheme.typography.labelSmall,
-    )
+private fun <T> HistoryDropdownField(
+    label: String,
+    selected: String,
+    options: List<Pair<String, T?>>,
+    enabled: Boolean,
+    onSelect: (T?) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (enabled) CalColors.muted else CalColors.grid,
+        )
+        Box {
+            Text(
+                text = "$selected  ▾",
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (enabled) Color(0xFFEEF3FF) else Color(0xFFF2F3F5))
+                    .clickable(enabled = enabled) { open = true }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                color = if (enabled) CalColors.accent else CalColors.muted,
+                style = MaterialTheme.typography.labelSmall,
+            )
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                options.forEach { (name, value) ->
+                    DropdownMenuItem(
+                        text = { Text(name, style = MaterialTheme.typography.labelSmall) },
+                        onClick = {
+                            onSelect(value)
+                            open = false
+                        },
+                    )
+                }
+            }
+        }
+    }
 }
+
+/**
+ * PRD §6: what opens a row's information window — a **double** click, on every kind of row.
+ *
+ * It is a raw double-tap rather than a `clickable`, because the list is inside a `SelectionContainer`: a
+ * single click has to stay the beginning of a text selection, which is the other thing this window is for.
+ */
+private fun Modifier.historyRowOpen(onOpen: () -> Unit): Modifier =
+    this.clip(RoundedCornerShape(4.dp))
+        .pointerInput(onOpen) { detectTapGestures(onDoubleTap = { onOpen() }) }
 
 /** The small tag naming which source a row of the History window's merged list came out of. */
 @Composable
@@ -2054,11 +2137,14 @@ private fun HistorySourceTag(label: String) {
  * not a History Unit, nothing undoes it, and everything it holds is already on the row.
  */
 @Composable
-private fun SupabaseUsageRow(entry: SupabaseUsageEntry) {
+private fun SupabaseUsageRow(entry: SupabaseUsageEntry, onOpen: () -> Unit) {
     // A non-2xx status is worth flagging (a failed call still spends bandwidth).
     val ok = entry.status in 200..299
     Column(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp, horizontal = 4.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .historyRowOpen(onOpen)
+            .padding(vertical = 4.dp, horizontal = 4.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Row(
@@ -2096,6 +2182,47 @@ private fun formatBytes(bytes: Long): String =
     }
 
 /**
+ * PRD §6/§9: one run of the scheduler engine in the History window's list — the source tag and the instant,
+ * then which of the two plan events it was and how many rules it ran against.
+ *
+ * Like a notification row it carries no position and no applied/current marker: a re-plan is not a History
+ * Unit (PRD §9 — a schedule is derived, so nothing undoes it). Unlike one it DOES open an information
+ * window, because the rules themselves do not fit on a row and copying them is the point.
+ */
+@Composable
+private fun SchedulerRunRow(entry: SchedulerRunEntry, onOpen: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .historyRowOpen(onOpen)
+            .padding(vertical = 4.dp, horizontal = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            HistorySourceTag("Scheduler")
+            Text(
+                text = formatHistoryTime(entry.timeMillis),
+                style = MaterialTheme.typography.labelSmall,
+                color = CalColors.muted,
+            )
+        }
+        Text(
+            text = entry.kind.label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = "${entry.rules.size} rules  ·  ${entry.panelCount} panels",
+            style = MaterialTheme.typography.bodySmall,
+            color = CalColors.muted,
+        )
+    }
+}
+
+/**
  * How many of a unit's [Delta.details] lines the row itself shows before deferring the rest to the
  * information window. A unit's detail list is unbounded — one line per concrete change, so a tree mutation
  * over a multi-selection carries dozens — and a row that printed all of them would push its neighbours off
@@ -2114,7 +2241,7 @@ private const val HISTORY_ROW_DETAIL_LINES = 3
 @Composable
 private fun HistoryUnitRow(
     entry: FilteredHistoryEntry.Unit,
-    onClick: () -> Unit,
+    onOpen: () -> Unit,
 ) {
     val unit = entry.unit
     // Undone units (past the pointer, redoable) are dimmed.
@@ -2122,8 +2249,7 @@ private fun HistoryUnitRow(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(4.dp))
-            .clickable(onClick = onClick)
+            .historyRowOpen(onOpen)
             .padding(vertical = 4.dp, horizontal = 4.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
@@ -2132,6 +2258,9 @@ private fun HistoryUnitRow(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             HistorySourceTag(entry.category.name)
+            // PRD §6: which window it was made in — the dimension the drop-down filters on, so the row has
+            // to show it or the filter is answering a question the list never asks out loud.
+            unit.window?.let { HistorySourceTag(it.label) }
             Text(
                 text = formatHistoryTime(unit.timeMillis),
                 style = MaterialTheme.typography.labelSmall,
@@ -2184,15 +2313,97 @@ private fun HistoryUnitRow(
 }
 
 /**
- * PRD §6: the information window for a clicked history unit — a modal overlay (scrim + centered card,
- * dismissed by clicking outside or the ✕) listing **all of the unit's own data**: its label, chrono id, and
- * every per-change detail line ([Delta.details]). It deliberately shows nothing list- or pointer-derived
- * (position, category, applied/current status) — those belong to the history list, not to the unit.
+ * PRD §6: **one stored fact** of a history row, as the information window shows it — a label, the value,
+ * and the button that puts the value on the clipboard.
+ *
+ * A row's infos are built by [historyEntryInfos], which is the ONE place that says what a row of each kind
+ * holds; the window below only draws them. That is what keeps "everything this row stores" from drifting
+ * into "everything somebody remembered to add to the window".
+ */
+private data class HistoryInfo(val label: String, val value: String)
+
+/**
+ * PRD §6: everything the row at [entry] stores, in the order the window lists it.
+ *
+ * A **History Unit** contributes its own data only — its window, its instant, its chrono id, whether it was
+ * committed under the debug clock, its label and every one of its [Delta.details] lines. It deliberately
+ * contributes nothing list- or pointer-derived (position, category, applied/current): a unit does not know
+ * those, the list does, and the row is where they are shown.
+ *
+ * The three [HistorySource] rows contribute every field they carry, which for a scheduler run is the whole
+ * **set of rules** it read — the one thing here that cannot be read off the row, and the reason the copy
+ * buttons exist.
+ */
+private fun historyEntryInfos(entry: FilteredHistoryEntry): List<HistoryInfo> =
+    when (entry) {
+        is FilteredHistoryEntry.Unit -> {
+            val unit = entry.unit
+            buildList {
+                add(HistoryInfo("Label", unit.delta.label))
+                add(HistoryInfo("Window", unit.window?.label ?: "(not recorded)"))
+                add(HistoryInfo("Time", formatHistoryTime(unit.timeMillis)))
+                add(HistoryInfo("Chrono id", unit.chronoId.toString()))
+                if (unit.debugTainted) {
+                    add(HistoryInfo("Debug clock", "committed under time simulation; reverted at next start"))
+                }
+                unit.delta.details.forEachIndexed { index, line ->
+                    add(HistoryInfo("Detail ${index + 1}", line))
+                }
+            }
+        }
+        is FilteredHistoryEntry.Notification ->
+            listOf(
+                HistoryInfo("Title", entry.entry.title),
+                HistoryInfo("Time", formatHistoryTime(entry.entry.timeMillis)),
+                HistoryInfo("Message", entry.entry.message),
+            )
+        is FilteredHistoryEntry.SupabaseUsage ->
+            listOf(
+                HistoryInfo("Resource", entry.entry.resource),
+                HistoryInfo("Operation", entry.entry.operation),
+                HistoryInfo("Time", formatHistoryTime(entry.entry.timeMillis)),
+                HistoryInfo("Status", entry.entry.status.toString()),
+                HistoryInfo("Sent", formatBytes(entry.entry.requestBytes)),
+                HistoryInfo("Received", formatBytes(entry.entry.responseBytes)),
+            )
+        is FilteredHistoryEntry.SchedulerRun ->
+            listOf(
+                HistoryInfo("Event", entry.entry.kind.label),
+                HistoryInfo("Time", formatHistoryTime(entry.entry.timeMillis)),
+                HistoryInfo("Horizon", formatHistoryTime(entry.entry.horizonMillis)),
+                HistoryInfo("Panels", entry.entry.panelCount.toString()),
+                // The set of rules, as one copyable block: this is what "copy the current set of rules from
+                // the scheduler" asks for, and splitting it per task would make it uncopyable as a whole.
+                HistoryInfo(
+                    "Rules",
+                    entry.entry.rules.joinToString("\n").ifBlank { "(no schedulable task)" },
+                ),
+            )
+    }
+
+/** The window title of a row's information window — what kind of thing the user double-clicked. */
+private fun historyEntryTitle(entry: FilteredHistoryEntry): String =
+    when (entry) {
+        is FilteredHistoryEntry.Unit -> entry.unit.delta.label
+        is FilteredHistoryEntry.Notification -> "Notification"
+        is FilteredHistoryEntry.SupabaseUsage -> "Supabase call"
+        is FilteredHistoryEntry.SchedulerRun -> "Scheduler run"
+    }
+
+/**
+ * PRD §6: the information window for a **double-clicked** history row — a modal overlay (scrim + centered
+ * card, dismissed by clicking outside or the ✕) listing **every stored info** of that row, each with its own
+ * button that copies the value to the system clipboard. "Copy all" takes the lot as `label: value` lines.
+ *
+ * It is one window for all four kinds of row, over [historyEntryInfos], rather than one per kind: what a row
+ * holds is a question the list already answers, and a second window per kind would be a second answer to it
+ * (CLAUDE.md *one rule, one funnel*).
  */
 @Composable
-private fun HistoryUnitInfoWindow(unit: HistoryUnit, onDismiss: () -> Unit) {
-        // A sort-2 pop-up: it draws on the top layer, blocks nothing behind it, and the host
-        // dismisses it as soon as a press lands anywhere else (see TransientPopupHost).
+private fun HistoryEntryInfoWindow(entry: FilteredHistoryEntry, onDismiss: () -> Unit) {
+    val infos = historyEntryInfos(entry)
+    // A sort-2 pop-up: it draws on the top layer, blocks nothing behind it, and the host
+    // dismisses it as soon as a press lands anywhere else (see TransientPopupHost).
     TransientPopupLayer {
         Surface(
             shape = RoundedCornerShape(12.dp),
@@ -2202,7 +2413,7 @@ private fun HistoryUnitInfoWindow(unit: HistoryUnit, onDismiss: () -> Unit) {
             modifier = Modifier
                 .transientPopupCard(onDismiss)
                 .padding(24.dp)
-                .widthIn(min = 280.dp, max = 460.dp),
+                .widthIn(min = 320.dp, max = 560.dp),
         ) {
             Column(
                 modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState()),
@@ -2210,9 +2421,13 @@ private fun HistoryUnitInfoWindow(unit: HistoryUnit, onDismiss: () -> Unit) {
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = unit.delta.label,
+                        text = historyEntryTitle(entry),
                         style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier.weight(1f),
+                    )
+                    HistoryCopyButton(
+                        label = "Copy all",
+                        value = infos.joinToString("\n") { "${it.label}: ${it.value}" },
                     )
                     Box(
                         modifier = Modifier.size(28.dp).clip(CircleShape).clickable(onClick = onDismiss),
@@ -2223,29 +2438,40 @@ private fun HistoryUnitInfoWindow(unit: HistoryUnit, onDismiss: () -> Unit) {
                 }
                 Box(Modifier.fillMaxWidth().height(1.dp).background(CalColors.grid))
 
-                HistoryInfoLine("Time", formatHistoryTime(unit.timeMillis))
-                HistoryInfoLine("Chrono id", unit.chronoId.toString())
-
-                Text(
-                    text = "Details",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = CalColors.muted,
-                )
-                val details = unit.delta.details
-                if (details.isEmpty()) {
-                    Text(
-                        text = "(no further detail)",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = CalColors.muted,
-                    )
-                } else {
-                    details.forEach { line ->
-                        Text(text = line, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
+                infos.forEach { info -> HistoryInfoLine(info) }
             }
         }
     }
+}
+
+/**
+ * PRD §6: the button that puts one stored info on the system clipboard.
+ *
+ * It reports back for a moment, because a clipboard write has no other visible effect and the user would
+ * otherwise have to paste somewhere to find out whether the click landed.
+ */
+@Composable
+private fun HistoryCopyButton(label: String, value: String) {
+    var copied by remember(value) { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1_200)
+            copied = false
+        }
+    }
+    Text(
+        text = if (copied) "copied" else label,
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color(0xFFEEF3FF))
+            .clickable {
+                writeSystemClipboardText(value)
+                copied = true
+            }
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        color = CalColors.accent,
+        style = MaterialTheme.typography.labelSmall,
+    )
 }
 
 /** PRD §6: the History Unit's exact timestamp, rendered as `YYYY-MM-DD HH:MM:SS` in the local zone. */
@@ -2255,21 +2481,23 @@ private fun formatHistoryTime(millis: Long): String {
     return "${dt.year}-${p2(dt.monthNumber)}-${p2(dt.dayOfMonth)} ${p2(dt.hour)}:${p2(dt.minute)}:${p2(dt.second)}"
 }
 
-/** One `label: value` line in the history-unit information window (PRD §6). */
+/** PRD §6: one stored info of a history row — its label, its value, and its own copy button. */
 @Composable
-private fun HistoryInfoLine(label: String, value: String) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+private fun HistoryInfoLine(info: HistoryInfo) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
         Text(
-            text = "$label:",
+            text = "${info.label}:",
             style = MaterialTheme.typography.labelSmall,
             color = CalColors.muted,
             modifier = Modifier.width(76.dp),
         )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.weight(1f),
-        )
+        SelectionContainer(modifier = Modifier.weight(1f)) {
+            Text(text = info.value, style = MaterialTheme.typography.bodySmall)
+        }
+        HistoryCopyButton(label = "copy", value = info.value)
     }
 }
 

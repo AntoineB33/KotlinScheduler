@@ -1,0 +1,19 @@
+-- Schema v11 -> v12: record WHICH WINDOW of the app each History Unit was made in (PRD §6).
+--
+-- The History window's filter is now a window drop-down ("all windows" by default, every window of the app
+-- in the list) beside a source drop-down for the rows the app itself produced. A unit could not answer the
+-- first question: its `category` is the Ctrl+Z stack it walks (Edit / Selection / Calendar / Main /
+-- WindowNav), not the window it was authored in — `Main` alone holds tree mutations, alarms, timers,
+-- categories, relations and rebound chords. `window` is that missing fact, stamped once at commit from
+-- `SchedulerReducer.activeWindow` and immutable thereafter.
+--
+-- It is ADDED, not rebuilt into position. 10.sqm had to rebuild the table because the columns a SAVE reads
+-- must precede the `delta` blob (overflow pages: 36 ms vs 3 ms per digest scan); this column is the
+-- exception, because no save ever reads it — a unit is immutable, so its window takes no part in the digest
+-- that decides row reuse — and the only reader is the full load, which walks `delta` regardless. A rebuild
+-- would have rewritten tens of MB of delta text on the release account's first launch to buy nothing.
+--
+-- NULL is legitimate and permanent on the rows carried up: the app cannot know where a change already
+-- recorded was made. Such a unit is still listed, under the drop-down's "All windows".
+
+ALTER TABLE history_unit ADD COLUMN window TEXT;

@@ -27,6 +27,13 @@ CREATE TABLE app_state (
 -- `delta_hash` is NULL only on rows a pre-v11 DB carried up (SQL cannot compute the Kotlin hash); those
 -- match on the rest and are healed by the first save that reuses them.
 --
+-- `window` (added in 11.sqm) is the PRD §6 window of the app the unit was committed in — what the History
+-- window's window drop-down filters on — or NULL when the shell named none, which is also what every row a
+-- pre-v12 DB carries up reads as. It is the ONE column allowed after `delta`: a save never reads it (a unit
+-- is immutable, so its window takes no part in the digest that decides row reuse), and the only reader is
+-- the full load, which walks the delta anyway. Putting it before `delta` would have meant rebuilding the
+-- whole table — tens of MB rewritten on upgrade — to save a read nobody makes.
+--
 -- `delta` is the LAST column ON PURPOSE. SQLite reaches a column by walking the record from the front, and
 -- a delta of tens of KB lives in overflow pages - so a digest column placed after it drags that whole chain
 -- in and the scan costs 36 ms per save against a 54 MB history instead of 3 ms. Anything a save must read
@@ -41,6 +48,7 @@ CREATE TABLE history_unit (
     delta_length INTEGER NOT NULL DEFAULT -1,
     delta_hash INTEGER,
     delta TEXT NOT NULL,
+    window TEXT,
     PRIMARY KEY (account_id, category, seq)
 );
 
@@ -155,7 +163,7 @@ upsertAppState:
 INSERT OR REPLACE INTO app_state(account_id, payload) VALUES (?, ?);
 
 selectAllHistory:
-SELECT category, seq, time_millis, chrono_id, debug_tainted, delta
+SELECT category, seq, time_millis, chrono_id, debug_tainted, delta, window
 FROM history_unit
 WHERE account_id = ?
 ORDER BY category, seq;
@@ -174,8 +182,8 @@ DELETE FROM history_unit WHERE account_id = ? AND category = ? AND seq = ?;
 
 insertHistoryUnit:
 INSERT OR REPLACE INTO
-history_unit(account_id, category, seq, time_millis, chrono_id, debug_tainted, delta_length, delta_hash, delta)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+history_unit(account_id, category, seq, time_millis, chrono_id, debug_tainted, delta_length, delta_hash, delta, window)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- Fills in the digest of a row a pre-v11 DB carried up, WITHOUT touching its delta. Only ever called for a
 -- row the save has just matched, so the values written are that row's own.

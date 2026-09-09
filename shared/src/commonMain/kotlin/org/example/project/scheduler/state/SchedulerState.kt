@@ -66,6 +66,50 @@ enum class HistoryCategory { Edit, Selection, Calendar, Main, WindowNav }
 enum class AppWindow { Tree, Calendar, Reminders, History, Alarms }
 
 /**
+ * PRD §6: **which window of the app a History Unit was made in** — the History window's first filter
+ * dimension, and the one the drop-down lists.
+ *
+ * It is deliberately a different question from [AppWindow], which is the set of *focus targets* (PRD §7):
+ * only five windows claim the app-wide focus, but the user authors History Units in every one of them — a
+ * category rule is written in the Categories window, a relation struck off in Task relations, a chord
+ * rebound in Shortcuts — and none of those three moves [SchedulerState.focusedWindow]. Filtering by the
+ * focused window would therefore file every one of those under [Tree]. The two enums answer "who owns the
+ * keyboard?" and "where was this change made?", which are not the same set.
+ *
+ * The debug time-simulation panel is not here: it is not a window of the app, and it commits nothing.
+ */
+enum class HistoryWindow(val label: String) {
+    Tree("Task tree"),
+    Calendar("Calendar"),
+    Reminders("Reminders"),
+    History("History"),
+    Sleep("Sleep"),
+    Alarms("Alarms & timers"),
+    TaskTrees("Task trees"),
+    TaskList("All tasks"),
+    TaskRelations("Task relations"),
+    Categories("Categories"),
+    DefaultSubtree("Default sub-tree"),
+    Shortcuts("Shortcuts"),
+}
+
+/**
+ * PRD §6: the History window's **other** origin dimension — the rows the app itself produced rather than
+ * the user, in a window. The two dimensions partition the list: a row either came out of a window (it is a
+ * History Unit and carries a [HistoryWindow]) or out of one of these (it is not a History Unit at all —
+ * nothing undoes it and it carries no delta).
+ *
+ * [SchedulerEngine] is the scheduler's own record of each re-plan, including the **set of rules** it ran
+ * ([SchedulerRunEntry]); [Notification] is the notification log (PRD §7); [Api] is the Supabase-usage log
+ * (the free-plan draw-down). All three are local-only, per-device diagnostics.
+ */
+enum class HistorySource(val label: String) {
+    SchedulerEngine("Scheduler engine"),
+    Notification("Notifications"),
+    Api("Supabase API"),
+}
+
+/**
  * PRD §5/§6: every History Unit lives in one shared timeline; the categories are just how the History
  * Manager *queries and groups* that timeline into columns. [WindowNav] holds window-navigation units
  * (PRD §7) — recorded for display but, for now, not walked by any undo/redo command.
@@ -123,6 +167,15 @@ data class HistoryUnit(
     val chronoId: Long = 0,
     val delta: Delta,
     val debugTainted: Boolean = false,
+    /**
+     * PRD §6: the window of the app the change was made in — what the History window's window drop-down
+     * filters on. Stamped once, at commit, from `SchedulerReducer.activeWindow`; `null` means the shell
+     * named no window (a headless host, a test, or a unit written by a build older than this field).
+     *
+     * A merged gesture (see [Delta.coalesceKey]) keeps the window the FIRST keystroke was made in, which is
+     * the same side of the gesture its timestamp and its `before` state come from.
+     */
+    val window: HistoryWindow? = null,
 ) {
     /**
      * The serialized form of [delta] plus its digest, computed at most ONCE per unit
@@ -175,6 +228,48 @@ data class SupabaseUsageEntry(
     val responseBytes: Long,
     val status: Int,
 )
+
+/**
+ * PRD §6/§9: one run of the **scheduler engine** — the [HistorySource.SchedulerEngine] rows of the History
+ * window. A re-plan is not a History Unit (PRD §9: a schedule is derived from the current state, so nothing
+ * undoes it), but it IS the app deciding something, and the one thing about it the user cannot otherwise see
+ * is *what the scheduler was answering* — [rules], the set of rules `side-dev/README.md` names: every
+ * schedulable task with the priority share, minimum time and resilience the fill read for it. The
+ * information window hands that text to the clipboard.
+ *
+ * **RAM-only, this session only** — held by `TaskSchedulerViewModel`, capped at [MAX_ENTRIES], and never
+ * written to the DB or the wire. The rules are re-derivable from the state by definition (CLAUDE.md
+ * authoritative-vs-derived), and a rolling tail of them in `app_state` would put hundreds of KB of text on
+ * the save path that ADR 0007 exists to keep short.
+ *
+ * [kind] says which of the two plan events this was (a re-plan or a horizon extension, see
+ * `SchedulerReducer.reduceRefreshSchedule` / `reduceExtendSchedule`), [horizonMillis] how far it
+ * materialized, [panelCount] how many panels the state carried afterwards.
+ */
+data class SchedulerRunEntry(
+    val timeMillis: Long,
+    val kind: Kind,
+    val horizonMillis: Long,
+    val panelCount: Int,
+    val rules: List<String>,
+) {
+    /** Which of PRD §9's two plan events produced this row. */
+    enum class Kind(val label: String) {
+        /** A change to the scheduling rules: the plan is recomputed from the now-line. */
+        Replan("Re-plan"),
+
+        /** The horizon grew: the plan already ahead of the line is KEPT and only its tail is materialized. */
+        Extension("Horizon extension"),
+    }
+
+    companion object {
+        /**
+         * How many runs the RAM-only log keeps (a rolling tail — the most recent that many). Small on
+         * purpose: each row carries one line per schedulable task, so this is the only thing bounding it.
+         */
+        const val MAX_ENTRIES = 50
+    }
+}
 
 sealed interface Delta {
     /** PRD §5/§6 History Manager: a short human-readable name for this unit (shown in the history window). */

@@ -3739,11 +3739,37 @@ object SchedulerDomain {
         // `SchedulerReducer.tpMode`; the default is mode 1, which is what a shell with no device signal
         // (tests, a headless host that cannot read a lock) should assume — somebody is at a screen.
         tpMode: Int = DynamicPeriods.MODE_AT_SCREEN,
+        // PRD §6/§9: where this fill reports the SET OF RULES it ran, one readable line per schedulable task
+        // ([describePlanRule]). Only the two plan reductions in `SchedulerReducer` pass one — the display
+        // fills leave it null, and nothing is rendered then, so this costs a null check on the hot path.
+        rulesSink: ((List<String>) -> Unit)? = null,
     ): List<TaskPanel> = Perf.measure("scheduler.fillSchedule") {
         fillScheduleUninstrumented(
             state, nowMillis, timeZone, liveRest, noScreenEvidence, horizonMillis, keepExistingUntilMillis,
-            tpMode,
+            tpMode, rulesSink,
         )
+    }
+
+    /**
+     * PRD §6: one rule of the scheduler's rule set, spelled for a human — `side-dev/README.md`'s statement
+     * of what a task is owed and where it may run: its priority share, its PRD §10 minimum time, and its
+     * resilience overrides (the kinds it is allowed inside, and at what fraction of its share). A task with
+     * no override is spelled "on screen only", which is what an empty map means (see [PlanTask.resilience]).
+     *
+     * This is what the History window's scheduler-engine rows carry and what its copy button hands to the
+     * clipboard, so it is written out here — beside the [PlanTask] it describes — rather than in the UI,
+     * where it would be a second spelling of the same rule.
+     */
+    fun describePlanRule(task: PlanTask, title: String): String {
+        val name = title.ifBlank { task.id.value }
+        val share = ((task.priority * 1000.0).roundToLong() / 10.0)
+        val minimum = task.minimumMillis / MILLIS_PER_MINUTE
+        val resilience =
+            if (task.resilience.isEmpty()) "on screen only"
+            else task.resilience.entries.sortedBy { it.key }.joinToString(", ") { (kind, value) ->
+                "$kind ${((value * 1000.0).roundToLong() / 10.0)}%"
+            }
+        return "$name — priority $share%, minimum $minimum min, resilience: $resilience"
     }
 
     /**
@@ -3760,6 +3786,7 @@ object SchedulerDomain {
         horizonMillis: Long,
         keepExistingUntilMillis: Long?,
         tpMode: Int,
+        rulesSink: ((List<String>) -> Unit)? = null,
     ): List<TaskPanel> {
         val horizon = maxOf(horizonMillis, nowMillis)
         // Cut every non-pinned panel in [now, horizon]; keep fixed (pinned) panels, reminder tags (PRD
@@ -3848,6 +3875,8 @@ object SchedulerDomain {
                 )
             }
         val planner = SchedulerPlanner(planTasks)
+        // PRD §6: hand the rule list to whoever asked for it, spelled with the titles this fill already has.
+        rulesSink?.invoke(planTasks.map { describePlanRule(it, working.tasks[it.id]?.title.orEmpty()) })
         // --- `side-dev/README.md` § *3 Dynamic Restrictive Period*: where the three fall.
         //
         // They are placed by the recurrence bars ([DynamicPeriods]) over the environment they interrupt, so

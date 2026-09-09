@@ -360,5 +360,8 @@ class AlarmHistoryTest {
         val units = decoded.histories.forCategory(HistoryCategory.Main).units
         assertEquals(1, units.size)
         assertEquals(510, SchedulerReducer.reduce(decoded, SchedulerIntent.Undo).sleep?.sleepDurationMinutes)
+        // PRD §6: the payload predates the `window` field, so the unit names no window — and is still
+        // listed, under the History window's "All windows" (CLAUDE.md persisted-DB compatibility).
+        assertNull(units.single().window)
     }
 }

@@ -76,6 +76,7 @@ import org.example.project.scheduler.state.AppWindow
 import org.example.project.scheduler.state.SchedulerIntent
 import org.example.project.scheduler.state.defaultSubtreePriorities
 import org.example.project.scheduler.state.projectDefaultSubtree
+import org.example.project.scheduler.state.HistoryWindow
 import org.example.project.scheduler.state.SchedulerReducer
 import org.example.project.scheduler.ui.PeriodKindEditWindow
 import org.example.project.scheduler.ui.PriorityWeightWindow
@@ -211,6 +212,9 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
         val vm: TaskSchedulerViewModel =
             host?.vm ?: viewModel { TaskSchedulerViewModel(store = store, syncEngine = syncEngine) }
         val schedulerState by vm.state.collectAsState()
+        // PRD §6/§9: the History window's scheduler-engine rows — this session's runs of the scheduler and
+        // the rule set each one read. RAM-only (see [TaskSchedulerViewModel.schedulerRuns]).
+        val schedulerRuns by vm.schedulerRuns.collectAsState()
 
         // Floating-window geometry/visibility, persisted LOCALLY ONLY (never synced, never a History Unit).
         // Absent on stores without the capability (e.g. web's localStorage) — placement then stays in-memory.
@@ -541,7 +545,38 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                 ),
             )
         }
+        // PRD §6: which window of the app a change made here belongs to — "where was this change made?",
+        // which every window answers, not just the five that claim the app-wide focus (appWindowOf
+        // below). The two are deliberately separate enums (see [HistoryWindow]); this is the one place
+        // the mapping between them lives, so a window added to the app is added to both or to neither.
+        fun historyWindowOf(id: FloatingWindow): HistoryWindow? = when (id) {
+            FloatingWindow.Calendar -> HistoryWindow.Calendar
+            FloatingWindow.Reminders -> HistoryWindow.Reminders
+            FloatingWindow.History -> HistoryWindow.History
+            FloatingWindow.Sleep -> HistoryWindow.Sleep
+            FloatingWindow.Alarms -> HistoryWindow.Alarms
+            FloatingWindow.TaskTrees -> HistoryWindow.TaskTrees
+            FloatingWindow.TaskList -> HistoryWindow.TaskList
+            FloatingWindow.TaskRelations -> HistoryWindow.TaskRelations
+            FloatingWindow.Categories -> HistoryWindow.Categories
+            FloatingWindow.DefaultSubtree -> HistoryWindow.DefaultSubtree
+            FloatingWindow.Shortcuts -> HistoryWindow.Shortcuts
+            // The debug time-simulation panel is not a window of the app and commits nothing.
+            FloatingWindow.TimeSim -> null
+        }
+        // PRD §6: the window every History Unit committed from now on is stamped with — the innermost
+        // window the user last pressed in. Compose-only, like the window stack it rides: where a change was
+        // made is a fact about THIS device's session, and the unit it lands on is what carries it onward.
+        //
+        // It is fed by the two raise funnels and nothing else: [bringWindowToFront] below (every floating
+        // window's press goes through it, via onRaise / onFocus) and the content Box's own raise-on-press
+        // for the task tree. Both observe the press on [PointerEventPass.Initial], which travels parent →
+        // child, so a press inside a floating window sets `Tree` on the way in and is corrected to that
+        // window immediately after — the innermost window wins, which is the one the user is acting in.
+        var activeHistoryWindow by remember { mutableStateOf(HistoryWindow.Tree) }
+        SideEffect { SchedulerReducer.activeWindow = { activeHistoryWindow } }
         fun bringWindowToFront(id: FloatingWindow) {
+            historyWindowOf(id)?.let { activeHistoryWindow = it }
             if (windowStack.lastOrNull() != id) windowStack = windowStack.filterNot { it == id } + id
         }
         fun windowZ(id: FloatingWindow): Float = windowStack.indexOf(id).toFloat()
@@ -1466,7 +1501,12 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .clipToBounds(),
+                        .clipToBounds()
+                        // PRD §6: the task tree's own raise. This Box is the ancestor of every floating
+                        // window, and the press is observed on the Initial pass (parent → child), so a
+                        // press inside one of them lands here first and is corrected by that window's own
+                        // raise a moment later. See [activeHistoryWindow].
+                        .raiseOnPress { activeHistoryWindow = HistoryWindow.Tree },
                 ) {
                     when (page) {
                         OmniPage.TaskScheduler ->
@@ -1981,6 +2021,7 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             histories = schedulerState.histories,
                             notificationLog = schedulerState.notificationLog,
                             supabaseUsageLog = schedulerState.supabaseUsageLog,
+                            schedulerRuns = schedulerRuns,
                             onDismiss = { historyManagerOpen = false },
                             // Cascade: open down-right of center so the Reminders / calendar windows stay reachable.
                             initialOffset = historyOffset,

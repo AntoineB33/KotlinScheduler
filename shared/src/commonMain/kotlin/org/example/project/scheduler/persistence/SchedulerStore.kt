@@ -21,6 +21,16 @@ data class HistoryRow(
     val chronoId: Long,
     val debugTainted: Boolean,
     val deltaJson: String,
+    /**
+     * PRD §6: the name of the [org.example.project.scheduler.state.HistoryWindow] the unit was committed in,
+     * or null when the shell named none (or the row was carried up from a pre-v12 DB, whose column is NULL).
+     *
+     * It sits AFTER [deltaJson] deliberately, mirroring the column order: the `delta` blob lives in overflow
+     * pages, so every column a SAVE must read has to precede it — and a save never reads this one. The unit
+     * is immutable once committed, so its window takes no part in the digest that decides row reuse; only
+     * the full load reads it, and that reads the delta anyway.
+     */
+    val window: String? = null,
 ) {
     /**
      * [HistoryDigest] of [deltaJson], carried from the memo on the unit this row was encoded from so the

@@ -308,7 +308,7 @@ The lateral menu's **Notifications** switch and `Ctrl+Shift+Alt+N` are one lever
   the app posts goes through it — a break's start and end, "task to do now", the wind-down, an alarm, a
   chord's own receipt — so there is no exempt caller and no second gate. A mute with a list of exceptions is
   not a mute; never add the check anywhere else, and never post around it.
-- **The log is written BEFORE the platform call, muted or not.** The History window's Notifications column
+- **The log is written BEFORE the platform call, muted or not.** The History window's **Notifications** source
   answers "what did the app decide to say", which is why it was never proof of delivery — and why the switch
   can silence the interruption without touching the record.
 - **Switching off also withdraws what the OS is still showing** (`cancelSystemNotifications`): a notification

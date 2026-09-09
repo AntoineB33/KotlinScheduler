@@ -11,6 +11,56 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### The History window filters by WINDOW, and rows open on a double click — 2026-09-09
+
+`state/SchedulerState.kt` (new `HistoryWindow` / `HistorySource` enums, `HistoryUnit.window`, new
+`SchedulerRunEntry`), `state/SchedulerReducer.kt` (new `activeWindow` and `recordSchedulerRun` seams,
+`commitDelta` stamps the window, the two plan reductions report a run), `domain/SchedulerDomain.kt`
+(`fillSchedule` gained an optional `rulesSink`, new `describePlanRule`), `ui/TaskSchedulerViewModel.kt`
+(the RAM-only `schedulerRuns` log), `App.kt` (`historyWindowOf` + `activeHistoryWindow`, fed by
+`bringWindowToFront` and the content Box's raise-on-press), `ui/CalendarUi.kt` (the whole filter menu and
+information window), `persistence/SchedulerStore.kt` + `SchedulerStateCodec.kt` +
+`SqlDelightSchedulerStore.kt`, **`Scheduler.sq` + new `11.sqm` (schema v11 → v12)**,
+`SchedulerReducerTest`, new `SchedulerRunLogTest`, `SchedulerHistoryWriteTest`, `AlarmHistoryTest`,
+PRD §6, `docs/invariants/persistence.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy.**
+
+The filter was seven source chips (five history categories + notifications + Supabase usage), each toggled on
+its own. It is now the two ORIGIN fields the spec asks for, each a drop-down, with a check box saying which of
+them filters:
+
+- **Window** — where the change was made; default "all windows", every window of the app in the list.
+- **Other source** — what the app itself produced: the scheduler engine, notifications, the Supabase API.
+
+A unit could not answer the first question. `HistoryCategory` is the Ctrl+Z stack it walks, not the window it
+was authored in — `Main` alone holds tree mutations, alarms, timers, categories, relations and rebound chords
+— and `SchedulerState.focusedWindow` is the §7 focus target, which only five of the twelve windows claim, so
+reading either would have filed a Categories edit under the task tree. So the unit now RECORDS its window
+(`HistoryUnit.window`, `history_unit.window`), stamped once at commit from an injected
+`SchedulerReducer.activeWindow` the shell feeds from the one funnel every window's press already goes through.
+NULL on the rows an older build wrote, and those stay listed under "all windows".
+
+The two fields **partition** the list rather than intersecting it, which is what "the check box selects one of
+the two fields" means and what keeps the default view from being drowned by the Supabase log (one row per HTTP
+call — the reason that chip used to start off).
+
+**Scheduler-engine rows are new.** A re-plan is still not a History Unit (§9: a schedule is derived, so nothing
+undoes it), but the two plan reductions now report the run *and the set of rules it read* — one line per
+schedulable task with its priority share, §10 minimum and resilience, straight out of the `PlanTask` list the
+fill builds, via an optional `rulesSink` the display fills never pass. It is a RAM-only, capped, per-session
+log on the ViewModel: the rules are derivable from the state by definition, and a rolling tail of them in
+`app_state` would put hundreds of KB of text on the save path ADR 0007 exists to keep short.
+
+**Double click, not click**, opens a row's information window, and every kind of row now has one (a scheduler
+run's rules are the thing worth copying). Each stored info carries its own clipboard button plus a "Copy all";
+the single click is left alone because the list is inside a `SelectionContainer` and a click has to stay the
+start of a text selection.
+
+`11.sqm` is an `ALTER TABLE ADD COLUMN`, so `window` lands AFTER `delta` — the one column allowed to, because
+no save reads it (a unit is immutable, so its window takes no part in the digest that decides row reuse) and
+the only reader is the full load, which walks `delta` regardless. A rebuild in 10.sqm's style would have
+rewritten the release account's whole history on first launch to buy nothing.
+
 ### Ctrl+Shift+Z redoes — one reading of the undo/redo chords — 2026-09-09
 
 `ui/KeyboardShortcuts.kt` (new `undoRedoIntentFor`, and the catalogue entry split in two),
