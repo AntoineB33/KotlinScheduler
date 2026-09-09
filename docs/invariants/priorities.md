@@ -123,6 +123,22 @@ Global rules that always apply: `CLAUDE.md`.
   `replacing` the table no longer has) commits **no** unit.
 - **The commit is the identity menu's pick, never the typed text.** A weight-table row names an existing
   task, so a draft that matches nothing is dropped when the editor closes — and a blank one removes the row.
+- **A WEIGHT-TABLE PIN IS THE ACCOUNT'S, NOT THE OPEN WINDOW'S** (`SchedulerState.priorityWeightPins`, per
+  sub-list). It is authoritative + synced and **not** an Undo/Redo unit, exactly like the relative-priority
+  pins above — it was Compose-only until 1.6.0, and "pin a value, close the window, open it again, the pin is
+  gone" is the anomaly that ended that. It is the one part of this window that is NOT a reading of the table:
+  the row selection and the row editor beside it stay in Compose for the reason stated above, and the
+  distinction is whether the user is *saying* something or *looking* at something.
+- **A pin names its column by INDEX, so every structural column edit has to carry the table's pins** —
+  `remapPriorityWeightPins`, applied at the dispatch site of add/delete/move, reading the index each one acts
+  on from the SAME helper the apply function reads (`addColumnIndex` / `deleteColumnIndex` /
+  `moveColumnTarget`), so the pins can never land on a different column than the weights did. A reset moves
+  no column and so moves no pin. It sits at the dispatch site and not inside the delta because
+  `commitDelta` publishes `delta.redo(state)` and `TreeMutationDelta` carries the tree
+  (`captureTree`: cells / lists / tasks) — a pin written inside the `mutate` lambda would be **discarded**.
+  The price is the one place the two can disagree: undoing a column *move* puts the columns back and leaves
+  the pins where the move carried them, which is the deliberate cost of keeping pins out of history. A pin
+  naming a cell, a column or a list that is gone simply matches no field, so no tree edit prunes this map.
 - **Its Cancel restores the table the window OPENED on** — every header and every weight row, in one step,
   never one edit back — as one ordinary `priorityTreeDelta`, which is what makes Ctrl+Z undo the cancel. A
   cancel that changes nothing records no unit. It rewrites that one sub-list's weights and nothing else: a cell

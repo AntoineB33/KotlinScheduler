@@ -19,6 +19,7 @@ import org.example.project.scheduler.model.CellListId
 import org.example.project.scheduler.model.ForcedTaskStart
 import org.example.project.scheduler.model.ForcedTaskSwitch
 import org.example.project.scheduler.model.PanelPins
+import org.example.project.scheduler.model.PriorityWeightPin
 import org.example.project.scheduler.model.RelativePriorityPinKey
 import org.example.project.scheduler.model.SleepSchedule
 import org.example.project.scheduler.model.Task
@@ -207,6 +208,8 @@ object SchedulerReducer {
                 reduceToggleRelativePriorityPin(state, intent.taskId, intent.relativeTo, intent.cellId)
             is SchedulerIntent.ClearRelativePriorityPins ->
                 reduceClearRelativePriorityPins(state, intent.taskId, intent.relativeTo)
+            is SchedulerIntent.TogglePriorityWeightPin ->
+                reduceTogglePriorityWeightPin(state, intent.listId, intent.cellId, intent.column)
             is SchedulerIntent.RecordTaskRelation ->
                 reduceRecordTaskRelation(
                     state,
@@ -230,14 +233,48 @@ object SchedulerReducer {
                 if (apply(state) === state) state
                 else commitDelta(state, priorityTreeDelta(state, "Default weight", apply))
             }
-            is SchedulerIntent.AddPriorityColumn ->
-                commitDelta(state, priorityTreeDelta(state, "Add weight column") { applyAddPriorityColumn(it, intent.listId, intent.index) })
+            // PRD §5: the three structural column edits move every ROW's value with the column, and a pin
+            // is beside a value — so each carries this table's pins the same way (see
+            // [remapPriorityWeightPins]). The index each one actually acts on is read from the same helper
+            // the apply below reads, so the pins can never land on a different column than the weights did.
+            is SchedulerIntent.AddPriorityColumn -> {
+                val at = state.lists[intent.listId]?.let { addColumnIndex(it, intent.index) }
+                val committed =
+                    commitDelta(state, priorityTreeDelta(state, "Add weight column") { applyAddPriorityColumn(it, intent.listId, intent.index) })
+                if (at == null) committed
+                else remapPriorityWeightPins(committed, intent.listId) { c -> if (c >= at) c + 1 else c }
+            }
+            // A reset moves no column, so the pins stay where they are: the field the user pinned is still
+            // that field, now holding its default.
             is SchedulerIntent.ResetPriorityColumn ->
                 commitDelta(state, priorityTreeDelta(state, "Reset weight column") { applyResetPriorityColumn(it, intent.listId, intent.column) })
-            is SchedulerIntent.DeletePriorityColumn ->
-                commitDelta(state, priorityTreeDelta(state, "Delete weight column") { applyDeletePriorityColumn(it, intent.listId, intent.column) })
-            is SchedulerIntent.MovePriorityColumn ->
-                commitDelta(state, priorityTreeDelta(state, "Move weight column") { applyMovePriorityColumn(it, intent.listId, intent.from, intent.to) })
+            is SchedulerIntent.DeletePriorityColumn -> {
+                val gone = state.lists[intent.listId]?.let { deleteColumnIndex(it, intent.column) }
+                val committed =
+                    commitDelta(state, priorityTreeDelta(state, "Delete weight column") { applyDeletePriorityColumn(it, intent.listId, intent.column) })
+                if (gone == null) committed
+                else remapPriorityWeightPins(committed, intent.listId) { c ->
+                    when {
+                        c == gone -> null
+                        c > gone -> c - 1
+                        else -> c
+                    }
+                }
+            }
+            is SchedulerIntent.MovePriorityColumn -> {
+                val target = state.lists[intent.listId]?.let { moveColumnTarget(it, intent.from, intent.to) }
+                val committed =
+                    commitDelta(state, priorityTreeDelta(state, "Move weight column") { applyMovePriorityColumn(it, intent.listId, intent.from, intent.to) })
+                if (target == null) committed
+                else remapPriorityWeightPins(committed, intent.listId) { c ->
+                    when {
+                        c == intent.from -> target
+                        c in (intent.from + 1)..target -> c - 1
+                        c in target until intent.from -> c + 1
+                        else -> c
+                    }
+                }
+            }
             is SchedulerIntent.RestorePriorityWeights -> {
                 val restore = { s: SchedulerState ->
                     applyRestorePriorityWeights(
@@ -3713,6 +3750,54 @@ private fun reduceRecordTaskRelation(
         mark.copy(retargeted = changed, hidden = mark.hidden && !changed)
     }
 
+/**
+ * PRD §5 the priority-weight window: flip one input's pin for [listId]'s table — the weight of [cellId] in
+ * [column], or that column's header when [cellId] is null. The empty set is dropped from the map rather
+ * than stored, so an account that never pins anything (or unpins its last one) encodes nothing.
+ */
+private fun reduceTogglePriorityWeightPin(
+    state: SchedulerState,
+    listId: CellListId,
+    cellId: CellId?,
+    column: Int,
+): SchedulerState {
+    if (column < 0) return state
+    val pin = PriorityWeightPin(cellId, column)
+    val current = state.priorityWeightPins[listId].orEmpty()
+    val next = if (pin in current) current - pin else current + pin
+    val pins =
+        if (next.isEmpty()) state.priorityWeightPins - listId
+        else state.priorityWeightPins + (listId to next)
+    return state.copy(priorityWeightPins = pins)
+}
+
+/**
+ * PRD §5: a pin names a column by INDEX, because a column has no identity of its own — so a structural
+ * change to [listId]'s columns has to carry that table's pins with it. [moved] maps an old index to its new
+ * one, or to null for the column that is gone.
+ *
+ * Applied to the state the column edit produced rather than inside its history delta, because the delta
+ * carries the TREE (`captureTree`) and the pins deliberately sit outside Undo/Redo — a pin changes no
+ * priority. The consequence is the one place the two can disagree: undoing a column move puts the columns
+ * back and leaves the pins where the move carried them, so a pin can end up beside a neighbouring column
+ * until the user flips it (the pin button says which fields are held, so it is visible, and no priority
+ * moves on its own).
+ */
+private fun remapPriorityWeightPins(
+    state: SchedulerState,
+    listId: CellListId,
+    moved: (Int) -> Int?,
+): SchedulerState {
+    val pins = state.priorityWeightPins[listId] ?: return state
+    val next = pins.mapNotNull { pin -> moved(pin.column)?.let { pin.copy(column = it) } }.toSet()
+    if (next == pins) return state
+    return state.copy(
+        priorityWeightPins =
+            if (next.isEmpty()) state.priorityWeightPins - listId
+            else state.priorityWeightPins + (listId to next),
+    )
+}
+
 /** PRD §5 the relative-priority window's "clear pins" button. */
 private fun reduceClearRelativePriorityPins(
     state: SchedulerState,
@@ -3762,13 +3847,32 @@ private fun applySetPriorityDefaultWeight(
     return state.copy(lists = state.lists + (listId to list.copy(defaultWeights = defaults)))
 }
 
+/**
+ * PRD §5: where an "add column" actually lands. Read by the apply below **and** by the pin remap at the
+ * dispatch site, so a pin can never be carried onto a different index than the weights were.
+ */
+private fun addColumnIndex(list: CellList, index: Int): Int = index.coerceIn(0, list.weightColumns.size)
+
+/** PRD §5: the column a "delete column" actually removes, or null where the table refuses (see below). */
+private fun deleteColumnIndex(list: CellList, column: Int): Int? =
+    if (column < 0 || column >= list.weightColumns.size || list.weightColumns.size <= 1) null else column
+
+/** PRD §5: where a "move column" actually puts the moved column, or null where the move is a no-op. */
+private fun moveColumnTarget(list: CellList, from: Int, to: Int): Int? {
+    val size = list.weightColumns.size
+    if (from < 0 || from >= size) return null
+    // [to] is an insertion index across all columns; account for removing [from] first.
+    val target = (if (to > from) to - 1 else to).coerceIn(0, size - 1)
+    return if (target == from) null else target
+}
+
 private fun applyAddPriorityColumn(
     state: SchedulerState,
     listId: CellListId,
     index: Int,
 ): SchedulerState {
     val list = state.lists[listId] ?: return state
-    val at = index.coerceIn(0, list.weightColumns.size)
+    val at = addColumnIndex(list, index)
     // PRD §5: an added column has every field (header and cells) set to 0.
     val cells = state.cells.toMutableMap()
     for (cellId in list.cellIds) {
@@ -3815,10 +3919,7 @@ private fun applyMovePriorityColumn(
 ): SchedulerState {
     val list = state.lists[listId] ?: return state
     val size = list.weightColumns.size
-    if (from < 0 || from >= size) return state
-    // [to] is an insertion index across all columns; account for removing [from] first.
-    val target = (if (to > from) to - 1 else to).coerceIn(0, size - 1)
-    if (target == from) return state
+    val target = moveColumnTarget(list, from, to) ?: return state
     fun <T> reorder(items: MutableList<T>) {
         val moved = items.removeAt(from)
         items.add(target, moved)
@@ -3844,8 +3945,8 @@ private fun applyDeletePriorityColumn(
     column: Int,
 ): SchedulerState {
     val list = state.lists[listId] ?: return state
-    // Keep at least one column so priority distribution stays well-defined.
-    if (column < 0 || column >= list.weightColumns.size || list.weightColumns.size <= 1) return state
+    // Keep at least one column so priority distribution stays well-defined ([deleteColumnIndex]).
+    if (deleteColumnIndex(list, column) == null) return state
     val cells = state.cells.toMutableMap()
     for (cellId in list.cellIds) {
         val cell = cells[cellId] ?: continue

@@ -117,6 +117,7 @@ import org.example.project.scheduler.domain.SchedulerDomain.VisibleOccurrence
 import org.example.project.scheduler.domain.TaskTreeSearch
 import org.example.project.scheduler.model.CellId
 import org.example.project.scheduler.model.CellListId
+import org.example.project.scheduler.model.PriorityWeightPin
 import org.example.project.scheduler.model.RelativePriorityPinKey
 import org.example.project.scheduler.model.ScheduleUnitEntry
 import org.example.project.scheduler.model.Task
@@ -1461,8 +1462,6 @@ private val WEIGHT_WINDOW_TITLE_WIDTH = 160.dp
  */
 private val WEIGHT_WINDOW_LEADING_WIDTH = 20.dp + WEIGHT_WINDOW_TITLE_WIDTH + PERCENT_COLUMN_WIDTH
 
-private data class PriorityWeightFieldKey(val cellId: CellId?, val column: Int)
-
 /**
  * PRD §5 the weight table's **default row**: the row below the add row, stating what a task ARRIVING in
  * this table is given — whether it arrives by being named in the tree or by being added here as an
@@ -1641,8 +1640,9 @@ internal fun PriorityWeightWindow(
     val taskColors = remember(taskHues) { TaskPalette.sheetColors(taskHues) }
     val optionalTaskIds = list.optionalTaskIds
     // PRD §5: which row of this table is in Edit Mode, the task that row names, and what is typed in it.
-    // Compose-only state, like the window's pins and the calendar's zoom: an optional row is a reading of
-    // the tree, so editing one is not a fact about the account until the pick is made. The tree's own
+    // Compose-only state, like the calendar's zoom (and unlike the pins below, which ARE the account's):
+    // an optional row is a reading of the tree, so editing one is not a fact about the account until the
+    // pick is made. The tree's own
     // `state.editSession` is deliberately NOT read here — it belongs to the tree behind this pop-up.
     //
     // The task is held here rather than looked back up when the editor closes, because a row's gesture
@@ -1652,7 +1652,7 @@ internal fun PriorityWeightWindow(
     var editingRowTask by remember(listId) { mutableStateOf<TaskId?>(null) }
     var editingRowDraft by remember(listId) { mutableStateOf("") }
     // PRD §3: a press selects the row, exactly as it does in the tree. One row at a time — this table has
-    // no move, no copy and no keyboard walk for a range to be of any use to — and Compose-only, like the
+    // no move, no copy and no keyboard walk for a range to be of any use to — and Compose-only, unlike the
     // pins beside it: which row the user last pressed is a way of looking at the table, never a fact about
     // the account.
     var selectedRowId by remember(listId) { mutableStateOf<CellId?>(null) }
@@ -1667,7 +1667,10 @@ internal fun PriorityWeightWindow(
     val frame = rememberWindowFrameState("PriorityWeights")
     var draggedColumn by remember(listId) { mutableStateOf<Int?>(null) }
     var columnDropIndex by remember(listId) { mutableStateOf<Int?>(null) }
-    var pinnedWeightFields by remember(listId) { mutableStateOf(emptySet<PriorityWeightFieldKey>()) }
+    // PRD §5: the pins are the ACCOUNT's, not this window session's — they outlive the window and reach
+    // the other devices (see [SchedulerState.priorityWeightPins]), so they are read from the state here
+    // rather than remembered beside it.
+    val pinnedWeightFields = state.priorityWeightPins[listId].orEmpty()
     val pinnedWeightColumns = pinnedWeightFields.filter { it.cellId == null }.map { it.column }.toSet()
     // The table as this window found it: captured on the composition that opened it, and kept across
     // every edit made since — Cancel always goes back to the start, never one step.
@@ -1742,12 +1745,7 @@ internal fun PriorityWeightWindow(
                         onSetColumnWeight = { c, w -> onIntent(SchedulerIntent.SetPriorityColumnWeight(listId, c, w)) },
                         pinnedColumns = pinnedWeightColumns,
                         onTogglePinnedColumn = { column ->
-                            val field = PriorityWeightFieldKey(cellId = null, column = column)
-                            pinnedWeightFields = if (field in pinnedWeightFields) {
-                                pinnedWeightFields - field
-                            } else {
-                                pinnedWeightFields + field
-                            }
+                            onIntent(SchedulerIntent.TogglePriorityWeightPin(listId, cellId = null, column = column))
                         },
                         onAddColumn = { i -> onIntent(SchedulerIntent.AddPriorityColumn(listId, i)) },
                         onResetColumn = { c -> onIntent(SchedulerIntent.ResetPriorityColumn(listId, c)) },
@@ -1922,19 +1920,19 @@ internal fun PriorityWeightWindow(
                                                     } else {
                                                         cell?.priorityWeights?.getOrElse(column) { 1.0 } ?: 1.0
                                                     }
-                                                val fieldKey = PriorityWeightFieldKey(
-                                                    cellId = representative?.id ?: cellId,
-                                                    column = column,
-                                                )
+                                                val pinnedCellId = representative?.id ?: cellId
+                                                val fieldKey = PriorityWeightPin(pinnedCellId, column)
                                                 WeightInputCell(
                                                     value = value,
                                                     pinned = fieldKey in pinnedWeightFields,
                                                     onTogglePinned = {
-                                                        pinnedWeightFields = if (fieldKey in pinnedWeightFields) {
-                                                            pinnedWeightFields - fieldKey
-                                                        } else {
-                                                            pinnedWeightFields + fieldKey
-                                                        }
+                                                        onIntent(
+                                                            SchedulerIntent.TogglePriorityWeightPin(
+                                                                listId,
+                                                                cellId = pinnedCellId,
+                                                                column = column,
+                                                            ),
+                                                        )
                                                     },
                                                     onSet = {
                                                         when {

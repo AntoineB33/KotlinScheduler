@@ -11,6 +11,28 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### A weight-table pin is the account's, not the open window's — 2026-09-09
+
+`scheduler/model/TaskModels.kt` (new `PriorityWeightPin`), `scheduler/state/SchedulerState.kt`
+(`priorityWeightPins`, per sub-list), `SchedulerIntent.TogglePriorityWeightPin`,
+`scheduler/state/SchedulerReducer.kt` (`reduceTogglePriorityWeightPin`, `remapPriorityWeightPins`, and the
+column-index helpers `addColumnIndex` / `deleteColumnIndex` / `moveColumnTarget` the applies and the remap
+now share), `SchedulerStateCodec` (`PersistedPriorityWeightPins`), `sync/SnapshotMerge.kt` (merged per table
+as a whole value), `scheduler/ui/TaskSchedulerScreen.kt` (the window reads the state instead of a
+`remember`). New `PriorityWeightPinTest`. PRD §5, `docs/invariants/priorities.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy, no schema migration.**
+
+Anomaly: *pin a value in the priority weights table, close the window and open it again — the value is not
+pinned any more.*
+
+That was the spec ("pins belong to this open table and are discarded when it closes") and the code was a
+`remember(listId)` keyed on the table. The spec is now the opposite one the relative-priority window already
+followed: a pin is a statement about how the next solve distributes, so it is authoritative user data —
+persisted, synced, and still **not** an Undo/Redo unit (it moves no priority). Because a pin names its
+column by index, the three structural column edits carry the table's pins with them; a reset does not (it
+moves no column). The one asymmetry, stated in the invariants: undoing a column *move* puts the columns back
+and leaves the pins where the move carried them, which is what keeping pins out of history costs.
+
 ### The lateral-menu button no longer closes a window that something is standing over — 2026-09-09
 
 `ui/WindowFrame.kt` (`WindowFrameHost.frontId`), `App.kt` (`focusedWindow()` reads it; `focusWindow` also

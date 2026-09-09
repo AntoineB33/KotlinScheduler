@@ -173,6 +173,20 @@ sealed interface SchedulerIntent {
         val cellId: CellId,
     ) : SchedulerIntent
 
+    /**
+     * PRD §5 the **priority-weight window**: pin/unpin one input of [listId]'s weight table — the weight of
+     * [cellId] in column [column], or that column's own header when [cellId] is null. A pin holds what the
+     * input says while an optional-row edit scales the path around it, and is kept for the account (it
+     * outlives the window it was set in and reaches the other devices).
+     *
+     * Not undoable, exactly like the relative-priority pin above: it changes no priority on its own.
+     */
+    data class TogglePriorityWeightPin(
+        val listId: CellListId,
+        val cellId: CellId?,
+        val column: Int,
+    ) : SchedulerIntent
+
     /** PRD §5 the relative-priority window: drop every pin of this (task, ancestor) pair. */
     data class ClearRelativePriorityPins(
         val taskId: TaskId,

@@ -178,6 +178,11 @@ the desktop app signed in as account 1). Default dev run enables debug tooling (
         ring (one OS slot, one merged sweep).
 - [ ] Close and relaunch → the task tree, records, and pinned panels are exactly as left (local SQLite,
       ~400 ms save debounce — **no** sync involved).
+- [ ] **A weight-table pin outlives its window.** In a sub-list's **Priority weights** table, pin a cell's
+      weight and a column header → close the window and open it again: both are still pinned. Then add a
+      column before the pinned one, drag a column across it, and delete a column → each pin is still beside
+      the same field, and deleting the pinned column takes its pin with it. Relaunch → still pinned; on a
+      second signed-in device, **Sync** → pinned there too.
 - [ ] Auto/side/sleep panels regenerate on load (they are derived, not persisted — reconstructibility rule).
 - [ ] **System-wide chords (Windows only, ADR 0011).** Open the lateral menu's **Keyboard shortcuts** window:
       the system-wide block must read *"Claimed exclusively"*. Then, with **another application focused**

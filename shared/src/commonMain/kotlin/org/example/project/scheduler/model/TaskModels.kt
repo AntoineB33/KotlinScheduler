@@ -667,6 +667,22 @@ data class Cell(
 data class RelativePriorityPinKey(val taskId: TaskId, val relativeTo: TaskId)
 
 /**
+ * PRD §5 the **priority-weight window**: one pinned INPUT of one table — a cell's weight in column
+ * [column] ([cellId]), or that column's own header weight ([cellId] `== null`). A pin holds what the input
+ * says while a solve moves the others (the optional-row edit of that table, PRD §5); a header pin is inert,
+ * because no solve ever moves a column header.
+ *
+ * Deliberately **not** the same type as [RelativePriorityPinKey], which files a set of CELLS under a
+ * (task, ancestor) pair: this names one field of one table, and the table it belongs to is the
+ * [CellListId] it is filed under.
+ *
+ * The column is an **index**, because a column has no identity of its own — it is a position in
+ * `CellList.weightColumns`. So every structural change to that row of columns has to carry the pins with
+ * it; `SchedulerReducer` does that in one place (`remapPriorityWeightPins`).
+ */
+data class PriorityWeightPin(val cellId: CellId?, val column: Int)
+
+/**
  * PRD §5 the **task relations** window: one *pair* — a task, and the task its priority was last expressed
  * **relative to**. The same shape as [RelativePriorityPinKey] and deliberately not the same type: a pin key
  * files a set of cells under one open window, where this is the account's own standing list of the pairs the

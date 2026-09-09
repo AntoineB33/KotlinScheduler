@@ -83,11 +83,29 @@ set of shares of one list is 1. Only the legend's numbers moved.
 
 ## Weight-table inputs can be pinned while editing optional rows
 
-Each number input in the priority-weight table has a local pin switch. When an optional task row is edited,
-the edit scales the matching column along the task's path; pinned cell inputs are left at their current value,
-so a parent task already shown in the table does not move unless its field is unpinned. These pins are scoped to
-the open table and are not persisted or synced. Header inputs expose the same switch for a consistent table
-shape, but headers are not cells on an optional-task path and therefore do not constrain that scaling.
+Each number input in the priority-weight table has a pin switch. When an optional task row is edited, the
+edit scales the matching column along the task's path; pinned cell inputs are left at their current value,
+so a parent task already shown in the table does not move unless its field is unpinned. Header inputs expose
+the same switch for a consistent table shape, but headers are not cells on an optional-task path and
+therefore do not constrain that scaling.
+
+### These pins were scoped to the open table, and are not any more — 2026-09-09
+
+They started as Compose state discarded with the window, which the PRD stated outright. The anomaly that
+ended it was the plainest possible reading of it: *pin a value, close the window, open it again — it is not
+pinned any more.* A pin is not a way of LOOKING at the table (the row selection above is, and stays in
+Compose); it is the user saying how the next solve should distribute, which nothing recomputes. So it joined
+the relative-priority pins in `SchedulerState` — `priorityWeightPins: Map<CellListId, Set<PriorityWeightPin>>`,
+authoritative, persisted, synced per table as a whole set, and still not an Undo/Redo unit.
+
+One consequence is worth naming, because it is the reason a pin is not simply "a field of the table": a
+`PriorityWeightPin` names its column by **index**, a column having no identity of its own. So adding,
+deleting and moving a column carry that table's pins the way they carry every row's value
+(`remapPriorityWeightPins`), reading the index each edit acts on from the same helper the edit itself reads.
+It happens outside the history delta — `TreeMutationDelta` carries cells/lists/tasks, and `commitDelta`
+publishes exactly what `redo` returns — so undoing a column *move* puts the columns back and leaves the pins
+where the move carried them. That asymmetry is the accepted price of keeping a pin out of Undo/Redo; the
+alternative was to make every pin toggle a history unit for a gesture that moves no priority at all.
 
 ## Cancel is a history unit, not an escape hatch
 
@@ -229,8 +247,8 @@ It was drawn `selectable = false`, which the row reads as "this is not something
 the row the non-selectable fill — the one background that wins over the task's own colour (ADR 0013) — and
 installs no pointer gestures at all. So the one kind of row in the table that names a task the user chose was
 the one row with no colour and no way to change it. Every row is selectable now, and the table keeps a
-one-row selection of its own to feed it: Compose-only, like the pins beside it, because there is no move, no
-copy and no keyboard walk here for a range to serve.
+one-row selection of its own to feed it: Compose-only — unlike the pins beside it, which are the account's —
+because there is no move, no copy and no keyboard walk here for a range to serve.
 
 ### The gestures are the tree's, and so is the colour
 

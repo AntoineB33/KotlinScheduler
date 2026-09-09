@@ -34,6 +34,7 @@ import org.example.project.scheduler.model.DEFAULT_MINIMUM_MINUTES
 import org.example.project.scheduler.model.ForcedTaskStart
 import org.example.project.scheduler.model.ForcedTaskSwitch
 import org.example.project.scheduler.model.PanelPins
+import org.example.project.scheduler.model.PriorityWeightPin
 import org.example.project.scheduler.model.RelativePriorityPinKey
 import org.example.project.scheduler.model.ScheduleUnitEntry
 import org.example.project.scheduler.model.SleepSchedule
@@ -420,6 +421,21 @@ object SchedulerStateCodec {
                             taskId = key.taskId.value,
                             relativeTo = key.relativeTo.value,
                             cellIds = cellIds.map(CellId::value).sorted(),
+                        )
+                    },
+            // PRD §5 the priority-weight window's pinned inputs, per table and sorted for the same reason
+            // the pins above are: the payload (and the sync fingerprint with it) must not depend on a
+            // map's — or a set's — iteration order. A header pin encodes its cell id as the empty string.
+            priorityWeightPins =
+                priorityWeightPins.entries
+                    .sortedBy { it.key.value }
+                    .map { (listId, pins) ->
+                        PersistedPriorityWeightPins(
+                            listId = listId.value,
+                            fields =
+                                pins
+                                    .sortedWith(compareBy({ it.column }, { it.cellId?.value.orEmpty() }))
+                                    .map { PersistedPriorityWeightPin(it.cellId?.value.orEmpty(), it.column) },
                         )
                     },
             // PRD §5 the task-relations window: the pairs the user has worked on, sorted for the same
@@ -945,6 +961,20 @@ object SchedulerStateCodec {
                         RelativePriorityPinKey(TaskId(entry.taskId), TaskId(entry.relativeTo)) to
                             entry.cellIds.map(::CellId).toSet()
                     },
+            // PRD §5: a payload written before the weight-table pins were KEPT decodes to none — which is
+            // exactly what that build did (a pin died with the window it was set in). An empty table entry
+            // is dropped rather than stored, and a negative column is a shape no build wrote.
+            priorityWeightPins =
+                priorityWeightPins
+                    .mapNotNull { entry ->
+                        val fields =
+                            entry.fields
+                                .filter { it.column >= 0 }
+                                .map { PriorityWeightPin(it.cellId.takeIf(String::isNotEmpty)?.let(::CellId), it.column) }
+                                .toSet()
+                        if (fields.isEmpty()) null else CellListId(entry.listId) to fields
+                    }
+                    .toMap(),
             // PRD §5: a payload written before the task-relations window existed decodes to no pairs — and
             // an empty mark is KEPT, since its mere existence is the window's "opened, never changed" fact.
             taskRelations =
@@ -1244,6 +1274,9 @@ private data class PersistedState(
     // PRD §5: the relative-priority window's pinned cells; a missing list decodes to no pins (payloads
     // written before the window existed).
     val relativePriorityPins: List<PersistedRelativePriorityPins> = emptyList(),
+    // PRD §5: the priority-weight tables' pinned inputs; a missing list decodes to no pins (payloads
+    // written before pins outlived the window they were set in).
+    val priorityWeightPins: List<PersistedPriorityWeightPins> = emptyList(),
     // PRD §5: the task-relations window's pairs; a missing list decodes to none (payloads written before
     // the window existed).
     val taskRelations: List<PersistedTaskRelation> = emptyList(),
@@ -1426,6 +1459,27 @@ private data class PersistedRelativePriorityPins(
     val taskId: String = "",
     val relativeTo: String = "",
     val cellIds: List<String> = emptyList(),
+)
+
+/**
+ * PRD §5 the priority-weight window: one table's pinned inputs. Filed under the sub-list the table belongs
+ * to, exactly as the state holds them.
+ */
+@Serializable
+private data class PersistedPriorityWeightPins(
+    val listId: String = "",
+    val fields: List<PersistedPriorityWeightPin> = emptyList(),
+)
+
+/**
+ * PRD §5: one pinned input — a cell's weight in [column], or that column's own header, which is written as
+ * an **empty** cell id (a JSON `null` would be one more shape for `decode` to heal, and no cell id is ever
+ * empty).
+ */
+@Serializable
+private data class PersistedPriorityWeightPin(
+    val cellId: String = "",
+    val column: Int = 0,
 )
 
 /**

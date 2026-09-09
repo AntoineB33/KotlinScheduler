@@ -200,6 +200,17 @@ object SnapshotMerge {
                         local.relativePriorityPins,
                         remote.relativePriorityPins,
                     ) { bb, ll, rr -> pick(bb, ll, rr) },
+                // PRD §5: the weight tables' pins merge per TABLE, so pinning in one table on the desktop
+                // and in another on the phone keeps both — but one table's set resolves as a WHOLE value:
+                // its pins are one statement about how that table's next solve distributes, and the column
+                // they name is an index, so two devices that also moved columns must not have their pins
+                // interleaved into a set neither of them ever held.
+                priorityWeightPins =
+                    mergeKeyed(
+                        base.priorityWeightPins,
+                        local.priorityWeightPins,
+                        remote.priorityWeightPins,
+                    ) { bb, ll, rr -> pick(bb, ll, rr) },
                 // PRD §5: the task-relations window's pairs merge per pair — filing one on the desktop and
                 // another on the phone keeps both — but one pair's mark resolves as a WHOLE value: its three
                 // flags are one statement about one pair ("kept, retargeted, struck off"), and a field-wise

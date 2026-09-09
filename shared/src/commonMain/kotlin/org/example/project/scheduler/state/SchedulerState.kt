@@ -12,6 +12,7 @@ import org.example.project.scheduler.model.CellListId
 import org.example.project.scheduler.model.ChoreEntry
 import org.example.project.scheduler.model.ForcedTaskStart
 import org.example.project.scheduler.model.ForcedTaskSwitch
+import org.example.project.scheduler.model.PriorityWeightPin
 import org.example.project.scheduler.model.RelativePriorityPinKey
 import org.example.project.scheduler.model.Task
 import org.example.project.scheduler.model.TaskId
@@ -732,6 +733,22 @@ data class SchedulerState(
      * cell that no longer exists is simply ignored, so a tree edit never has to prune this.
      */
     val relativePriorityPins: Map<RelativePriorityPinKey, Set<CellId>> = emptyMap(),
+    /**
+     * PRD §5 the **priority-weight window**: the inputs of each weight table the user has **pinned**, so a
+     * pin holds its value while an optional-row edit scales the path around it. Per sub-list, because that
+     * is the table a pin belongs to (see [PriorityWeightPin] for what one names).
+     *
+     * Authoritative user-authored data — the same class as the relative-priority pins above, and persisted
+     * **and** synced for the same reason: nothing recomputes which fields the user decided to hold, and a
+     * pin the desktop set is one the phone must honour. A payload written before pins were kept decodes to
+     * an empty map, which is exactly the behaviour that build had (pins died with the window).
+     *
+     * Toggling a pin changes no priority, so it is not an Undo/Redo unit — but a pin's column is an INDEX,
+     * so adding, deleting or moving a column carries the table's pins with it (`remapPriorityWeightPins`).
+     * A pin naming a cell, a column or a list that no longer exists is simply ignored, so a tree edit never
+     * has to prune this.
+     */
+    val priorityWeightPins: Map<CellListId, Set<PriorityWeightPin>> = emptyMap(),
     /**
      * PRD §5 the **task relations** window (the lateral menu's *Task relations* button): what the user has
      * done with each (task, relational target) pair — see [TaskRelationMark] and
