@@ -7,6 +7,7 @@ import org.example.project.scheduler.domain.TimerDomain
 import org.example.project.scheduler.domain.RelativePriorityDomain
 import org.example.project.scheduler.domain.PeriodKinds
 import org.example.project.scheduler.domain.SchedulerDomain
+import org.example.project.scheduler.domain.SchedulerRunRules
 import org.example.project.scheduler.domain.TaskRelationsDomain
 import org.example.project.scheduler.model.Category
 import org.example.project.scheduler.model.CategoryId
@@ -2057,19 +2058,20 @@ object SchedulerReducer {
         val advanced = commitRecordChanges(state, advanceSchedule(state, nowMillis, noScreenEvidence()))
         if (!advanced.automaticSchedule) return advanced
         val horizon = scheduleHorizonEndMillis(nowMillis)
-        var rules: List<String> = emptyList()
+        val mode = tpMode()
+        var rules = SchedulerRunRules.EMPTY
         val filled =
             SchedulerDomain.fillSchedule(
                 advanced,
                 nowMillis,
                 liveRest = liveRestGap(),
                 noScreenEvidence = noScreenEvidence(),
-                tpMode = tpMode(),
+                tpMode = mode,
                 horizonMillis = horizon,
                 rulesSink = { rules = it },
             )
         val result = if (filled == advanced.panels) advanced else advanced.copy(panels = filled)
-        recordRun(SchedulerRunEntry.Kind.Replan, nowMillis, horizon, result, rules)
+        recordRun(SchedulerRunEntry.Kind.Replan, nowMillis, mode, horizon, result, rules)
         return result
     }
 
@@ -2078,15 +2080,21 @@ object SchedulerReducer {
      * [HistorySource.SchedulerEngine] rows. Stamped on the same clock the History Units use, so an engine
      * row and a unit committed beside it sort together in the one merged timeline.
      *
-     * Recorded even when the fill changed nothing: the question the row answers is "what did the scheduler
-     * decide, and against which rules?", and a run that reproduced the same plan answered it too.
+     * Recorded even when the fill changed nothing: the question the row answers is "what rule state did the
+     * scheduler read, and what set of rules did it return?", and a run that reproduced the same plan answered
+     * it too.
+     *
+     * [nowMillis] and [mode] are carried because the returned rules are *parameterized by* them
+     * (`docs/scheduler_requirements.md`): the same instruction list read at another position of the line, or
+     * at another mode, is a different schedule, so a row that did not name them would name no schedule.
      */
     private fun recordRun(
         kind: SchedulerRunEntry.Kind,
         nowMillis: Long,
+        mode: Int,
         horizonMillis: Long,
         result: SchedulerState,
-        rules: List<String>,
+        rules: SchedulerRunRules,
     ) {
         recordSchedulerRun(
             SchedulerRunEntry(
@@ -2094,7 +2102,10 @@ object SchedulerReducer {
                 kind = kind,
                 horizonMillis = horizonMillis,
                 panelCount = result.panels.size,
-                rules = rules,
+                ruleState = rules.ruleState,
+                rules = rules.rules,
+                nowMillis = nowMillis,
+                tpMode = mode,
             ),
         )
     }
@@ -2153,20 +2164,21 @@ object SchedulerReducer {
         if (!advanced.automaticSchedule) return advanced
         val materializedUntil = SchedulerDomain.firstFreeMoment(advanced.panels, nowMillis)
         val horizon = scheduleHorizonEndMillis(nowMillis)
-        var rules: List<String> = emptyList()
+        val mode = tpMode()
+        var rules = SchedulerRunRules.EMPTY
         val filled =
             SchedulerDomain.fillSchedule(
                 advanced,
                 nowMillis,
                 liveRest = liveRestGap(),
                 noScreenEvidence = noScreenEvidence(),
-                tpMode = tpMode(),
+                tpMode = mode,
                 horizonMillis = horizon,
                 keepExistingUntilMillis = materializedUntil,
                 rulesSink = { rules = it },
             )
         val result = if (filled == advanced.panels) advanced else advanced.copy(panels = filled)
-        recordRun(SchedulerRunEntry.Kind.Extension, nowMillis, horizon, result, rules)
+        recordRun(SchedulerRunEntry.Kind.Extension, nowMillis, mode, horizon, result, rules)
         return result
     }
 

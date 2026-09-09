@@ -208,6 +208,27 @@ is what the app must do — it re-plans from records, not from a live walk objec
 reference's own misses at the first slot after a period that admitted a strict subset re-opens. Do not assert
 more than that.
 
+### The rule state is the question; the set of rules is the answer
+
+`docs/scheduler_requirements.md` names two different things and they must never be reported under one name:
+
+- the **rule state** is *"the set of tasks and their associated priority percentages, minimum execution time
+  and resilience values"* — the scheduler's INPUT, authored by the user. `SchedulerDomain.describePlanRule`
+  spells one line of it.
+- the **set of rules** is what the scheduler RETURNS: instructions *"parameterized by $now line$ and $now
+  line$ mode"* that give the future, each naming its § *Alternative Schedules* fallback.
+  `SchedulerDomain.describeScheduleRules` spells it.
+
+`fillSchedule`'s `rulesSink` reports both, as `SchedulerRunRules`, and the History window shows them as two
+sections (`SchedulerRunEntry.ruleState` / `.rules`). Anything reporting a rule list must state the now-line
+and the mode with it — the same instruction list read at another position of the line names another schedule,
+so a list without its two parameters names none. That is why `SchedulerRunEntry` carries `nowMillis` and
+`tpMode`, and why the returned rules are written as offsets from the line rather than as instants.
+
+Only what the fill DECIDES is a returned rule: the picks (`TaskPanel.auto`) and the three dynamic periods it
+placed (`screenBreak`). Pre-placed blocks, user-drawn periods and sleep windows are the § *Starting timeline*
+— input, already in the rule state or authored by hand.
+
 ### When the plan is recomputed
 
 - **`SchedulerDomain.schedulingSignature(state)`** is everything the plan is a function of except `now`.

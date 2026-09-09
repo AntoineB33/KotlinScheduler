@@ -189,10 +189,14 @@ the desktop app signed in as account 1). Default dev run enables debug tooling (
 - [ ] **Double click opens the information window, and every info copies.** Single-clicking a row must do
       nothing but start a text selection. **Double-click** a History Unit: the window lists its label, window,
       time, chrono id and every detail line, each with a *copy* button — click one and paste it somewhere to
-      confirm the clipboard took it. Then double-click a **Scheduler** row: its **Rules** info must list one
-      line per schedulable task with a priority share, a minimum time and a resilience; *copy* it and paste it
-      — that is "copy the current set of rules from the scheduler". **Copy all** must give every info as
-      `label: value` lines.
+      confirm the clipboard took it. Then double-click a **Scheduler** row: it must show a **Now line** and
+      a **Now-line mode** (the two parameters the answer is written against) and **two separate sections**.
+      The **Rule state** section lists one line per schedulable task with a priority share, a minimum time and
+      a resilience — that is what the scheduler READ. The **Set of rules** section lists one line per
+      instruction (`+h:mm:ss → +h:mm:ss  run <task>  else <alternative>`, or a `restrict [...]` line for one of
+      the three dynamic periods) and **nothing else** — no priority, no resilience: that is what the scheduler
+      RETURNED, and it is the block "copy the current set of rules from the scheduler" asks for. *Copy* each
+      and paste it. **Copy all** must give every info as `label: value` lines.
 
 ---
 

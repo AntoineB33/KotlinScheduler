@@ -36,6 +36,27 @@ import org.example.project.scheduler.state.SchedulerSelection
 import org.example.project.scheduler.state.SchedulerState
 import org.example.project.scheduler.state.TaskTreeEntry
 
+/**
+ * PRD §6 / `docs/scheduler_requirements.md`: what one run of the scheduler read and what it answered, kept
+ * apart.
+ *
+ * [ruleState] is the § *Rule State Definition* — the tasks with their priority percentages, minimum
+ * execution times and resilience values, which is what the **user** authored. [rules] is the set of rules
+ * the scheduler **returned** for it: the instructions, parameterized by the now-line and its mode, that give
+ * the future ([SchedulerDomain.describeScheduleRules]).
+ *
+ * They are two fields and not one list because they were one list, and the History window then showed the
+ * question where it said it was showing the answer.
+ */
+data class SchedulerRunRules(
+    val ruleState: List<String>,
+    val rules: List<String>,
+) {
+    companion object {
+        val EMPTY = SchedulerRunRules(emptyList(), emptyList())
+    }
+}
+
 object SchedulerDomain {
     fun isRootTask(taskId: TaskId?): Boolean = taskId == WellKnownIds.ROOT_TASK
 
@@ -1213,6 +1234,13 @@ object SchedulerDomain {
     // fill — they scored a static period `T = m / p`, which no longer predicts anything the scheduler does.
 
     private const val MILLIS_PER_MINUTE: Long = 60_000L
+
+    /**
+     * How many instructions [describeScheduleRules] spells before it says how many more there are. The rule
+     * list is finite by construction but its LENGTH follows the horizon, and this text is held in RAM for the
+     * last several runs (see [SchedulerRunRules]).
+     */
+    private const val MAX_DESCRIBED_RULES: Int = 500
 
     // ----- PRD §8 manual calendar entries -----------------------------------------------------
 
@@ -3739,26 +3767,47 @@ object SchedulerDomain {
         // `SchedulerReducer.tpMode`; the default is mode 1, which is what a shell with no device signal
         // (tests, a headless host that cannot read a lock) should assume — somebody is at a screen.
         tpMode: Int = DynamicPeriods.MODE_AT_SCREEN,
-        // PRD §6/§9: where this fill reports the SET OF RULES it ran, one readable line per schedulable task
-        // ([describePlanRule]). Only the two plan reductions in `SchedulerReducer` pass one — the display
-        // fills leave it null, and nothing is rendered then, so this costs a null check on the hot path.
-        rulesSink: ((List<String>) -> Unit)? = null,
-    ): List<TaskPanel> = Perf.measure("scheduler.fillSchedule") {
-        fillScheduleUninstrumented(
-            state, nowMillis, timeZone, liveRest, noScreenEvidence, horizonMillis, keepExistingUntilMillis,
-            tpMode, rulesSink,
+        // PRD §6/§9: where this fill reports what it read and what it ANSWERED — the two halves
+        // `docs/scheduler_requirements.md` names separately and which must never be confused for each other
+        // ([SchedulerRunRules]). Only the two plan reductions in `SchedulerReducer` pass one — the display
+        // fills leave it null, and nothing is described then, so this costs a null check on the hot path.
+        rulesSink: ((SchedulerRunRules) -> Unit)? = null,
+    ): List<TaskPanel> {
+        var ruleState: List<String> = emptyList()
+        // Only the fill itself is measured: describing it is a diagnostic the two plan reductions ask for,
+        // and folding its cost into `scheduler.fillSchedule` would misreport what a re-plan costs a user
+        // (CLAUDE.md — the section is how the re-plan cost is checked rather than assumed).
+        val panels =
+            Perf.measure("scheduler.fillSchedule") {
+                fillScheduleUninstrumented(
+                    state, nowMillis, timeZone, liveRest, noScreenEvidence, horizonMillis,
+                    keepExistingUntilMillis, tpMode, if (rulesSink == null) null else ({ ruleState = it }),
+                )
+            }
+        // The returned set of rules is read off what the fill RETURNED, here, rather than collected inside
+        // it: the fill has several exits and a rule list assembled at one of them would be a second, partial
+        // reading of the same answer (CLAUDE.md *one rule, one funnel*).
+        rulesSink?.invoke(
+            SchedulerRunRules(
+                ruleState = ruleState,
+                rules = describeScheduleRules(panels, nowMillis, tpMode),
+            ),
         )
+        return panels
     }
 
     /**
-     * PRD §6: one rule of the scheduler's rule set, spelled for a human — `side-dev/README.md`'s statement
-     * of what a task is owed and where it may run: its priority share, its PRD §10 minimum time, and its
-     * resilience overrides (the kinds it is allowed inside, and at what fraction of its share). A task with
-     * no override is spelled "on screen only", which is what an empty map means (see [PlanTask.resilience]).
+     * PRD §6: one line of the **rule state**, spelled for a human — `docs/scheduler_requirements.md` § *Rule
+     * State Definition*: *"the set of tasks and their associated priority percentages, minimum execution time
+     * and resilience values"*. A task with no resilience override is spelled "on screen only", which is what
+     * an empty map means (see [PlanTask.resilience]).
      *
-     * This is what the History window's scheduler-engine rows carry and what its copy button hands to the
-     * clipboard, so it is written out here — beside the [PlanTask] it describes — rather than in the UI,
-     * where it would be a second spelling of the same rule.
+     * **This is the scheduler's INPUT, not its answer.** The rule state is what the user authored; the set of
+     * rules is what the scheduler returned for it ([describeScheduleRules]). The History window shows the two
+     * as two sections precisely because reading one for the other is the confusion this split exists to end.
+     *
+     * Written out here — beside the [PlanTask] it describes — rather than in the UI, where it would be a
+     * second spelling of the same thing.
      */
     fun describePlanRule(task: PlanTask, title: String): String {
         val name = title.ifBlank { task.id.value }
@@ -3770,6 +3819,76 @@ object SchedulerDomain {
                 "$kind ${((value * 1000.0).roundToLong() / 10.0)}%"
             }
         return "$name — priority $share%, minimum $minimum min, resilience: $resilience"
+    }
+
+    /**
+     * PRD §6 / `docs/scheduler_requirements.md`: **the set of rules the scheduler RETURNED**, spelled for a
+     * human — one line per instruction, and nothing else.
+     *
+     * The requirements are explicit about what this is and what it is not. *"The scheduler returns a set of
+     * rules that define the task schedule for a given timeline"*, and those rules are *"parameterized by
+     * $now line$ and $now line$ mode"* — so a rule is an **instruction**: from here to there, run this task,
+     * and (§ *Alternative Schedules*) run that one instead if this one cannot be run now. The tasks with
+     * their priority percentages, minimums and resilience values are the **rule state** the scheduler read
+     * ([describePlanRule]) — the question, not the answer.
+     *
+     * The offsets are written **relative to the now-line** rather than as wall-clock instants, because that
+     * is what the parameterization means: one list, read at another position of the line, names another
+     * schedule. The line's mode is stated once, at the top, for the same reason — the placement of the three
+     * dynamic periods is a function of it ([DynamicPeriods]), so a rule list that did not say which mode it
+     * was drawn at would not answer for any.
+     *
+     * What is a rule here: the picks the walk made ([TaskPanel.auto]) and the dynamic restrictive periods it
+     * placed ([TaskPanel.screenBreak]) — the two things this fill *decides*. A pre-placed block, a user-drawn
+     * period, a sleep window and a reminder tag are the *starting timeline* the requirements name: input the
+     * rules were computed against, already listed in the rule state or authored by hand, and repeating them
+     * here would make the answer indistinguishable from the question again. Only the future is listed: the
+     * past is frozen (§ *frozen past*), so it is no longer something the rules say.
+     *
+     * Capped at [MAX_DESCRIBED_RULES]: this is a RAM-only diagnostic held for the last
+     * [org.example.project.scheduler.state.SchedulerRunEntry.MAX_ENTRIES] runs, and a week of horizon at a
+     * short minimum time is a few thousand instructions per run.
+     */
+    fun describeScheduleRules(panels: List<TaskPanel>, nowMillis: Long, tpMode: Int): List<String> {
+        val instructions =
+            panels.asSequence()
+                .filter { it.endEpochMillis > nowMillis }
+                .filter { (it.auto && !it.chore) || it.screenBreak }
+                .sortedWith(compareBy({ it.startEpochMillis }, { it.endEpochMillis }))
+                .toList()
+        val head =
+            "now-line mode $tpMode — ${DynamicPeriods.modeLabel(tpMode)}; offsets are from the now-line"
+        // The alternative is named by id; the titles are on the panels, so they are collected once rather
+        // than searched for per rule.
+        val titles = panels.mapNotNull { p -> p.taskId?.let { it to p.title } }.filter { it.second.isNotBlank() }.toMap()
+        val body =
+            instructions.take(MAX_DESCRIBED_RULES).map { panel ->
+                val span =
+                    "${formatRuleOffset(panel.startEpochMillis - nowMillis)} → " +
+                        formatRuleOffset(panel.endEpochMillis - nowMillis)
+                if (panel.screenBreak) {
+                    "$span  restrict [${panel.restrictiveKind}] ${panel.title.ifBlank { "period" }}"
+                } else {
+                    val name = panel.title.ifBlank { panel.taskId?.value ?: "(nobody)" }
+                    val alternative =
+                        panel.alternativeTaskId?.let { id -> "  else ${titles[id] ?: id.value}" }.orEmpty()
+                    "$span  run $name$alternative"
+                }
+            }
+        val overflow = instructions.size - body.size
+        return listOf(head) + body + if (overflow > 0) listOf("… $overflow more rules") else emptyList()
+    }
+
+    /**
+     * An offset from the now-line, `±h:mm:ss`. Seconds are shown because one of the three dynamic periods is
+     * twenty seconds long, and a rule list that rounded it away would say the period was empty.
+     */
+    private fun formatRuleOffset(millis: Long): String {
+        val sign = if (millis < 0) "-" else "+"
+        val total = abs(millis) / 1000
+        val minutes = (total % 3600) / 60
+        val seconds = total % 60
+        return "$sign${total / 3600}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}"
     }
 
     /**
@@ -3786,7 +3905,7 @@ object SchedulerDomain {
         horizonMillis: Long,
         keepExistingUntilMillis: Long?,
         tpMode: Int,
-        rulesSink: ((List<String>) -> Unit)? = null,
+        ruleStateSink: ((List<String>) -> Unit)? = null,
     ): List<TaskPanel> {
         val horizon = maxOf(horizonMillis, nowMillis)
         // Cut every non-pinned panel in [now, horizon]; keep fixed (pinned) panels, reminder tags (PRD
@@ -3875,8 +3994,9 @@ object SchedulerDomain {
                 )
             }
         val planner = SchedulerPlanner(planTasks)
-        // PRD §6: hand the rule list to whoever asked for it, spelled with the titles this fill already has.
-        rulesSink?.invoke(planTasks.map { describePlanRule(it, working.tasks[it.id]?.title.orEmpty()) })
+        // PRD §6: hand the RULE STATE this fill read to whoever asked for it, spelled with the titles it
+        // already has. What the fill answers with it is described from the returned panels, in [fillSchedule].
+        ruleStateSink?.invoke(planTasks.map { describePlanRule(it, working.tasks[it.id]?.title.orEmpty()) })
         // --- `side-dev/README.md` § *3 Dynamic Restrictive Period*: where the three fall.
         //
         // They are placed by the recurrence bars ([DynamicPeriods]) over the environment they interrupt, so

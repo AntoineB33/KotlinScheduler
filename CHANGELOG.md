@@ -11,6 +11,47 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### A scheduler run shows the rule state it READ and the set of rules it RETURNED — 2026-09-09
+
+`domain/SchedulerDomain.kt` (new `SchedulerRunRules`, new `describeScheduleRules`, `fillSchedule`'s
+`rulesSink` now reports both halves and the inner fill's sink is `ruleStateSink`),
+`domain/DynamicPeriods.kt` (new `modeLabel`), `state/SchedulerState.kt` (`SchedulerRunEntry` gained
+`ruleState`, `nowMillis`, `tpMode`; `rules` changed meaning), `state/SchedulerReducer.kt` (`recordRun`
+carries the two parameters), `ui/CalendarUi.kt` (the row's counts, and two info sections where there was
+one), `SchedulerReducerTest`, new `SchedulerRuleSetTest`, PRD §6, `docs/MANUAL_TESTING.md`,
+`docs/invariants/scheduler.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy.**
+
+Reported anomaly: the History window's scheduler rows called their one list *the set of rules*, and what it
+held was the **rule state** — the tasks, their priority percentages, their minimums, their resilience values.
+That is the scheduler's INPUT. `docs/scheduler_requirements.md` names the two separately (§ *Rule State
+Definition* against § *System Overview*), and the window was showing the question in the place reserved for
+the answer.
+
+So the run now carries both, as two things:
+
+- **`ruleState`** — unchanged text, `describePlanRule`, one line per schedulable task. Renamed to what it is.
+- **`rules`** — new: what the fill RETURNED, one line per instruction. `+h:mm:ss → +h:mm:ss  run <task>  else
+  <alternative>` for a pick, `restrict [<kind>] <label>` for one of the three dynamic periods.
+
+The offsets are **from the now-line**, and the mode is stated on the list's first line, because that is what
+the requirements mean by rules *"parameterized by $now line$ and $now line$ mode"*: the same list read at
+another position of the line is the same list, naming another schedule. `SchedulerRunEntry` records both
+parameters for the same reason — an instruction list that did not name them would name no schedule. The row
+now counts both (`N tasks · M rules · K panels`) and the information window has a **Rule state** section and a
+**Set of rules** section, each copyable on its own.
+
+What counts as a returned rule: the picks the fill made (`TaskPanel.auto`) and the dynamic periods it placed
+(`screenBreak`) — the two things the fill *decides*. Pre-placed blocks, user-drawn periods, sleep windows and
+reminder tags are the § *Starting timeline*: input, already in the rule state or authored by hand, and
+repeating them would make the answer indistinguishable from the question again. Only the future is listed
+(§ *frozen past*), and the list is capped at `MAX_DESCRIBED_RULES` = 500 with a `… N more rules` tail, since
+this is a RAM-only log of the last 50 runs and a week of horizon is a few thousand instructions.
+
+The description is taken off what `fillSchedule` RETURNED, in the wrapper, rather than collected inside the
+fill: the fill has several exits and a list assembled at one of them would be a second, partial reading of the
+same answer.
+
 ### The History window filters by undo chord — 2026-09-09
 
 `state/SchedulerState.kt` (new `HistoryChord` enum + `HistoryCategory.chord`), `ui/CalendarUi.kt`

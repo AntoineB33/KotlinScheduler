@@ -22,9 +22,10 @@ import org.example.project.ui.filteredHistoryUnits
  *
  * A re-plan is not a History Unit — PRD §9 is explicit that a schedule is derived from the current state, so
  * nothing undoes it — but it is the app deciding something, and the one thing about it the user cannot read
- * anywhere else is the **set of rules** the scheduler answered from. These pin that the two plan reductions
- * report a run, that the run carries the rules, and that the rules say what `side-dev/README.md` says a rule
- * is (a share, a minimum, a resilience).
+ * anywhere else is what the scheduler was asked and what it answered. These pin that the two plan reductions
+ * report a run, that the run carries **both** halves — the § *Rule State Definition* it read and the set of
+ * rules it returned ([SchedulerRuleSetTest] owns the split itself) — and that a rule-state line says what
+ * `docs/scheduler_requirements.md` says a rule state holds (a share, a minimum, a resilience).
  */
 class SchedulerRunLogTest {
     private val previousSink = SchedulerReducer.recordSchedulerRun
@@ -40,7 +41,7 @@ class SchedulerRunLogTest {
     }
 
     @Test
-    fun a_re_plan_reports_the_rules_it_ran() {
+    fun a_re_plan_reports_the_rule_state_it_read_and_the_rules_it_returned() {
         collect()
         var s = SchedulerState.empty()
         val cellId = s.lists[s.rootListId]!!.cellIds.first()
@@ -52,8 +53,12 @@ class SchedulerRunLogTest {
         val run = runs.single()
         assertEquals(SchedulerRunEntry.Kind.Replan, run.kind)
         assertTrue(
-            run.rules.any { it.contains("Deep work") },
-            "the run must carry the rule of every schedulable task: ${run.rules}",
+            run.ruleState.any { it.contains("Deep work") },
+            "the run must carry the rule state of every schedulable task: ${run.ruleState}",
+        )
+        assertTrue(
+            run.rules.any { it.contains("run Deep work") },
+            "the run must carry the instructions it returned: ${run.rules}",
         )
     }
 
@@ -73,9 +78,10 @@ class SchedulerRunLogTest {
     }
 
     @Test
-    fun a_rule_spells_the_share_the_minimum_and_the_resilience() {
-        // `side-dev/README.md`: resilience is "the ONE thing that says where a task may run and at what
-        // share", so a rule that omitted it would not be the rule the scheduler read.
+    fun a_rule_state_line_spells_the_share_the_minimum_and_the_resilience() {
+        // `docs/scheduler_requirements.md` § *Rule State Definition*, and resilience is "the ONE thing that
+        // says where a task may run and at what share", so a line that omitted it would not be the rule
+        // state the scheduler read.
         val plain =
             SchedulerDomain.describePlanRule(
                 PlanTask(id = TaskId("task/1"), priority = 0.5, minimumMillis = 45 * 60_000L),
@@ -108,7 +114,8 @@ class SchedulerRunLogTest {
                 kind = SchedulerRunEntry.Kind.Replan,
                 horizonMillis = 9_000,
                 panelCount = 2,
-                rules = listOf("Deep work - priority 50.0%, minimum 45 min, resilience: on screen only"),
+                ruleState = listOf("Deep work - priority 50.0%, minimum 45 min, resilience: on screen only"),
+                rules = listOf("+0:00:00 -> +0:45:00  run Deep work"),
             )
         val rows =
             filteredHistoryUnits(

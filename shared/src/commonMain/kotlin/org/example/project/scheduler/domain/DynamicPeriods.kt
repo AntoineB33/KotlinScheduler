@@ -136,6 +136,22 @@ object DynamicPeriods {
      */
     fun lineIsCoveredAt(mode: Int): Boolean = mode != MODE_AT_SCREEN
 
+    /**
+     * The mode, in words — `docs/scheduler_requirements.md` § *$now line$ 3 modes*, one phrase each.
+     *
+     * The set of rules the scheduler returns is parameterized by the mode as well as by the line, so anything
+     * that reports a rule list has to say which mode it was drawn at (the History window's scheduler rows do,
+     * through [org.example.project.scheduler.domain.SchedulerDomain.describeScheduleRules]). Here rather than
+     * in the UI so there is one wording of the three.
+     */
+    fun modeLabel(mode: Int): String =
+        when (mode) {
+            MODE_AT_SCREEN -> "at a screen"
+            MODE_AWAY -> "away, no break taken"
+            MODE_ON_BREAK -> "on a break"
+            else -> "unknown"
+        }
+
     /** One of the three: a label, how long it lasts, and its own recurrence bar. */
     data class Spec(val label: String, val durationMillis: Long, val cadenceMillis: Long)
 

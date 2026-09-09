@@ -256,7 +256,8 @@ class SchedulerReducerTest {
                 kind = SchedulerRunEntry.Kind.Replan,
                 horizonMillis = 8_000,
                 panelCount = 3,
-                rules = listOf("Deep work - priority 50.0%, minimum 45 min, resilience: on screen only"),
+                ruleState = listOf("Deep work - priority 50.0%, minimum 45 min, resilience: on screen only"),
+                rules = listOf("+0:00:00 -> +0:45:00  run Deep work  else Email"),
             ),
         )
 

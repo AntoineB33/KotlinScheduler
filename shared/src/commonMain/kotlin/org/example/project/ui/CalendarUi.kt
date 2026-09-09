@@ -144,6 +144,7 @@ import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import org.example.project.OmniPage
 import org.example.project.perf.Perf
+import org.example.project.scheduler.domain.DynamicPeriods
 import org.example.project.scheduler.domain.SchedulerDomain
 import org.example.project.scheduler.model.ChoreEntry
 import org.example.project.scheduler.model.ChoreRecurrenceUnit
@@ -2224,7 +2225,8 @@ private fun formatBytes(bytes: Long): String =
 
 /**
  * PRD §6/§9: one run of the scheduler engine in the History window's list — the source tag and the instant,
- * then which of the two plan events it was and how many rules it ran against.
+ * then which of the two plan events it was, how many tasks the rule state it ran against held and how many
+ * rules it returned.
  *
  * Like a notification row it carries no position and no applied/current marker: a re-plan is not a History
  * Unit (PRD §9 — a schedule is derived, so nothing undoes it). Unlike one it DOES open an information
@@ -2255,8 +2257,10 @@ private fun SchedulerRunRow(entry: SchedulerRunEntry, onOpen: () -> Unit) {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface,
         )
+        // The two counts are two different things and the row says so: how many TASKS the rule state it read
+        // held, and how many INSTRUCTIONS the set of rules it returned holds.
         Text(
-            text = "${entry.rules.size} rules  ·  ${entry.panelCount} panels",
+            text = "${entry.ruleState.size} tasks  ·  ${entry.rules.size} rules  ·  ${entry.panelCount} panels",
             style = MaterialTheme.typography.bodySmall,
             color = CalColors.muted,
         )
@@ -2411,13 +2415,30 @@ private fun historyEntryInfos(entry: FilteredHistoryEntry): List<HistoryInfo> =
             listOf(
                 HistoryInfo("Event", entry.entry.kind.label),
                 HistoryInfo("Time", formatHistoryTime(entry.entry.timeMillis)),
+                // The two parameters the returned rules are written against
+                // (`docs/scheduler_requirements.md`): the same instruction list read at another position of
+                // the line, or at another mode, is a different schedule.
+                HistoryInfo("Now line", formatHistoryTime(entry.entry.nowMillis)),
+                HistoryInfo(
+                    "Now-line mode",
+                    "${entry.entry.tpMode} — ${DynamicPeriods.modeLabel(entry.entry.tpMode)}",
+                ),
                 HistoryInfo("Horizon", formatHistoryTime(entry.entry.horizonMillis)),
                 HistoryInfo("Panels", entry.entry.panelCount.toString()),
-                // The set of rules, as one copyable block: this is what "copy the current set of rules from
-                // the scheduler" asks for, and splitting it per task would make it uncopyable as a whole.
+                // The scheduler's INPUT: the rule state it read — the tasks the user authored, with their
+                // priority shares, minimum times and resilience values. Its own section, because it is the
+                // question, and the section below is the answer.
                 HistoryInfo(
-                    "Rules",
-                    entry.entry.rules.joinToString("\n").ifBlank { "(no schedulable task)" },
+                    "Rule state",
+                    entry.entry.ruleState.joinToString("\n").ifBlank { "(no schedulable task)" },
+                ),
+                // The scheduler's ANSWER, and nothing else: the set of rules it returned, one line per
+                // instruction, parameterized by the two infos above. One copyable block — this is what "copy
+                // the current set of rules from the scheduler" asks for, and splitting it would make it
+                // uncopyable as a whole.
+                HistoryInfo(
+                    "Set of rules",
+                    entry.entry.rules.joinToString("\n").ifBlank { "(the scheduler placed nothing)" },
                 ),
             )
     }

@@ -1,5 +1,6 @@
 package org.example.project.scheduler.state
 
+import org.example.project.scheduler.domain.DynamicPeriods
 import org.example.project.scheduler.domain.PeriodKinds
 import org.example.project.scheduler.domain.SchedulerDomain
 import org.example.project.scheduler.model.Category
@@ -267,25 +268,41 @@ data class SupabaseUsageEntry(
  * PRD §6/§9: one run of the **scheduler engine** — the [HistorySource.SchedulerEngine] rows of the History
  * window. A re-plan is not a History Unit (PRD §9: a schedule is derived from the current state, so nothing
  * undoes it), but it IS the app deciding something, and the one thing about it the user cannot otherwise see
- * is *what the scheduler was answering* — [rules], the set of rules `side-dev/README.md` names: every
- * schedulable task with the priority share, minimum time and resilience the fill read for it. The
- * information window hands that text to the clipboard.
+ * is *what the scheduler was asked and what it answered* — and `docs/scheduler_requirements.md` keeps those
+ * two apart, so this row does too:
+ *
+ * - [ruleState] is the § *Rule State Definition* the fill READ: every schedulable task with the priority
+ *   share, minimum time and resilience it had at [nowMillis]. That is what the **user** authored.
+ * - [rules] is the set of rules the scheduler **RETURNED**: the instructions that, parameterized by the
+ *   now-line and its mode, give the future ([SchedulerDomain.describeScheduleRules]).
+ *
+ * They were one list once, under the name of the second, and the History window then showed the question in
+ * the place where it said it was showing the answer. The information window hands each of them to the
+ * clipboard as its own section.
  *
  * **RAM-only, this session only** — held by `TaskSchedulerViewModel`, capped at [MAX_ENTRIES], and never
- * written to the DB or the wire. The rules are re-derivable from the state by definition (CLAUDE.md
+ * written to the DB or the wire. Both lists are re-derivable from the state by definition (CLAUDE.md
  * authoritative-vs-derived), and a rolling tail of them in `app_state` would put hundreds of KB of text on
  * the save path that ADR 0007 exists to keep short.
  *
  * [kind] says which of the two plan events this was (a re-plan or a horizon extension, see
- * `SchedulerReducer.reduceRefreshSchedule` / `reduceExtendSchedule`), [horizonMillis] how far it
- * materialized, [panelCount] how many panels the state carried afterwards.
+ * `SchedulerReducer.reduceRefreshSchedule` / `reduceExtendSchedule`); [nowMillis] and [tpMode] are the two
+ * parameters the returned rules are written against; [horizonMillis] says how far it materialized and
+ * [panelCount] how many panels the state carried afterwards.
  */
 data class SchedulerRunEntry(
     val timeMillis: Long,
     val kind: Kind,
     val horizonMillis: Long,
     val panelCount: Int,
-    val rules: List<String>,
+    /** The § *Rule State Definition* the fill read — the scheduler's INPUT, one line per schedulable task. */
+    val ruleState: List<String> = emptyList(),
+    /** The set of rules the fill RETURNED — its answer, one line per instruction. */
+    val rules: List<String> = emptyList(),
+    /** The now-line the rules are parameterized by; the app clock's `now` at the fill, not [timeMillis]. */
+    val nowMillis: Long = timeMillis,
+    /** The now-line mode the rules are parameterized by (see `DynamicPeriods.MODE_*`). */
+    val tpMode: Int = DynamicPeriods.MODE_AT_SCREEN,
 ) {
     /** Which of PRD §9's two plan events produced this row. */
     enum class Kind(val label: String) {
