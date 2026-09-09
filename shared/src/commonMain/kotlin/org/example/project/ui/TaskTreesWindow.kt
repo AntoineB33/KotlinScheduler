@@ -1,6 +1,5 @@
 package org.example.project.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -11,10 +10,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -23,7 +20,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -34,10 +30,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import kotlin.math.roundToInt
 import kotlin.time.Instant
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
@@ -72,94 +67,64 @@ fun TaskTreesWindow(
     modifier: Modifier = Modifier,
     /** Initial position relative to centered; staggered per window so they open in a clickable cascade. */
     initialOffset: Offset = Offset.Zero,
-    /** Persists the window's new drag position when a drag gesture ends (local-only geometry). */
-    onOffsetChange: (Offset) -> Unit = {},
+    /** Initial size in px; `Size.Zero` opens the window at its default size. */
+    initialSize: Size = Size.Zero,
+    /** Persists the window's new position/size when a move or resize gesture ends (local-only geometry). */
+    onGeometryChange: (Offset, Size) -> Unit = { _, _ -> },
     /** Raise this window to the top of the layers — fired on a press anywhere inside it. */
     onRaise: () -> Unit = {},
 ) {
-    var offset by remember { mutableStateOf(initialOffset) }
+    val frame = rememberWindowFrameState("TaskTrees", initialOffset, initialSize)
     // Which tree's detail window is open. Held by id, not by entry, so it survives the list changing
     // under it (a rename, a date edit); a tree deleted out from under it closes the detail below.
     var openDetail by remember { mutableStateOf<TaskTreeId?>(null) }
     val detail = trees.firstOrNull { it.id == openDetail }
 
-    Box(modifier) {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 10.dp,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-            modifier = Modifier
-                .offset { IntOffset(offset.x.roundToInt(), offset.y.roundToInt()) }
-                // requiredWidth (not width) so the window keeps its fixed width and does not adapt to the
-                // app's width when the content area is narrower than it.
-                .requiredWidth(520.dp)
-                // Raise on press AFTER the offset so the hit region tracks the (possibly dragged) window.
-                .raiseOnPress(onRaise),
+    // The pair — this window and a tree's detail window beside it — is what stands among the app's other
+    // windows, so the stacking order goes on the Box, not only on the frame inside it ([windowStackZ]).
+    Box(modifier.windowStackZ(frame.id)) {
+        AppWindowFrame(
+            title = "All task trees",
+            state = frame,
+            onClose = onDismiss,
+            defaultWidth = 520.dp,
+            defaultHeight = 520.dp,
+            onRaise = onRaise,
+            onGeometryChange = onGeometryChange,
         ) {
-            Column(Modifier.fillMaxWidth()) {
-                // Title bar doubles as the drag handle for moving the window.
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .windowDragHandle(onDragEnd = { onOffsetChange(offset) }) { dragAmount ->
-                            offset += dragAmount
-                        }
-                        .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+            TaskTreeTimeline(
+                dated = trees.filter { it.dateMillis != null }.sortedBy { it.dateMillis },
+                nowMillis = nowMillis,
+                timeZone = timeZone,
+                onSelect = { openDetail = it },
+            )
+            Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // Follows the height the window was given (it is resizable), then scrolls — an
+                    // account may hold many trees.
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(vertical = 8.dp),
+            ) {
+                if (trees.isEmpty()) {
                     Text(
-                        text = "All task trees",
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.weight(1f),
+                        text = "No task tree yet — name one in the field above the tree.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                     )
-                    Box(
-                        modifier = Modifier.size(28.dp).clip(CircleShape).clickable(onClick = onDismiss),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            "✕",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
                 }
-                Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-
-                TaskTreeTimeline(
-                    dated = trees.filter { it.dateMillis != null }.sortedBy { it.dateMillis },
-                    nowMillis = nowMillis,
-                    timeZone = timeZone,
-                    onSelect = { openDetail = it },
-                )
-                Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        // Grows with the trees up to a cap, then scrolls — an account may hold many.
-                        .heightIn(max = 320.dp)
-                        .verticalScroll(rememberScrollState())
-                        .padding(vertical = 8.dp),
-                ) {
-                    if (trees.isEmpty()) {
-                        Text(
-                            text = "No task tree yet — name one in the field above the tree.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                        )
-                    }
-                    trees.forEach { entry ->
-                        TaskTreeRow(
-                            entry = entry,
-                            active = entry.id == activeId,
-                            selected = entry.id == openDetail,
-                            timeZone = timeZone,
-                            onClick = { openDetail = if (openDetail == entry.id) null else entry.id },
-                        )
-                    }
+                trees.forEach { entry ->
+                    TaskTreeRow(
+                        entry = entry,
+                        active = entry.id == activeId,
+                        selected = entry.id == openDetail,
+                        timeZone = timeZone,
+                        onClick = { openDetail = if (openDetail == entry.id) null else entry.id },
+                    )
                 }
             }
         }
@@ -178,7 +143,7 @@ fun TaskTreesWindow(
                 onRaise = onRaise,
                 // Opens down-right of the list window's own (possibly dragged) position, so it reads as
                 // belonging to it rather than floating loose.
-                initialOffset = offset + Offset(360f, 150f),
+                initialOffset = frame.offset + Offset(360f, 150f),
             )
         }
     }
@@ -344,7 +309,7 @@ private fun TaskTreeDetailWindow(
     onRaise: () -> Unit,
     initialOffset: Offset,
 ) {
-    var offset by remember(entry.id) { mutableStateOf(initialOffset) }
+    val frame = rememberWindowFrameState("TaskTreeDetail/" + entry.id.value, initialOffset)
     // Raw text, so a half-typed "2026-1" is not reformatted (or rejected) on every keystroke. Re-seeded
     // when the window switches to another tree, not on every recomposition of this one.
     var dateText by remember(entry.id) {
@@ -354,87 +319,50 @@ private fun TaskTreeDetailWindow(
     val parsed = parseTreeDate(dateText, timeZone)
     val valid = dateText.isBlank() || parsed != null
 
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 12.dp,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        // A sort-2 pop-up — it is about ONE tree entry — so it leaves as soon as a press lands
-        // elsewhere (see TransientPopupHost). Still draggable while it is up.
-        modifier = Modifier
-            .offset { IntOffset(offset.x.roundToInt(), offset.y.roundToInt()) }
-            .requiredWidth(300.dp)
-            .raiseOnPress(onRaise)
-            .transientPopupCard(onDismiss),
+    AppWindowFrame(
+        title = entry.title.ifBlank { "(untitled)" },
+        state = frame,
+        onClose = onDismiss,
+        defaultWidth = 300.dp,
+        defaultHeight = 300.dp,
+        onRaise = onRaise,
     ) {
-        Column(Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .windowDragHandle { dragAmount ->
-                        offset += dragAmount
-                    }
-                    .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = entry.title.ifBlank { "(untitled)" },
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = dateText,
+                    onValueChange = {
+                        dateText = it
+                        val next = parseTreeDate(it, timeZone)
+                        // Push through only what resolves: a blank field takes the tree off the
+                        // timeline, a complete date puts it on, and a half-typed one changes nothing
+                        // until it parses.
+                        if (it.isBlank()) onSetDate(null) else if (next != null) onSetDate(next)
+                    },
+                    singleLine = true,
+                    isError = !valid,
+                    placeholder = { Text("YYYY-MM-DD", style = MaterialTheme.typography.bodySmall) },
                     modifier = Modifier.weight(1f),
                 )
+                Spacer(Modifier.width(6.dp))
                 Box(
-                    modifier = Modifier.size(28.dp).clip(CircleShape).clickable(onClick = onDismiss),
+                    modifier = Modifier.size(32.dp).clip(CircleShape).clickable(onClick = onDelete),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(
-                        "✕",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Text("🗑", style = MaterialTheme.typography.bodyLarge)
                 }
             }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = dateText,
-                        onValueChange = {
-                            dateText = it
-                            val next = parseTreeDate(it, timeZone)
-                            // Push through only what resolves: a blank field takes the tree off the
-                            // timeline, a complete date puts it on, and a half-typed one changes nothing
-                            // until it parses.
-                            if (it.isBlank()) onSetDate(null) else if (next != null) onSetDate(next)
-                        },
-                        singleLine = true,
-                        isError = !valid,
-                        placeholder = { Text("YYYY-MM-DD", style = MaterialTheme.typography.bodySmall) },
-                        modifier = Modifier.weight(1f),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Box(
-                        modifier = Modifier.size(32.dp).clip(CircleShape).clickable(onClick = onDelete),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text("🗑", style = MaterialTheme.typography.bodyLarge)
-                    }
-                }
-                Text(
-                    text =
-                        "With a date, this tree is a point on the timeline. Between two dated trees the " +
-                            "scheduler follows a continuous blend of their priorities — a task missing " +
-                            "from one of them counts as 0% there. Clear the field to take it off.",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Text(
+                text =
+                    "With a date, this tree is a point on the timeline. Between two dated trees the " +
+                        "scheduler follows a continuous blend of their priorities — a task missing " +
+                        "from one of them counts as 0% there. Clear the field to take it off.",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

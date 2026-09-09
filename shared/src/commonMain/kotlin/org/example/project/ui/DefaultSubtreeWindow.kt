@@ -1,23 +1,16 @@
 package org.example.project.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -28,10 +21,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import kotlin.math.roundToInt
 import org.example.project.scheduler.model.CellId
 import org.example.project.scheduler.model.CellListId
 import org.example.project.scheduler.model.TaskId
@@ -83,7 +75,7 @@ fun DefaultSubtreeWindow(
     focused: Boolean,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
-    /** PRD §5/§13: the sort-2 pop-ups the tree opens, hoisted to the app so they land on the top layer. */
+    /** PRD §5/§13: the per-object windows the tree opens, hoisted to the app so they land on the top layer. */
     onSetWeightWindow: (CellListId?) -> Unit = {},
     onSetRelativeWindow: (CellId?) -> Unit = {},
     onSetEditTask: (TaskId?) -> Unit = {},
@@ -92,12 +84,14 @@ fun DefaultSubtreeWindow(
     onSetDeepCopyCell: (CellId?) -> Unit = {},
     /** Initial position relative to centered; staggered per window so they open in a clickable cascade. */
     initialOffset: Offset = Offset.Zero,
-    /** Persists the window's new drag position when a drag gesture ends (local-only geometry). */
-    onOffsetChange: (Offset) -> Unit = {},
+    /** Initial size in px; `Size.Zero` opens the window at its default size. */
+    initialSize: Size = Size.Zero,
+    /** Persists the window's new position/size when a move or resize gesture ends (local-only geometry). */
+    onGeometryChange: (Offset, Size) -> Unit = { _, _ -> },
     /** Raise this window to the top of the layers — fired on a press anywhere inside it. */
     onRaise: () -> Unit = {},
 ) {
-    var offset by remember { mutableStateOf(initialOffset) }
+    val frame = rememberWindowFrameState("DefaultSubtree", initialOffset, initialSize)
 
     // The template as a tree the task-tree component can draw, and the percentages its rows show — the
     // shares WITHIN the template, which is why they do not come from the projection (see
@@ -116,113 +110,80 @@ fun DefaultSubtreeWindow(
     val priorities =
         remember(state.tasks, state.defaultSubtree) { state.defaultSubtreePriorities() }
 
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 10.dp,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = modifier
-            .offset { IntOffset(offset.x.roundToInt(), offset.y.roundToInt()) }
-            // requiredWidth (not width) so the window keeps its fixed width and does not adapt to the app's
-            // width when the content area is narrower than it.
-            .requiredWidth(560.dp)
-            // Raise on press AFTER the offset so the hit region tracks the (possibly dragged) window.
-            .raiseOnPress(onRaise),
+    AppWindowFrame(
+        title = "Default sub-tree",
+        state = frame,
+        onClose = onDismiss,
+        defaultWidth = 560.dp,
+        defaultHeight = 560.dp,
+        modifier = modifier,
+        onRaise = onRaise,
+        onGeometryChange = onGeometryChange,
     ) {
-        Column(Modifier.fillMaxWidth()) {
-            // Title bar doubles as the drag handle for moving the window.
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .windowDragHandle(onDragEnd = { onOffsetChange(offset) }) { dragAmount ->
-                        offset += dragAmount
-                    }
-                    .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Default sub-tree",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f),
-                )
-                Box(
-                    modifier = Modifier.size(28.dp).clip(CircleShape).clickable(onClick = onDismiss),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        "✕",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        Text(
+            text =
+                "This tree appears under every task you create — whenever you type a title into an " +
+                    "empty cell. It is the task tree: edit it the same way, right-click a row for the " +
+                    "same menu. A row's switch is ON when it brings a brand new task id, OFF when every " +
+                    "cell built from it mirrors the task the row points at.",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+        )
+        Text(
+            text =
+                if (enabled) {
+                    "Currently applied."
+                } else {
+                    "Not applied — turn on the switch beside the lateral-menu button to use it."
+                },
+            style = MaterialTheme.typography.labelMedium,
+            color =
+                if (enabled) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 14.dp).padding(bottom = 8.dp),
+        )
+        Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
+
+        TaskTreeView(
+            state = projected,
+            priorities = priorities,
+            onIntent = { intent -> onIntent(intent.forDefaultSubtree()) },
+            keyboardActive = focused,
+            modifier = Modifier
+                .fillMaxWidth()
+                // Follows the height the window was given (it is resizable), then scrolls — an edited
+                // row's menus are tall.
+                .weight(1f)
+                .padding(vertical = 8.dp, horizontal = 12.dp),
+            onSetWeightWindow = onSetWeightWindow,
+            onSetRelativeWindow = onSetRelativeWindow,
+            onSetEditTask = onSetEditTask,
+            onSetEditCategory = onSetEditCategory,
+            onSetDeepCopyCell = onSetDeepCopyCell,
+            // The window's own raise-on-press is what focuses it, so the tree claims no app-wide focus.
+            refocusWindow = null,
+            // The template is its OWN tree, so it gets its own colour solution: sharing the account's
+            // memo would make each of the two trees the "previous answer" the other's ties are settled
+            // against, and the cached answer would be thrown away on every recomposition of either.
+            hueMemo = remember { TaskHueMemo() },
+            rowTrailing = { cellId ->
+                // PRD §4: every non-empty row carries the switch — an empty cell has no task behind it.
+                if (projected.cells[cellId]?.taskId != null) {
+                    DefaultSubtreeRowSwitch(
+                        checked = cellId !in state.defaultSubtree.boundCells,
+                        onToggle = {
+                            onIntent(
+                                SchedulerIntent.SetDefaultSubtreeCellBound(
+                                    cellId = cellId,
+                                    bound = cellId !in state.defaultSubtree.boundCells,
+                                ),
+                            )
+                        },
                     )
                 }
-            }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-
-            Text(
-                text =
-                    "This tree appears under every task you create — whenever you type a title into an " +
-                        "empty cell. It is the task tree: edit it the same way, right-click a row for the " +
-                        "same menu. A row's switch is ON when it brings a brand new task id, OFF when every " +
-                        "cell built from it mirrors the task the row points at.",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-            )
-            Text(
-                text =
-                    if (enabled) {
-                        "Currently applied."
-                    } else {
-                        "Not applied — turn on the switch beside the lateral-menu button to use it."
-                    },
-                style = MaterialTheme.typography.labelMedium,
-                color =
-                    if (enabled) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 14.dp).padding(bottom = 8.dp),
-            )
-            Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-
-            TaskTreeView(
-                state = projected,
-                priorities = priorities,
-                onIntent = { intent -> onIntent(intent.forDefaultSubtree()) },
-                keyboardActive = focused,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // Grows with the template up to a cap, then scrolls — an edited row's menus are tall.
-                    .heightIn(max = 460.dp)
-                    .padding(vertical = 8.dp, horizontal = 12.dp),
-                onSetWeightWindow = onSetWeightWindow,
-                onSetRelativeWindow = onSetRelativeWindow,
-                onSetEditTask = onSetEditTask,
-                onSetEditCategory = onSetEditCategory,
-                onSetDeepCopyCell = onSetDeepCopyCell,
-                // The window's own raise-on-press is what focuses it, so the tree claims no app-wide focus.
-                refocusWindow = null,
-                // The template is its OWN tree, so it gets its own colour solution: sharing the account's
-                // memo would make each of the two trees the "previous answer" the other's ties are settled
-                // against, and the cached answer would be thrown away on every recomposition of either.
-                hueMemo = remember { TaskHueMemo() },
-                rowTrailing = { cellId ->
-                    // PRD §4: every non-empty row carries the switch — an empty cell has no task behind it.
-                    if (projected.cells[cellId]?.taskId != null) {
-                        DefaultSubtreeRowSwitch(
-                            checked = cellId !in state.defaultSubtree.boundCells,
-                            onToggle = {
-                                onIntent(
-                                    SchedulerIntent.SetDefaultSubtreeCellBound(
-                                        cellId = cellId,
-                                        bound = cellId !in state.defaultSubtree.boundCells,
-                                    ),
-                                )
-                            },
-                        )
-                    }
-                },
-            )
-        }
+            },
+        )
     }
 }
 

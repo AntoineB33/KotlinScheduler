@@ -11,6 +11,93 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### The lateral-menu button no longer closes a window that something is standing over — 2026-09-09
+
+`ui/WindowFrame.kt` (`WindowFrameHost.frontId`), `App.kt` (`focusedWindow()` reads it; `focusWindow` also
+takes the host focus). New `WindowFrameHostTest` cases. `docs/invariants/popups.md`,
+`docs/MANUAL_TESTING.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy, no schema migration.**
+
+Anomaly: *when the Alarm window is open and the priority weights window is in focus, clicking the Alarm
+button on the left-side menu closes it instead of bringing it back to the top.*
+
+The button's three branches (open it / close it / bring it to the front) turned on "is this the topmost
+**lateral-menu** window?", and a per-object window is not one — so with the weight table over the Alarms
+window, Alarms was still topmost by that reading and the button took the "you are already here" branch. It
+now asks `WindowFrameHost.frontId`, the top of the *whole* stack: the table on top makes the answer null and
+the button brings Alarms back. `focusWindow` also moves the host focus now, so a window raised from the menu
+is the focused window — otherwise the second click could never read as "close", and the keyboard stayed with
+whatever had been focused before.
+
+### One stacking order for every window: the priority weights table no longer sits on top — 2026-09-09
+
+`ui/WindowFrame.kt` (`WindowFrameHost.stackOrder` / `zOf` / `raise`, `Modifier.windowStackZ`, the frame
+applies its own z, a restored chip raises its window), `ui/PopupWindows.kt` (`TransientPopupLayer` takes the
+frame id and carries the z), `App.kt` (its own `windowStack` deleted, every `zIndex(100f)` top-layer wrapper
+removed, `focusedWindow()` read off the one stack), `ui/CalendarUi.kt` + `ui/TaskTreesWindow.kt` (the `Box`
+pairing a window with its companion window carries the z), `ui/CategoryEditWindow.kt`,
+`scheduler/ui/TaskSchedulerScreen.kt`. New stacking tests in `WindowFrameHostTest`.
+`docs/invariants/popups.md` (§ *What is drawn OVER what*), `docs/adr/0014-window-frame.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy, no schema migration.**
+
+Anomaly: *the priority weights table is in the top layer, even when another popup window is in focus.*
+
+The frame refactor above deleted outside-press dismissal but left the z-order the old model justified: `App`
+kept a stacking order for the twelve lateral-menu windows and pinned **every per-object window above all of
+it** on a fixed `zIndex(100f)`. While such a window vanished on the next press, "on top" and "focused" were
+the same sentence; for a window that stays they are not, so the weight table stood over every window opened
+after it. There is now one order (`WindowFrameHost.stackOrder`) holding lateral-menu and per-object windows
+alike, raised when a window opens, when a press lands inside it, and when a reduced window is picked back up
+off the bar. The two implementation details worth remembering: `zIndex` orders a node only among its own
+siblings, so the z goes on a window's **outermost** element (the full-screen `TransientPopupLayer` and the
+companion-window `Box` were invisible lids over the frame's own z); and a window whose `register` has not run
+yet reads as the **top**, or a newly opened window flashes under its neighbours for a frame. The reduce bar
+deliberately keeps its own order — the one windows were opened in — so no chip jumps when a window is raised.
+
+### Every window keeps the same frame, and no window vanishes on a click outside — 2026-09-09
+
+New `ui/WindowFrame.kt` (`WindowFill`, `WindowFrameState`, `WindowFrameHost`, `AppWindowFrame`,
+`MinimizedWindowBar`), `ui/PopupWindows.kt` rewritten (`TransientPopupHost` → `TransientMenuHost`, menus
+only; `transientPopupCard` deleted; `MessagePopup` is an ordinary window), every window migrated to the
+frame — `ui/CalendarUi.kt` (calendar, reminders, history + its row-info window, the entry / period /
+reminder / constraint editors), `ui/AlarmWindow.kt`, `ui/CategoriesWindow.kt`, `ui/CategoryEditWindow.kt`,
+`ui/DefaultSubtreeWindow.kt`, `ui/ShortcutsWindow.kt`, `ui/SleepWindow.kt`, `ui/TaskListWindow.kt`,
+`ui/TaskRelationsWindow.kt`, `ui/TaskTreesWindow.kt` (+ its detail window),
+`scheduler/ui/TaskSchedulerScreen.kt` (priority weights, relative priority, task edit, period kind, deep
+copy) — plus `App.kt` (both hosts, the reduce bar, geometry persistence), `scheduler/ui/TaskTreeView.kt`
+(focus-based keyboard ownership), `scheduler/persistence/WindowPlacement.kt` (its `width`/`height` columns
+are now written). `TransientPopupHostTest` → `TransientMenuHostTest`, new `WindowFrameStateTest` and
+`WindowFrameHostTest`. PRD §6/§7/§13, `docs/invariants/popups.md` rewritten, `docs/adr/0014-window-frame.md`,
+`docs/MANUAL_TESTING.md`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy, no schema migration.**
+
+User spec: *no pop-up window disappears when clicking outside, except right-click or drop-down menus; every
+window has a head to drag it with the three usual buttons plus one to fill the width and one to fill the
+height; reduced windows appear at the bottom of the app, over the left-side menu; a maximized window fills
+the app except the left-side menu, and the whole app when the menu is retracted; every window is resizable
+by its left, right or bottom edge; double-clicking the head maximizes and un-maximizes.*
+
+What that ends is the **two sorts of pop-up**. "Sort 2" — about ONE object, therefore gone the moment
+anything else took focus — covered most of the app's windows and threw away whatever was half-typed in them.
+The half of it worth keeping (only one window per subject) was never the outside-press rule: each opener
+already holds a single slot, so opening the second window replaces the first by construction. Only menus
+still close on an outside press, and that press still does its normal job (PRD §13).
+
+The frame itself is one composable rather than twelve copies of a title bar. Consequences worth knowing:
+
+- **maximize is `WindowFill.Both`**, not a state of its own, so the two fill buttons in turn land on the same
+  window as the maximize button, and un-maximizing restores the normal geometry per axis;
+- **every window now declares a default width AND height** and puts its content in a `weight(1f)` slot. The
+  `heightIn(max = …)` caps had to go: a window whose height is its content's cannot be given another height
+  by dragging its bottom edge;
+- the calendar's private `clampOffsetY` became `WindowFrameState.clampVertical` and now keeps EVERY window's
+  head between the top of the content area and its lowest row;
+- **the keyboard rule follows the focus, not "something is open"** (`WindowFrameHost.keyboardClaimed`): a
+  window that stays open would otherwise hold the keyboard off the task tree forever;
+- a **reduced** window is measured and not placed, so it keeps everything typed into it;
+- window **sizes** now persist (the `window_placement` columns existed already, unused); reduced/filled do
+  not — they are facts about the session.
+
 ### A scheduler run shows the rule state it READ and the set of rules it RETURNED — 2026-09-09
 
 `domain/SchedulerDomain.kt` (new `SchedulerRunRules`, new `describeScheduleRules`, `fillSchedule`'s

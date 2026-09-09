@@ -1,21 +1,17 @@
 package org.example.project.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -62,7 +58,7 @@ import org.example.project.scheduler.state.SchedulerState
  * tree) or **nothing under it carries the category**. Neither is a contradiction — deleting the last carrier
  * is an ordinary edit — so the rule sleeps until the tree gives it something to govern again.
  *
- * A **sort-2** pop-up (`ui/PopupWindows.kt`): it is about ONE object, so "the window of category A" and "the
+ * A window about ONE object (`docs/invariants/popups.md`), so "the window of category A" and "the
  * window of category B" are two different windows and only the one just asked for is ever meant. Like the
  * period edit window it has no Save — every field writes as it is typed.
  */
@@ -85,17 +81,20 @@ fun CategoryEditWindow(
 
     val rows = CategoryRules.ruleRows(state, categoryId)
     val carriers = CategoryRules.tasksWith(state, categoryId)
+    val frame = rememberWindowFrameState("CategoryEdit")
 
-    TransientPopupLayer {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 12.dp,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-            modifier = Modifier.transientPopupCard(onDismiss).width(420.dp),
+    TransientPopupLayer(frame.id) {
+        AppWindowFrame(
+            title = "Category",
+            state = frame,
+            onClose = onDismiss,
+            defaultWidth = 420.dp,
+            defaultHeight = 620.dp,
+            claimsKeyboard = true,
+            modifier = Modifier.align(Alignment.Center),
         ) {
             Column(
-                Modifier.padding(16.dp).heightIn(max = 620.dp).verticalScroll(rememberScrollState()),
+                Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Row(

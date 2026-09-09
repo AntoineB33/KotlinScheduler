@@ -13,10 +13,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.zIndex
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -120,15 +121,22 @@ import org.example.project.ui.TaskTreesWindow
 import org.example.project.perf.Perf
 import org.example.project.ui.PerfOverlay
 import org.example.project.ui.TimeSimPanel
-import org.example.project.ui.LocalTransientPopupHost
-import org.example.project.ui.TransientPopupHost
-import org.example.project.ui.transientPopupDismissRoot
+import org.example.project.ui.LocalTransientMenuHost
+import org.example.project.ui.LocalWindowFrameHost
+import org.example.project.ui.MINIMIZED_BAR_HEIGHT
+import org.example.project.ui.MinimizedWindowBar
+import org.example.project.ui.TransientMenuHost
+import org.example.project.ui.WindowFrameHost
+import org.example.project.ui.transientMenuDismissRoot
 
 enum class OmniPage(val label: String) {
     TaskScheduler("Task Scheduler"),
 }
 
-/** The z-stackable floating windows; the currently focused one is drawn on top (see [App]'s windowStack). */
+/**
+ * The lateral-menu windows. Where each sits in the app's one stacking order is
+ * [WindowFrameHost.stackOrder], keyed by the enum's own name — which is also that window's frame id.
+ */
 private enum class FloatingWindow {
     Calendar, Reminders, History, Sleep, Alarms, TaskTrees, TaskList, TaskRelations, Categories,
     DefaultSubtree, Shortcuts, TimeSim
@@ -223,9 +231,22 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
         val initialPlacements = remember(placementStore) { placementStore?.loadPlacements().orEmpty() }
         fun savedOffset(id: FloatingWindow, default: Offset): Offset =
             initialPlacements[id.name]?.let { Offset(it.x, it.y) } ?: default
+        // The size the window was last left at. `Size.Zero` on either axis means "never resized", which is
+        // what makes the window open at its own default size ([AppWindowFrame]).
+        fun savedSize(id: FloatingWindow): Size =
+            initialPlacements[id.name]?.let { Size(it.width, it.height) } ?: Size.Zero
         fun savedVisible(id: FloatingWindow): Boolean = initialPlacements[id.name]?.visible == true
-        fun persistPlacement(id: FloatingWindow, offset: Offset, visible: Boolean) =
-            placementStore?.savePlacement(id.name, WindowPlacement(x = offset.x, y = offset.y, visible = visible))
+        fun persistPlacement(id: FloatingWindow, offset: Offset, size: Size, visible: Boolean) =
+            placementStore?.savePlacement(
+                id.name,
+                WindowPlacement(
+                    x = offset.x,
+                    y = offset.y,
+                    width = size.width,
+                    height = size.height,
+                    visible = visible,
+                ),
+            )
 
         // PRD §5 Persistence: flush any pending debounced write when the app/composition is torn down,
         // so a change made within the debounce window survives a normal close.
@@ -429,11 +450,15 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
         // default zoom the line crosses a pixel every ~75 s, at the ceiling every ~0.6 s, and redrawing more
         // often than that redraws the picture already on screen.
         var nowLineMillisPerPixel by remember { mutableLongStateOf(DEFAULT_NOW_LINE_MILLIS_PER_PIXEL) }
-        // Every sort-2 pop-up in the app registers here: the host keeps at most one of them open and
-        // dismisses it as soon as a press lands anywhere else (see TransientPopupHost).
-        val transientPopups = remember { TransientPopupHost() }
+        // Every right-click MENU registers here: the host keeps at most one open and closes it on the first
+        // press outside it. Windows do not — nothing takes a window away any more (see `PopupWindows.kt`).
+        val transientMenus = remember { TransientMenuHost() }
+        // …and every framed WINDOW registers here, which is what draws the bar of reduced windows along the
+        // bottom of the app and what answers "does the tree still own the keyboard?" (see `WindowFrame.kt`).
+        val windowFrames = remember { WindowFrameHost() }
         // PRD §5: the sub-list whose priority-weight window is open (opened by clicking a percentage in the
-        // tree), or null when closed. A sort-2 pop-up, like every window below that is about one object.
+        // tree), or null when closed. Like every window below, it is about ONE object, so opening it on another
+        // sub-list replaces it — and, like every window, it stays until it is closed (`popups.md`).
         var weightWindowListId by remember { mutableStateOf<CellListId?>(null) }
         // PRD §5: the cell whose relative-priority window is open (the percentage's right-click menu), or
         // null when closed. The two are mutually exclusive, now by construction (the host closes the other).
@@ -443,14 +468,14 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
         // under whichever one happens to be stacked over the tree.
         var editTaskId by remember { mutableStateOf<TaskId?>(null) }
         // The period edit window's subject: one KIND of restrictive period. Opened from a resilience
-        // row's pencil in the task edit window; a sort-2 pop-up like that one, so opening it dismisses it.
+        // row's pencil in the task edit window. One slot, so opening it on another kind replaces it.
         var editPeriodKind by remember { mutableStateOf<String?>(null) }
-        // PRD §5: the category whose own window is open — a sort-2 pop-up like the task and period windows,
+        // PRD §5: the category whose own window is open — one slot, like the task and period windows,
         // hoisted here so it draws on the top layer above every floating window.
         var editCategoryId by remember { mutableStateOf<CategoryId?>(null) }
         var deepCopyCellId by remember { mutableStateOf<CellId?>(null) }
         // The one message the app has to say back to a gesture it could not carry out — today only PRD §8's
-        // "go to task tree" on a panel whose task no cell holds. A sort-2 pop-up like the two above.
+        // "go to task tree" on a panel whose task no cell holds. One notice at a time, like the two above.
         var appMessage by remember { mutableStateOf<String?>(null) }
         // PRD §8/§13 "go to task tree": select the first cell showing the task, expanding whatever hides it
         // (RevealCell, the find bar's own primitive), and hand the tree the focus — "going to" the tree is
@@ -477,7 +502,7 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                 vm.dispatch(SchedulerIntent.RevealCell(occurrence.cellId, occurrence.ancestors))
             }
         }
-        // PRD §4/§13: the four sort-2 pop-ups the tree hoists up here are opened by BOTH trees — the
+        // PRD §4/§13: the four per-object windows the tree hoists up here are opened by BOTH trees — the
         // account's and the default sub-tree's. They name a cell/task/list id, and the same id means
         // different things in the two trees, so this records which tree asked. It decides both the state
         // they read and where their intents are sent.
@@ -522,29 +547,11 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
         // PRD §7 Keyboard shortcuts: whether the floating reference list of every chord is open (local UI state).
         var shortcutsWindowOpen by remember { mutableStateOf(savedVisible(FloatingWindow.Shortcuts)) }
 
-        // The floating windows are siblings in one Box, so their paint order is their declaration order.
-        // To put the *currently focused* window on top of the layers, we keep an explicit stacking order
-        // (last == top) and drive each window's zIndex from it. A window is raised when it is opened and on
-        // every press inside it (see raiseOnPress). Unmanaged: the modal edit window (its own scrim already
-        // sits above everything).
-        var windowStack by remember {
-            mutableStateOf(
-                listOf(
-                    FloatingWindow.Calendar,
-                    FloatingWindow.Reminders,
-                    FloatingWindow.History,
-                    FloatingWindow.Sleep,
-                    FloatingWindow.Alarms,
-                    FloatingWindow.TaskTrees,
-                    FloatingWindow.TaskList,
-                    FloatingWindow.TaskRelations,
-                    FloatingWindow.Categories,
-                    FloatingWindow.DefaultSubtree,
-                    FloatingWindow.Shortcuts,
-                    FloatingWindow.TimeSim,
-                ),
-            )
-        }
+        // The windows are siblings in one Box, so their paint order would be their declaration order. The
+        // stacking order that overrides it is [WindowFrameHost.stackOrder] — ONE order for every window of
+        // the app, lateral-menu and per-object alike, raised when a window opens and on every press inside
+        // it. Each framed window applies its own place in it (`AppWindowFrame`), so the only thing left
+        // here is the debug time-sim panel, which wears no frame.
         // PRD §6: which window of the app a change made here belongs to — "where was this change made?",
         // which every window answers, not just the five that claim the app-wide focus (appWindowOf
         // below). The two are deliberately separate enums (see [HistoryWindow]); this is the one place
@@ -577,9 +584,8 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
         SideEffect { SchedulerReducer.activeWindow = { activeHistoryWindow } }
         fun bringWindowToFront(id: FloatingWindow) {
             historyWindowOf(id)?.let { activeHistoryWindow = it }
-            if (windowStack.lastOrNull() != id) windowStack = windowStack.filterNot { it == id } + id
+            windowFrames.raise(id.name)
         }
-        fun windowZ(id: FloatingWindow): Float = windowStack.indexOf(id).toFloat()
         fun isWindowOpen(id: FloatingWindow): Boolean = when (id) {
             FloatingWindow.Calendar -> calendarOpen
             FloatingWindow.Reminders -> choresManagerOpen
@@ -594,8 +600,18 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
             FloatingWindow.Shortcuts -> shortcutsWindowOpen
             FloatingWindow.TimeSim -> DebugFlags.TIME_SIMULATION
         }
-        // The focused window is the topmost open one in the stack.
-        fun focusedWindow(): FloatingWindow? = windowStack.lastOrNull { isWindowOpen(it) }
+        // The FRONT window: the very top of the one stacking order, when that is a lateral-menu window.
+        //
+        // It has to be the top of the WHOLE stack, per-object windows included, and not the topmost
+        // lateral-menu one: with the Alarms window open and the priority-weight table standing over it,
+        // Alarms is still the topmost lateral-menu window, and reading it that way had the Alarms menu
+        // button answer "you are already here" and CLOSE the window the user was asking to come back to.
+        // The table on top means the answer is null, which is what sends that button down the "bring it
+        // back to the front" branch instead.
+        fun focusedWindow(): FloatingWindow? =
+            windowFrames.frontId
+                ?.let { id -> FloatingWindow.entries.firstOrNull { it.name == id } }
+                ?.takeIf { isWindowOpen(it) }
         // PRD §7: the scheduler-state focus target for a floating window (null for the debug TimeSim panel,
         // which is not a navigable app window).
         fun appWindowOf(id: FloatingWindow): AppWindow? = when (id) {
@@ -619,10 +635,15 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
         // clears the tree selection, forcibly exits tree Edit Mode, and records a WindowNav history unit.
         fun focusWindow(id: FloatingWindow) {
             bringWindowToFront(id)
+            // Moving to a window takes the focus, exactly as a press inside it would: this is the same
+            // funnel the frame's own `raiseOnPress` uses ([WindowFrameHost.focus]). Raising without it
+            // would leave the app believing the user was still in whatever window they had focused, so
+            // the lateral-menu button below could never read as "you are already here".
+            windowFrames.focus(id.name)
             appWindowOf(id)?.let { vm.dispatch(SchedulerIntent.FocusWindow(it)) }
         }
         // Lateral-menu click on a window button: open it (and focus) when closed; close it when it is the
-        // focused (front) window; otherwise just bring it to focus without closing.
+        // window being worked in; otherwise bring it back to the front and the focus without closing.
         fun onMenuWindowClicked(id: FloatingWindow, setOpen: (Boolean) -> Unit) {
             when {
                 !isWindowOpen(id) -> {
@@ -637,38 +658,49 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
         // Local-only persisted drag positions for the managed windows. The defaults reproduce the previous
         // hard-coded cascade staggers, used until the user drags a window (which persists via onOffsetChange).
         var calendarOffset by remember { mutableStateOf(savedOffset(FloatingWindow.Calendar, Offset.Zero)) }
+        var calendarSize by remember { mutableStateOf(savedSize(FloatingWindow.Calendar)) }
         var remindersOffset by remember { mutableStateOf(savedOffset(FloatingWindow.Reminders, Offset(-200f, -150f))) }
+        var remindersSize by remember { mutableStateOf(savedSize(FloatingWindow.Reminders)) }
         var historyOffset by remember { mutableStateOf(savedOffset(FloatingWindow.History, Offset(200f, 150f))) }
+        var historySize by remember { mutableStateOf(savedSize(FloatingWindow.History)) }
         var sleepOffset by remember { mutableStateOf(savedOffset(FloatingWindow.Sleep, Offset(120f, -120f))) }
+        var sleepSize by remember { mutableStateOf(savedSize(FloatingWindow.Sleep)) }
         var alarmOffset by remember { mutableStateOf(savedOffset(FloatingWindow.Alarms, Offset(-120f, 120f))) }
+        var alarmSize by remember { mutableStateOf(savedSize(FloatingWindow.Alarms)) }
         var taskTreesOffset by remember { mutableStateOf(savedOffset(FloatingWindow.TaskTrees, Offset(-260f, -60f))) }
+        var taskTreesSize by remember { mutableStateOf(savedSize(FloatingWindow.TaskTrees)) }
         var taskListOffset by remember { mutableStateOf(savedOffset(FloatingWindow.TaskList, Offset(-60f, 100f))) }
+        var taskListSize by remember { mutableStateOf(savedSize(FloatingWindow.TaskList)) }
         var taskRelationsOffset by
             remember { mutableStateOf(savedOffset(FloatingWindow.TaskRelations, Offset(100f, -100f))) }
+        var taskRelationsSize by remember { mutableStateOf(savedSize(FloatingWindow.TaskRelations)) }
         var categoriesOffset by
             remember { mutableStateOf(savedOffset(FloatingWindow.Categories, Offset(-100f, 60f))) }
+        var categoriesSize by remember { mutableStateOf(savedSize(FloatingWindow.Categories)) }
         var defaultSubtreeOffset by
             remember { mutableStateOf(savedOffset(FloatingWindow.DefaultSubtree, Offset(260f, -60f))) }
+        var defaultSubtreeSize by remember { mutableStateOf(savedSize(FloatingWindow.DefaultSubtree)) }
         var shortcutsOffset by remember { mutableStateOf(savedOffset(FloatingWindow.Shortcuts, Offset(60f, 60f))) }
+        var shortcutsSize by remember { mutableStateOf(savedSize(FloatingWindow.Shortcuts)) }
         // Persist each window's visibility whenever it opens/closes (its offset persists separately on drag-end).
-        LaunchedEffect(calendarOpen) { persistPlacement(FloatingWindow.Calendar, calendarOffset, calendarOpen) }
-        LaunchedEffect(choresManagerOpen) { persistPlacement(FloatingWindow.Reminders, remindersOffset, choresManagerOpen) }
-        LaunchedEffect(historyManagerOpen) { persistPlacement(FloatingWindow.History, historyOffset, historyManagerOpen) }
-        LaunchedEffect(sleepWindowOpen) { persistPlacement(FloatingWindow.Sleep, sleepOffset, sleepWindowOpen) }
-        LaunchedEffect(alarmWindowOpen) { persistPlacement(FloatingWindow.Alarms, alarmOffset, alarmWindowOpen) }
-        LaunchedEffect(taskTreesWindowOpen) { persistPlacement(FloatingWindow.TaskTrees, taskTreesOffset, taskTreesWindowOpen) }
-        LaunchedEffect(taskListWindowOpen) { persistPlacement(FloatingWindow.TaskList, taskListOffset, taskListWindowOpen) }
+        LaunchedEffect(calendarOpen) { persistPlacement(FloatingWindow.Calendar, calendarOffset, calendarSize, calendarOpen) }
+        LaunchedEffect(choresManagerOpen) { persistPlacement(FloatingWindow.Reminders, remindersOffset, remindersSize, choresManagerOpen) }
+        LaunchedEffect(historyManagerOpen) { persistPlacement(FloatingWindow.History, historyOffset, historySize, historyManagerOpen) }
+        LaunchedEffect(sleepWindowOpen) { persistPlacement(FloatingWindow.Sleep, sleepOffset, sleepSize, sleepWindowOpen) }
+        LaunchedEffect(alarmWindowOpen) { persistPlacement(FloatingWindow.Alarms, alarmOffset, alarmSize, alarmWindowOpen) }
+        LaunchedEffect(taskTreesWindowOpen) { persistPlacement(FloatingWindow.TaskTrees, taskTreesOffset, taskTreesSize, taskTreesWindowOpen) }
+        LaunchedEffect(taskListWindowOpen) { persistPlacement(FloatingWindow.TaskList, taskListOffset, taskListSize, taskListWindowOpen) }
         LaunchedEffect(taskRelationsWindowOpen) {
-            persistPlacement(FloatingWindow.TaskRelations, taskRelationsOffset, taskRelationsWindowOpen)
+            persistPlacement(FloatingWindow.TaskRelations, taskRelationsOffset, taskRelationsSize, taskRelationsWindowOpen)
         }
         LaunchedEffect(categoriesWindowOpen) {
-            persistPlacement(FloatingWindow.Categories, categoriesOffset, categoriesWindowOpen)
+            persistPlacement(FloatingWindow.Categories, categoriesOffset, categoriesSize, categoriesWindowOpen)
         }
         LaunchedEffect(defaultSubtreeWindowOpen) {
-            persistPlacement(FloatingWindow.DefaultSubtree, defaultSubtreeOffset, defaultSubtreeWindowOpen)
+            persistPlacement(FloatingWindow.DefaultSubtree, defaultSubtreeOffset, defaultSubtreeSize, defaultSubtreeWindowOpen)
         }
         LaunchedEffect(shortcutsWindowOpen) {
-            persistPlacement(FloatingWindow.Shortcuts, shortcutsOffset, shortcutsWindowOpen)
+            persistPlacement(FloatingWindow.Shortcuts, shortcutsOffset, shortcutsSize, shortcutsWindowOpen)
         }
 
         var selectedDate by remember { mutableStateOf(today) }
@@ -1379,16 +1411,23 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
             addingReminderAtMillis = null
         }
 
-        CompositionLocalProvider(LocalTransientPopupHost provides transientPopups) {
+        CompositionLocalProvider(
+            LocalTransientMenuHost provides transientMenus,
+            LocalWindowFrameHost provides windowFrames,
+        ) {
         Box(
             modifier = Modifier
                 .background(MaterialTheme.colorScheme.background)
                 .safeContentPadding()
                 .fillMaxSize()
-                // The one observer that dismisses sort-2 pop-ups. It sits above the lateral menu too — a
-                // menu button opens or focuses a window, which is exactly "something else is in focus".
-                .transientPopupDismissRoot(transientPopups)
+                // The one observer that closes a right-click MENU. It sits above the lateral menu too — a
+                // menu button opens or focuses a window, which is exactly "the user asked for something
+                // else". Windows are not dismissed by it: nothing takes a window away (`PopupWindows.kt`).
+                .transientMenuDismissRoot(transientMenus)
         ) {
+            // The reduce bar is drawn OVER the lateral menu, so the app is inset by its height only where
+            // the windows live — the content area below.
+            val minimizedInset = if (windowFrames.hasMinimized) MINIMIZED_BAR_HEIGHT else 0.dp
             Row(modifier = Modifier.fillMaxSize()) {
                 // The lateral menu is omitted entirely while collapsed, so the content takes the full width
                 // ("completely disappear to the left"). The collapse toggle lives outside it (see below).
@@ -1501,12 +1540,20 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
+                        // Keep the windows clear of the reduce bar along the bottom: a maximized window
+                        // fills what is left, not what the bar is covering.
+                        .padding(bottom = minimizedInset)
                         .clipToBounds()
                         // PRD §6: the task tree's own raise. This Box is the ancestor of every floating
                         // window, and the press is observed on the Initial pass (parent → child), so a
                         // press inside one of them lands here first and is corrected by that window's own
-                        // raise a moment later. See [activeHistoryWindow].
-                        .raiseOnPress { activeHistoryWindow = HistoryWindow.Tree },
+                        // raise a moment later. See [activeHistoryWindow]. The same press hands the
+                        // KEYBOARD back to the tree; a window that answers keystrokes takes it again on
+                        // the way in ([WindowFrameHost]).
+                        .raiseOnPress {
+                            activeHistoryWindow = HistoryWindow.Tree
+                            windowFrames.blur()
+                        },
                 ) {
                     when (page) {
                         OmniPage.TaskScheduler ->
@@ -1537,8 +1584,9 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             )
                     }
 
-                    // PRD §5: the priority-weight window — a sort-2 pop-up, so it opens above the managed
-                    // windows' 0..n stack and the host closes it on the first press landing elsewhere.
+                    // PRD §5: the priority-weight window — about ONE sub-list, so opening it on another
+                    // replaces it. It opens on top like every window and, like every window, goes UNDER the
+                    // next one the user presses in: it is in the same stacking order as all the rest.
                     weightWindowListId?.let { listId ->
                         if (popupState.lists[listId] == null) {
                             weightWindowListId = null
@@ -1553,12 +1601,12 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                                     else SchedulerDomain.absoluteTaskPriorities(schedulerState),
                                 onIntent = popupDispatch,
                                 onDismiss = { weightWindowListId = null },
-                                modifier = Modifier.align(Alignment.Center).zIndex(100f),
+                                modifier = Modifier.align(Alignment.Center),
                             )
                         }
                     }
 
-                    // PRD §5: the relative-priority window, the same sort on the same layer. Opened from the
+                    // PRD §5: the relative-priority window, the same sort of window. Opened from the
                     // percentage's right-click menu; also cleared when the cell goes away under it (an undo).
                     relativeWindowCellId?.let { cellId ->
                         if (popupState.cells[cellId]?.taskId == null) {
@@ -1571,8 +1619,8 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                                 onDismiss = { relativeWindowCellId = null },
                                 // PRD §5: its chain cells are task cells, so their percentage column does
                                 // what the tree's does — a click opens that sub-list's weight window, a
-                                // right-click re-opens this one on the chain cell. Both windows share this
-                                // layer, so opening either closes the other. `popupFromDefaultSubtree` is
+                                // right-click re-opens this one on the chain cell. The two share one slot,
+                                // so opening either closes the other. `popupFromDefaultSubtree` is
                                 // deliberately left alone: it says which tree the pop-up is about, and the
                                 // chain cell belongs to the same one.
                                 onOpenWeightWindow = { listId ->
@@ -1583,103 +1631,97 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                                     weightWindowListId = null
                                     relativeWindowCellId = chainCellId
                                 },
-                                modifier = Modifier.align(Alignment.Center).zIndex(100f),
+                                modifier = Modifier.align(Alignment.Center),
                             )
                         }
                     }
 
                     // PRD §13: the "edit task" window — the tree cell's and (PRD §8) the calendar task
-                    // panel's. Raised out of TaskSchedulerScreen so it is on the
-                    // top layer like every other sort-2 pop-up — inside the tree it drew UNDER any floating
-                    // window stacked over it.
+                    // panel's. Raised out of TaskSchedulerScreen so it is a window among the others: inside
+                    // the tree it could never be drawn over a floating window stacked above the tree, whatever
+                    // the stacking order said.
                     editTaskId?.let { taskId ->
                         val task = popupState.tasks[taskId]
                         if (task == null) {
                             editTaskId = null
                         } else {
-                            Box(Modifier.fillMaxSize().zIndex(100f)) {
-                                TaskEditWindow(
-                                    task = task,
-                                    // PRD §13: the screen switch and the schedule unit only exist for a
-                                    // schedulable leaf task — a parent is a grouping and is never placed,
-                                    // so its window is text only.
-                                    isLeaf = SchedulerDomain.isLeafTask(popupState, taskId),
-                                    periodKinds = popupState.allPeriodKinds,
-                                    onAddPeriodKind = { popupDispatch(SchedulerIntent.AddPeriodKind(it)) },
-                                    onEditPeriodKind = { editPeriodKind = it },
-                                    onSave = { resilience, entries, text ->
-                                        // One intent per section, and only for what actually changed — so
-                                        // Save on an untouched window adds nothing to the Undo/Redo history
-                                        // (PRD §6). The resilience map goes one KIND at a time, because that
-                                        // is the grain the intent (and the history unit) has. "no task
-                                        // allowed" is not among them: the window offers no field for it
-                                        // ([PeriodKinds.isResilienceEditable]), so there is nothing there
-                                        // that could have moved.
-                                        for (kind in popupState.allPeriodKinds.filter(PeriodKinds::isResilienceEditable)) {
-                                            val next = PeriodKinds.resilienceFor(resilience, kind)
-                                            if (next != task.resilienceFor(kind)) {
-                                                popupDispatch(SchedulerIntent.SetTaskResilience(taskId, kind, next))
-                                            }
+                            TaskEditWindow(
+                                task = task,
+                                // PRD §13: the screen switch and the schedule unit only exist for a
+                                // schedulable leaf task — a parent is a grouping and is never placed,
+                                // so its window is text only.
+                                isLeaf = SchedulerDomain.isLeafTask(popupState, taskId),
+                                periodKinds = popupState.allPeriodKinds,
+                                onAddPeriodKind = { popupDispatch(SchedulerIntent.AddPeriodKind(it)) },
+                                onEditPeriodKind = { editPeriodKind = it },
+                                onSave = { resilience, entries, text ->
+                                    // One intent per section, and only for what actually changed — so
+                                    // Save on an untouched window adds nothing to the Undo/Redo history
+                                    // (PRD §6). The resilience map goes one KIND at a time, because that
+                                    // is the grain the intent (and the history unit) has. "no task
+                                    // allowed" is not among them: the window offers no field for it
+                                    // ([PeriodKinds.isResilienceEditable]), so there is nothing there
+                                    // that could have moved.
+                                    for (kind in popupState.allPeriodKinds.filter(PeriodKinds::isResilienceEditable)) {
+                                        val next = PeriodKinds.resilienceFor(resilience, kind)
+                                        if (next != task.resilienceFor(kind)) {
+                                            popupDispatch(SchedulerIntent.SetTaskResilience(taskId, kind, next))
                                         }
-                                        if (entries != task.scheduleUnit) {
-                                            popupDispatch(SchedulerIntent.SetScheduleUnit(taskId, entries))
-                                        }
-                                        if (text != task.text) {
-                                            popupDispatch(SchedulerIntent.SetTaskText(taskId, text))
-                                        }
-                                        editTaskId = null
-                                    },
-                                    onDismiss = { editTaskId = null },
-                                )
-                            }
+                                    }
+                                    if (entries != task.scheduleUnit) {
+                                        popupDispatch(SchedulerIntent.SetScheduleUnit(taskId, entries))
+                                    }
+                                    if (text != task.text) {
+                                        popupDispatch(SchedulerIntent.SetTaskText(taskId, text))
+                                    }
+                                    editTaskId = null
+                                },
+                                onDismiss = { editTaskId = null },
+                            )
                         }
                     }
 
                     // `side-dev/README.md` § *Restrictive Period*: the PERIOD edit window — one kind, and
                     // every task's resilience to it. The task edit window's resilience section read the
-                    // other way round, and the one place a period is deleted. Same top layer and same sort
-                    // as the window it is opened from, which is why opening it closes that one.
+                    // other way round, and the one place a period is deleted. The same sort of window as
+                    // the one it is opened from, which is why opening it closes that one.
                     editPeriodKind?.let { kind ->
                         if (kind !in popupState.allPeriodKinds) {
                             // Deleted under it (from here, from a peer's sync, or by an undo).
                             editPeriodKind = null
                         } else {
-                            Box(Modifier.fillMaxSize().zIndex(100f)) {
-                                PeriodKindEditWindow(
-                                    kind = kind,
-                                    rows = SchedulerDomain.periodKindTaskRows(popupState, kind),
-                                    // The two kinds the README names are the account's whether it likes it
-                                    // or not; only a kind the user defined can be dropped.
-                                    canDelete = PeriodKinds.isUserDefined(kind),
-                                    onSetResilience = { ids, value ->
-                                        popupDispatch(SchedulerIntent.SetPeriodResilience(ids, kind, value))
-                                    },
-                                    onDelete = {
-                                        popupDispatch(SchedulerIntent.RemovePeriodKind(kind))
-                                        editPeriodKind = null
-                                    },
-                                    onDismiss = { editPeriodKind = null },
-                                )
-                            }
+                            PeriodKindEditWindow(
+                                kind = kind,
+                                rows = SchedulerDomain.periodKindTaskRows(popupState, kind),
+                                // The two kinds the README names are the account's whether it likes it
+                                // or not; only a kind the user defined can be dropped.
+                                canDelete = PeriodKinds.isUserDefined(kind),
+                                onSetResilience = { ids, value ->
+                                    popupDispatch(SchedulerIntent.SetPeriodResilience(ids, kind, value))
+                                },
+                                onDelete = {
+                                    popupDispatch(SchedulerIntent.RemovePeriodKind(kind))
+                                    editPeriodKind = null
+                                },
+                                onDismiss = { editPeriodKind = null },
+                            )
                         }
                     }
 
                     // PRD §5: the CATEGORY edit window — one category, its rules and everything carrying
                     // it. The task cell's categories drop-down opens it from its ✎, exactly as the task
-                    // edit window's resilience row opens the period's. Same top layer and same sort.
+                    // edit window's resilience row opens the period's. The same sort of window.
                     editCategoryId?.let { categoryId ->
                         if (popupState.categoryById(categoryId) == null) {
                             // Deleted under it (from here, from a peer's sync, or by an undo).
                             editCategoryId = null
                         } else {
-                            Box(Modifier.fillMaxSize().zIndex(100f)) {
-                                CategoryEditWindow(
-                                    state = popupState,
-                                    categoryId = categoryId,
-                                    onIntent = popupDispatch,
-                                    onDismiss = { editCategoryId = null },
-                                )
-                            }
+                            CategoryEditWindow(
+                                state = popupState,
+                                categoryId = categoryId,
+                                onIntent = popupDispatch,
+                                onDismiss = { editCategoryId = null },
+                            )
                         }
                     }
 
@@ -1688,20 +1730,23 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                     // gesture handler — the refusal happens in the reducer, which is the only place that can
                     // tell that the edit could not be scaled back onto the rules.
                     schedulerState.categoryRuleError?.let { message ->
-                        Box(Modifier.fillMaxSize().zIndex(100f)) {
-                            MessagePopup(
-                                message = message,
-                                onDismiss = { vm.dispatch(SchedulerIntent.DismissCategoryRuleError) },
-                            )
-                        }
+                        MessagePopup(
+                            message = message,
+                            onDismiss = { vm.dispatch(SchedulerIntent.DismissCategoryRuleError) },
+                            // Its own id: the calendar's notice can stand at the same time, and two
+                            // windows sharing one id would fight over the host's single row for it.
+                            id = "CategoryRuleNotice",
+                        )
                     }
 
-                    // The app's one notice (PRD §8 "go to task tree" on a task no cell holds). Drawn on the
-                    // same top layer as the pop-ups above, so it is never buried under a floating window.
+                    // The app's one notice (PRD §8 "go to task tree" on a task no cell holds). A window like
+                    // the ones above: it opens on top, and stays until its OK or its ✕.
                     appMessage?.let { message ->
-                        Box(Modifier.fillMaxSize().zIndex(100f)) {
-                            MessagePopup(message = message, onDismiss = { appMessage = null })
-                        }
+                        MessagePopup(
+                            message = message,
+                            onDismiss = { appMessage = null },
+                            id = "AppNotice",
+                        )
                     }
 
                     // PRD §13: "deep copy" asks for its maximum depth here, then copies (DeepCopyWindow).
@@ -1710,39 +1755,37 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                         if (popupState.cells[cellId] == null) {
                             deepCopyCellId = null
                         } else {
-                            Box(Modifier.fillMaxSize().zIndex(100f)) {
-                                DeepCopyWindow(
-                                    state = popupState,
-                                    // The same block "copy" takes — a deep copy of a multi-selection is
-                                    // every selected cell down to the chosen depth, not just the one under
-                                    // the cursor.
-                                    cellIds = SchedulerDomain.contextMenuCopyTargets(
+                            DeepCopyWindow(
+                                state = popupState,
+                                // The same block "copy" takes — a deep copy of a multi-selection is
+                                // every selected cell down to the chosen depth, not just the one under
+                                // the cursor.
+                                cellIds = SchedulerDomain.contextMenuCopyTargets(
+                                    popupState,
+                                    popupState.selection,
+                                    cellId,
+                                ),
+                                onCopy = { targets, maxDepth, unlimited, options ->
+                                    // The depth and the three switches are the ACCOUNT's, not this
+                                    // copy's: what the window is asked here is what every later copy
+                                    // carries — the menu's "copy" and §4's Ctrl+C / Ctrl+X included
+                                    // (the chord still takes the whole sub-tree).
+                                    vm.dispatch(SchedulerIntent.SetDeepCopyMaxDepth(maxDepth))
+                                    vm.dispatch(SchedulerIntent.SetDeepCopyUnlimited(unlimited))
+                                    vm.dispatch(SchedulerIntent.SetCopyOptions(options))
+                                    // Explicit options: the dispatches above have not reached this
+                                    // composition's state.
+                                    val text = SchedulerDomain.copyCellsText(
                                         popupState,
-                                        popupState.selection,
-                                        cellId,
-                                    ),
-                                    onCopy = { targets, maxDepth, unlimited, options ->
-                                        // The depth and the three switches are the ACCOUNT's, not this
-                                        // copy's: what the window is asked here is what every later copy
-                                        // carries — the menu's "copy" and §4's Ctrl+C / Ctrl+X included
-                                        // (the chord still takes the whole sub-tree).
-                                        vm.dispatch(SchedulerIntent.SetDeepCopyMaxDepth(maxDepth))
-                                        vm.dispatch(SchedulerIntent.SetDeepCopyUnlimited(unlimited))
-                                        vm.dispatch(SchedulerIntent.SetCopyOptions(options))
-                                        // Explicit options: the dispatches above have not reached this
-                                        // composition's state.
-                                        val text = SchedulerDomain.copyCellsText(
-                                            popupState,
-                                            targets,
-                                            maxDepth,
-                                            options,
-                                        )
-                                        if (text.isNotEmpty()) writeSystemClipboardText(text)
-                                        deepCopyCellId = null
-                                    },
-                                    onDismiss = { deepCopyCellId = null },
-                                )
-                            }
+                                        targets,
+                                        maxDepth,
+                                        options,
+                                    )
+                                    if (text.isNotEmpty()) writeSystemClipboardText(text)
+                                    deepCopyCellId = null
+                                },
+                                onDismiss = { deepCopyCellId = null },
+                            )
                         }
                     }
 
@@ -1757,8 +1800,7 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             nowExactMillis = { clock.nowMillis() },
                             onDismiss = { calendarOpen = false },
                             modifier = Modifier
-                                .align(Alignment.Center)
-                                .zIndex(windowZ(FloatingWindow.Calendar)),
+                                .align(Alignment.Center),
                             records = calendarRecords,
                             taskColors = taskPanelColors,
                             // PRD §9/§17: a future week beyond the near horizon is still computing its plan
@@ -1859,9 +1901,11 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             onUndo = { vm.dispatch(SchedulerIntent.Undo) },
                             onRedo = { vm.dispatch(SchedulerIntent.Redo) },
                             initialOffset = calendarOffset,
-                            onOffsetChange = {
-                                calendarOffset = it
-                                persistPlacement(FloatingWindow.Calendar, it, true)
+                            initialSize = calendarSize,
+                            onGeometryChange = { windowOffset, windowSize ->
+                                calendarOffset = windowOffset
+                                calendarSize = windowSize
+                                persistPlacement(FloatingWindow.Calendar, windowOffset, windowSize, true)
                             },
                             // PRD §8/§9: the endless scroll says which days are on screen; the horizon and
                             // every display projection above are computed from exactly that span.
@@ -1875,12 +1919,11 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             jumpNonce = calendarJumpNonce,
                         )
 
-                        // PRD §8 edit window, drawn over the calendar window and the tree — used for
-                        // both editing an existing block and the Manual-add default panel. It is a modal
-                        // (full-screen scrim), so it is pinned above every floating window's z-layer.
+                        // PRD §8 edit window, opened over the calendar window and the tree — used for
+                        // both editing an existing block and the Manual-add default panel. A window like any
+                        // other since ADR 0014: no scrim, and it takes its turn in the one stacking order.
                         (editingBlock ?: addingBlock)?.let { block ->
                             val isNew = editingBlock == null
-                            Box(Modifier.fillMaxSize().zIndex(100f)) {
                             ManualEntryEditWindow(
                                 initialTitle = block.title,
                                 initialTaskId = block.taskId,
@@ -1920,59 +1963,54 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                                     editingBlock = null
                                     addingBlock = null
                                 },
-                            )
-                            }
+                                )
                         }
 
                         // PRD §8: the period editor for both hand-added periods — add (no [block]) and
-                        // edit alike. Same modal z-layer as the calendar edit window.
+                        // edit alike. The same sort of window as the calendar edit window above.
                         editingPeriod?.let { draft ->
-                            Box(Modifier.fillMaxSize().zIndex(100f)) {
-                                PeriodEditWindow(
-                                    kind = draft.kind,
-                                    isNew = draft.block == null,
-                                    startMillis = draft.startMillis,
-                                    endMillis = draft.endMillis,
-                                    nowMillis = nowMillis,
-                                    tz = tz,
-                                    onDismiss = { editingPeriod = null },
-                                    onSave = { start, end ->
-                                        val block = draft.block
-                                        val intent =
-                                            when {
-                                                // An existing period: the ordinary panel-bounds commit, which
-                                                // re-applies the period's own override rule over its new span.
-                                                block != null ->
-                                                    commitBoundsIntent(block, null, block.title, start, end, block.pins)
-                                                draft.kind == CalendarPeriodKind.NoScreen ->
-                                                    SchedulerIntent.AddNoScreenPeriod(start, end)
-                                                else -> SchedulerIntent.AddInactivityPeriod(start, end)
-                                            }
-                                        intent?.let(vm::dispatch)
-                                        editingPeriod = null
-                                    },
-                                )
-                            }
+                            PeriodEditWindow(
+                                kind = draft.kind,
+                                isNew = draft.block == null,
+                                startMillis = draft.startMillis,
+                                endMillis = draft.endMillis,
+                                nowMillis = nowMillis,
+                                tz = tz,
+                                onDismiss = { editingPeriod = null },
+                                onSave = { start, end ->
+                                    val block = draft.block
+                                    val intent =
+                                        when {
+                                            // An existing period: the ordinary panel-bounds commit, which
+                                            // re-applies the period's own override rule over its new span.
+                                            block != null ->
+                                                commitBoundsIntent(block, null, block.title, start, end, block.pins)
+                                            draft.kind == CalendarPeriodKind.NoScreen ->
+                                                SchedulerIntent.AddNoScreenPeriod(start, end)
+                                            else -> SchedulerIntent.AddInactivityPeriod(start, end)
+                                        }
+                                    intent?.let(vm::dispatch)
+                                    editingPeriod = null
+                                },
+                            )
                         }
 
-                        // PRD §14 "add reminder": the floating reminder editor, above every floating window
-                        // (same z-layer as the manual edit window).
+                        // PRD §14 "add reminder": the floating reminder editor, the same sort of window as
+                        // the manual edit window above.
                         addingReminderAtMillis?.let { atMillis ->
-                            Box(Modifier.fillMaxSize().zIndex(100f)) {
-                                ReminderEditWindow(
-                                    initialMillis = atMillis,
-                                    tz = tz,
-                                    reminderMenuEntries = { SchedulerDomain.reminderMenuEntries(schedulerState, it) },
-                                    titleSuggestions = { SchedulerDomain.reminderTitleSuggestions(schedulerState, it) },
-                                    reminderIdForTitle = { SchedulerDomain.reminderIdForTitle(schedulerState, it) },
-                                    titleForReminderId = { SchedulerDomain.reminderTitleForId(schedulerState, it) },
-                                    onDismiss = { addingReminderAtMillis = null },
-                                    onSave = { reminderId, title, at, checked, pinned ->
-                                        vm.dispatch(SchedulerIntent.AddReminder(reminderId, title, at, checked, pinned))
-                                        addingReminderAtMillis = null
-                                    },
-                                )
-                            }
+                            ReminderEditWindow(
+                                initialMillis = atMillis,
+                                tz = tz,
+                                reminderMenuEntries = { SchedulerDomain.reminderMenuEntries(schedulerState, it) },
+                                titleSuggestions = { SchedulerDomain.reminderTitleSuggestions(schedulerState, it) },
+                                reminderIdForTitle = { SchedulerDomain.reminderIdForTitle(schedulerState, it) },
+                                titleForReminderId = { SchedulerDomain.reminderTitleForId(schedulerState, it) },
+                                onDismiss = { addingReminderAtMillis = null },
+                                onSave = { reminderId, title, at, checked, pinned ->
+                                    vm.dispatch(SchedulerIntent.AddReminder(reminderId, title, at, checked, pinned))
+                                    addingReminderAtMillis = null
+                                },
+                            )
                         }
                     }
 
@@ -2004,14 +2042,15 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             titleForReminderId = { SchedulerDomain.reminderTitleForId(schedulerState, it) },
                             // Cascade: open up-left of center so it isn't fully hidden behind a wider window.
                             initialOffset = remindersOffset,
-                            onOffsetChange = {
-                                remindersOffset = it
-                                persistPlacement(FloatingWindow.Reminders, it, true)
+                            initialSize = remindersSize,
+                            onGeometryChange = { windowOffset, windowSize ->
+                                remindersOffset = windowOffset
+                                remindersSize = windowSize
+                                persistPlacement(FloatingWindow.Reminders, windowOffset, windowSize, true)
                             },
                             onRaise = { focusWindow(FloatingWindow.Reminders) },
                             modifier = Modifier
-                                .align(Alignment.Center)
-                                .zIndex(windowZ(FloatingWindow.Reminders)),
+                                .align(Alignment.Center),
                         )
                     }
 
@@ -2025,14 +2064,15 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             onDismiss = { historyManagerOpen = false },
                             // Cascade: open down-right of center so the Reminders / calendar windows stay reachable.
                             initialOffset = historyOffset,
-                            onOffsetChange = {
-                                historyOffset = it
-                                persistPlacement(FloatingWindow.History, it, true)
+                            initialSize = historySize,
+                            onGeometryChange = { windowOffset, windowSize ->
+                                historyOffset = windowOffset
+                                historySize = windowSize
+                                persistPlacement(FloatingWindow.History, windowOffset, windowSize, true)
                             },
                             onRaise = { focusWindow(FloatingWindow.History) },
                             modifier = Modifier
-                                .align(Alignment.Center)
-                                .zIndex(windowZ(FloatingWindow.History)),
+                                .align(Alignment.Center),
                         )
                     }
 
@@ -2044,14 +2084,15 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             onDismiss = { sleepWindowOpen = false },
                             // Cascade: open up-right of center so the other windows stay reachable.
                             initialOffset = sleepOffset,
-                            onOffsetChange = {
-                                sleepOffset = it
-                                persistPlacement(FloatingWindow.Sleep, it, true)
+                            initialSize = sleepSize,
+                            onGeometryChange = { windowOffset, windowSize ->
+                                sleepOffset = windowOffset
+                                sleepSize = windowSize
+                                persistPlacement(FloatingWindow.Sleep, windowOffset, windowSize, true)
                             },
                             onRaise = { focusWindow(FloatingWindow.Sleep) },
                             modifier = Modifier
-                                .align(Alignment.Center)
-                                .zIndex(windowZ(FloatingWindow.Sleep)),
+                                .align(Alignment.Center),
                         )
                     }
 
@@ -2101,14 +2142,15 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             },
                             // Cascade: open down-left of center so the other windows stay reachable.
                             initialOffset = alarmOffset,
-                            onOffsetChange = {
-                                alarmOffset = it
-                                persistPlacement(FloatingWindow.Alarms, it, true)
+                            initialSize = alarmSize,
+                            onGeometryChange = { windowOffset, windowSize ->
+                                alarmOffset = windowOffset
+                                alarmSize = windowSize
+                                persistPlacement(FloatingWindow.Alarms, windowOffset, windowSize, true)
                             },
                             onRaise = { focusWindow(FloatingWindow.Alarms) },
                             modifier = Modifier
-                                .align(Alignment.Center)
-                                .zIndex(windowZ(FloatingWindow.Alarms)),
+                                .align(Alignment.Center),
                         )
                     }
 
@@ -2129,14 +2171,15 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             onDelete = { vm.dispatch(SchedulerIntent.DeleteTaskTree(it)) },
                             onDismiss = { taskTreesWindowOpen = false },
                             initialOffset = taskTreesOffset,
-                            onOffsetChange = {
-                                taskTreesOffset = it
-                                persistPlacement(FloatingWindow.TaskTrees, it, true)
+                            initialSize = taskTreesSize,
+                            onGeometryChange = { windowOffset, windowSize ->
+                                taskTreesOffset = windowOffset
+                                taskTreesSize = windowSize
+                                persistPlacement(FloatingWindow.TaskTrees, windowOffset, windowSize, true)
                             },
                             onRaise = { focusWindow(FloatingWindow.TaskTrees) },
                             modifier = Modifier
-                                .align(Alignment.Center)
-                                .zIndex(windowZ(FloatingWindow.TaskTrees)),
+                                .align(Alignment.Center),
                         )
                     }
 
@@ -2157,7 +2200,7 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             onIntent = { vm.dispatch(it) },
                             // The rows own the keyboard only while this window is the front one.
                             focused = focusedWindow() == FloatingWindow.TaskList,
-                            // PRD §5/§13: the same four sort-2 pop-ups the account's tree opens. They read
+                            // PRD §5/§13: the same four per-object windows the account's tree opens. They read
                             // and write the LIVE state, because that is exactly what this window's rows are.
                             onSetWeightWindow = {
                                 popupFromDefaultSubtree = false
@@ -2188,14 +2231,15 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             },
                             onDismiss = { taskListWindowOpen = false },
                             initialOffset = taskListOffset,
-                            onOffsetChange = {
-                                taskListOffset = it
-                                persistPlacement(FloatingWindow.TaskList, it, true)
+                            initialSize = taskListSize,
+                            onGeometryChange = { windowOffset, windowSize ->
+                                taskListOffset = windowOffset
+                                taskListSize = windowSize
+                                persistPlacement(FloatingWindow.TaskList, windowOffset, windowSize, true)
                             },
                             onRaise = { focusWindow(FloatingWindow.TaskList) },
                             modifier = Modifier
-                                .align(Alignment.Center)
-                                .zIndex(windowZ(FloatingWindow.TaskList)),
+                                .align(Alignment.Center),
                         )
                     }
 
@@ -2209,21 +2253,22 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             onIntent = { vm.dispatch(it) },
                             onDismiss = { taskRelationsWindowOpen = false },
                             initialOffset = taskRelationsOffset,
-                            onOffsetChange = {
-                                taskRelationsOffset = it
-                                persistPlacement(FloatingWindow.TaskRelations, it, true)
+                            initialSize = taskRelationsSize,
+                            onGeometryChange = { windowOffset, windowSize ->
+                                taskRelationsOffset = windowOffset
+                                taskRelationsSize = windowSize
+                                persistPlacement(FloatingWindow.TaskRelations, windowOffset, windowSize, true)
                             },
                             onRaise = { focusWindow(FloatingWindow.TaskRelations) },
                             modifier = Modifier
-                                .align(Alignment.Center)
-                                .zIndex(windowZ(FloatingWindow.TaskRelations)),
+                                .align(Alignment.Center),
                         )
                     }
 
                     // PRD §5 Categories: every category the account holds — the question neither the task
                     // cell's field (one task, every category) nor the category edit window (one category,
                     // every task) asks. It reads the LIVE state, and a row's ✎ opens that category's own
-                    // sort-2 window, which stays the one place a category is renamed, ruled or deleted.
+                    // category window, which stays the one place a category is renamed, ruled or deleted.
                     if (categoriesWindowOpen) {
                         CategoriesWindow(
                             state = schedulerState,
@@ -2236,14 +2281,15 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             },
                             onDismiss = { categoriesWindowOpen = false },
                             initialOffset = categoriesOffset,
-                            onOffsetChange = {
-                                categoriesOffset = it
-                                persistPlacement(FloatingWindow.Categories, it, true)
+                            initialSize = categoriesSize,
+                            onGeometryChange = { windowOffset, windowSize ->
+                                categoriesOffset = windowOffset
+                                categoriesSize = windowSize
+                                persistPlacement(FloatingWindow.Categories, windowOffset, windowSize, true)
                             },
                             onRaise = { focusWindow(FloatingWindow.Categories) },
                             modifier = Modifier
-                                .align(Alignment.Center)
-                                .zIndex(windowZ(FloatingWindow.Categories)),
+                                .align(Alignment.Center),
                         )
                     }
 
@@ -2259,7 +2305,7 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             onIntent = { vm.dispatch(it) },
                             // The tree inside owns the keyboard only while this window is the front one.
                             focused = focusedWindow() == FloatingWindow.DefaultSubtree,
-                            // PRD §5/§13: the same four sort-2 pop-ups the account's tree opens, drawn by
+                            // PRD §5/§13: the same four per-object windows the account's tree opens, drawn by
                             // the app on the top layer — a template row's "edit task" is the ordinary §13 window.
                             onSetWeightWindow = {
                                 popupFromDefaultSubtree = true
@@ -2283,14 +2329,15 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             },
                             onDismiss = { defaultSubtreeWindowOpen = false },
                             initialOffset = defaultSubtreeOffset,
-                            onOffsetChange = {
-                                defaultSubtreeOffset = it
-                                persistPlacement(FloatingWindow.DefaultSubtree, it, true)
+                            initialSize = defaultSubtreeSize,
+                            onGeometryChange = { windowOffset, windowSize ->
+                                defaultSubtreeOffset = windowOffset
+                                defaultSubtreeSize = windowSize
+                                persistPlacement(FloatingWindow.DefaultSubtree, windowOffset, windowSize, true)
                             },
                             onRaise = { focusWindow(FloatingWindow.DefaultSubtree) },
                             modifier = Modifier
-                                .align(Alignment.Center)
-                                .zIndex(windowZ(FloatingWindow.DefaultSubtree)),
+                                .align(Alignment.Center),
                         )
                     }
 
@@ -2306,14 +2353,15 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                             },
                             onDismiss = { shortcutsWindowOpen = false },
                             initialOffset = shortcutsOffset,
-                            onOffsetChange = {
-                                shortcutsOffset = it
-                                persistPlacement(FloatingWindow.Shortcuts, it, true)
+                            initialSize = shortcutsSize,
+                            onGeometryChange = { windowOffset, windowSize ->
+                                shortcutsOffset = windowOffset
+                                shortcutsSize = windowSize
+                                persistPlacement(FloatingWindow.Shortcuts, windowOffset, windowSize, true)
                             },
                             onRaise = { focusWindow(FloatingWindow.Shortcuts) },
                             modifier = Modifier
-                                .align(Alignment.Center)
-                                .zIndex(windowZ(FloatingWindow.Shortcuts)),
+                                .align(Alignment.Center),
                         )
                     }
 
@@ -2368,7 +2416,8 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                                 // Bottom-left of the content area — just to the right of the lateral menu.
                                 .align(Alignment.BottomStart)
                                 .padding(12.dp)
-                                .zIndex(windowZ(FloatingWindow.TimeSim))
+                                // The one z left in `App`: the debug panel wears no window frame.
+                                .zIndex(windowFrames.zOf(FloatingWindow.TimeSim.name))
                                 .raiseOnPress { focusWindow(FloatingWindow.TimeSim) },
                         )
                     }
@@ -2387,6 +2436,14 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                     }
                 }
             }
+
+            // The bar of REDUCED windows, along the bottom of the app. Drawn at the app root and over the
+            // lateral menu — a window reduced while the menu is open must not be filed behind it — and
+            // above the floating windows' own z-stack, which is why it is not inside the content Box.
+            MinimizedWindowBar(
+                host = windowFrames,
+                modifier = Modifier.align(Alignment.BottomStart).zIndex(135f),
+            )
 
             // The menu's collapse toggle: a bookmark/tab sticking out of the menu's top-right border,
             // straddling into the content (offset by the menu's own fixed width — 188dp). Points « to push

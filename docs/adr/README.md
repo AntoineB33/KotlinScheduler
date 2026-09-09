@@ -22,6 +22,7 @@ migration history.
 | [0011](0011-global-keyboard-shortcuts.md) | System-wide keyboard shortcuts | the swallow rule, hook vs. `RegisterHotKey`, the shortcuts window |
 | [0012](0012-clipboard-format.md) | The clipboard text is readable | what a copy carries, the prose format, the resilience attribute, paste strictness, the deep-copy depth window |
 | [0013](0013-task-colours.md) | Task colours: the leaves own the circle | maximal spread for the childless tasks, depth-first order, a parent in its own arc, ties settled toward the previous answer |
+| [0014](0014-window-frame.md) | One window frame, and nothing that vanishes on a click | the end of the two sorts, the head's five buttons, fill/maximize algebra, the three resizable edges, the reduce bar, focus-based keyboard ownership |
 
 ## Related docs
 

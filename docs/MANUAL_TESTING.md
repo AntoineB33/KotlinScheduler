@@ -105,7 +105,52 @@ the desktop app signed in as account 1). Default dev run enables debug tooling (
         tag or an alarm marker.
   - [ ] Delete the task from the tree (empty its cell) with its panel still on the calendar, then
         "go to task tree" on that panel → a message says it is not in the task tree; nothing is selected.
-        Pressing anywhere else dismisses the message and still does its normal job.
+        The message is a window like any other: pressing elsewhere does its normal job and leaves it
+        standing; its **OK** button or its head's ✕ is what closes it.
+- [ ] **Window chrome — every window wears the same frame (PRD §7, ADR 0014).** Open **Calendar**,
+      **History** and, from a tree cell's menu, **"edit task"**:
+  - [ ] **Nothing closes on an outside click.** Click the tree behind the task edit window with half a
+        title typed in it: the window stays and the draft is still there. The same for the calendar, the
+        priority-weight window (click a percentage) and the category window.
+  - [ ] **…except a menu.** Right-click a cell, then click another cell: the menu closes **and** the second
+        cell is selected in the same gesture. Right-clicking a second cell replaces the menu.
+  - [ ] **One window per subject.** With task A's edit window open, open task B's from another cell: it
+        replaces A's rather than stacking beside it.
+  - [ ] **The head drags the window**, and carries five buttons in this order: fill width ↔, fill height ↕,
+        reduce —, maximize ▢, close ✕. Every window's ✕ is in the same place.
+  - [ ] **Fill width** takes the full width of the content area and leaves the height alone; **fill height**
+        the converse; pressing both in turn gives exactly the **maximized** window, and the maximize button
+        then un-maximizes back to the size *and* position it had before.
+  - [ ] **Double-clicking the head** maximizes; double-clicking again restores. A slow drag of the head must
+        not be read as a double-click.
+  - [ ] **A maximized window fills the app except the lateral menu.** Retract the menu (the « bookmark) →
+        the window grows to the whole app; pull the menu back → it shrinks again.
+  - [ ] **Resize by the left, right and bottom edges.** The opposite edge stays put in each case. There is
+        no top edge to drag (the head is there). A window pulled to its minimum does not walk sideways when
+        the drag keeps going. A list inside (History's rows, All tasks, Categories) **follows the new
+        height** rather than stopping at an old cap.
+  - [ ] **Reduce** files the window in the bar along the **bottom of the app**, drawn **over the lateral
+        menu**. Clicking its chip restores it *with whatever was typed still in it* **and on top**; the
+        chip's ✕ closes it outright. With the bar showing, a maximized window stops above it rather than
+        behind it. Reduce two windows, raise one of them, then reduce it again: the chips stay in the order
+        the windows were opened in — a raise must not move a chip along the bar.
+  - [ ] **One stacking order, per-object windows included.** Open the priority-weight table (click a
+        percentage) so it overlaps the **Categories** window, then click Categories: Categories comes to the
+        front and the table goes **under** it. Click the table's visible edge → it comes back over. Repeat
+        with the task edit window against the **Calendar**, and with the calendar's own entry editor: no
+        window is permanently on top of another.
+  - [ ] **The lateral-menu button closes only the front window.** With **Alarms** open and the
+        priority-weight table standing over it, click **Alarms** in the lateral menu: the Alarms window
+        comes back to the front — it must **not** close. Click **Alarms** again (nothing over it now) → it
+        closes. With no window over it, the first click still closes it, as before.
+  - [ ] **The head is always reachable.** Make the app window short, open the calendar (720×540), drag it
+        up and down as far as it will go: its head never leaves the content area.
+  - [ ] **Geometry persists, the mode does not.** Move and resize a lateral-menu window, reduce another,
+        maximize a third, then close and relaunch the app: positions and sizes come back; every window comes
+        back un-reduced and un-maximized.
+  - [ ] **The tree goes deaf only while a window has the keyboard.** With the priority-weight window focused,
+        typing a letter must edit *there*, not rename the selected tree cell. Click the tree → the same
+        letter renames the cell again, and the weight window is still open.
 - [ ] **Timers (PRD §18, the Alarms window's second section).** Open **Alarms** → *Timers*:
   - [ ] **+ Add timer** → a row at 5:00, idle. Set it to `0:20`, press **Start** → the countdown reads down
         every second; press **Pause** → it holds; **Start** (now *Resume*) → it continues from there, not

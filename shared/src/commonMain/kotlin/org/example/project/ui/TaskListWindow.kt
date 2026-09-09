@@ -1,6 +1,5 @@
 package org.example.project.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,16 +10,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -32,10 +26,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import kotlin.math.roundToInt
 import org.example.project.scheduler.domain.SchedulerDomain
 import org.example.project.scheduler.domain.TitleSimilarity
 import org.example.project.scheduler.model.CellId
@@ -100,7 +93,7 @@ fun TaskListWindow(
     focused: Boolean,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
-    /** PRD §5/§13: the sort-2 pop-ups the rows open, hoisted to the app so they land on the top layer. */
+    /** PRD §5/§13: the per-object windows the rows open, hoisted to the app so they land on the top layer. */
     onSetWeightWindow: (CellListId?) -> Unit = {},
     onSetRelativeWindow: (CellId?) -> Unit = {},
     onSetEditTask: (TaskId?) -> Unit = {},
@@ -111,12 +104,14 @@ fun TaskListWindow(
     onGoToTaskTree: (TaskId) -> Unit = {},
     /** Initial position relative to centered; staggered per window so they open in a clickable cascade. */
     initialOffset: Offset = Offset.Zero,
-    /** Persists the window's new drag position when a drag gesture ends (local-only geometry). */
-    onOffsetChange: (Offset) -> Unit = {},
+    /** Initial size in px; `Size.Zero` opens the window at its default size. */
+    initialSize: Size = Size.Zero,
+    /** Persists the window's new position/size when a move or resize gesture ends (local-only geometry). */
+    onGeometryChange: (Offset, Size) -> Unit = { _, _ -> },
     /** Raise this window to the top of the layers — fired on a press anywhere inside it. */
     onRaise: () -> Unit = {},
 ) {
-    var offset by remember { mutableStateOf(initialOffset) }
+    val frame = rememberWindowFrameState("TaskList", initialOffset, initialSize)
 
     // The figures and the order they imply. Keyed on what they actually read rather than on the whole
     // state, which is replaced by every engine tick (records live on the tasks) — ADR 0009. `sort` is a key
@@ -175,112 +170,80 @@ fun TaskListWindow(
     val priorities =
         remember(state.cells, state.lists, state.tasks) { SchedulerDomain.absoluteTaskPriorities(state) }
 
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 10.dp,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = modifier
-            .offset { IntOffset(offset.x.roundToInt(), offset.y.roundToInt()) }
-            // requiredWidth (not width) so the window keeps its fixed width whatever the content area is.
-            .requiredWidth(560.dp)
-            // Raise on press AFTER the offset so the hit region tracks the (possibly dragged) window.
-            .raiseOnPress(onRaise),
+    AppWindowFrame(
+        title = "All tasks",
+        state = frame,
+        onClose = onDismiss,
+        defaultWidth = 560.dp,
+        defaultHeight = 560.dp,
+        modifier = modifier,
+        onRaise = onRaise,
+        onGeometryChange = onGeometryChange,
     ) {
-        Column(Modifier.fillMaxWidth()) {
-            // Title bar doubles as the drag handle for moving the window.
-            Row(
+        TaskListSorterBar(
+            sort = sort,
+            onSortChange = onSortChange,
+            descending = descending,
+            onDirectionChange = onDirectionChange,
+            // Only offered once there is something to close: the flat list is what the window is for, so
+            // a row left open is a row hiding the next one.
+            onCollapseAll =
+                if (state.taskListExpanded.isEmpty()) {
+                    null
+                } else {
+                    { onIntent(SchedulerIntent.CollapseTaskListRows) }
+                },
+            // Only offered when an edit has actually moved a row: pressing it otherwise would say
+            // nothing, and a button permanently on screen says nothing either.
+            onUpdateOrder = if (orderOutdated) ({ pinnedOrder = freshOrder }) else null,
+        )
+        Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
+
+        if (rootCells.isEmpty()) {
+            Text(
+                text = "No task yet — name one in the tree.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            )
+        } else {
+            TaskTreeView(
+                state = projected,
+                priorities = priorities,
+                onIntent = { intent -> onIntent(intent.forTaskList(rootCells)) },
+                keyboardActive = focused,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .windowDragHandle(onDragEnd = { onOffsetChange(offset) }) { dragAmount ->
-                        offset += dragAmount
-                    }
-                    .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "All tasks",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f),
-                )
-                Box(
-                    modifier = Modifier.size(28.dp).clip(CircleShape).clickable(onClick = onDismiss),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        "✕",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-
-            TaskListSorterBar(
-                sort = sort,
-                onSortChange = onSortChange,
-                descending = descending,
-                onDirectionChange = onDirectionChange,
-                // Only offered once there is something to close: the flat list is what the window is for, so
-                // a row left open is a row hiding the next one.
-                onCollapseAll =
-                    if (state.taskListExpanded.isEmpty()) {
-                        null
-                    } else {
-                        { onIntent(SchedulerIntent.CollapseTaskListRows) }
-                    },
-                // Only offered when an edit has actually moved a row: pressing it otherwise would say
-                // nothing, and a button permanently on screen says nothing either.
-                onUpdateOrder = if (orderOutdated) ({ pinnedOrder = freshOrder }) else null,
+                    // Follows the height the window was given (it is resizable), then scrolls — an
+                    // account may hold hundreds of tasks.
+                    .weight(1f)
+                    .padding(vertical = 8.dp, horizontal = 12.dp),
+                onSetWeightWindow = onSetWeightWindow,
+                onSetRelativeWindow = onSetRelativeWindow,
+                onSetEditTask = onSetEditTask,
+                onSetEditCategory = onSetEditCategory,
+                onSetDeepCopyCell = onSetDeepCopyCell,
+                onGoToTaskTree = onGoToTaskTree,
+                // The root's order is the sorter's: nothing may be dropped into it, and its rows are
+                // always renaming (see the class note).
+                allowRootDrop = false,
+                rootRenameOnly = true,
+                // The window's own raise-on-press is what focuses it, so the rows claim no app-wide
+                // focus.
+                refocusWindow = null,
+                // Colours are solved over the LIVE tree, not the projection: a task must be the same
+                // colour here, in the tree and on the calendar (ADR 0013), and the projection's root is
+                // ordered by the sorter.
+                colorSource = state,
+                rowTrailing = { cellId ->
+                    // The window's own figures, in the order the sorter offers them: how alike this
+                    // row's title is to another task's (only while that is the sort — see `similarities`)
+                    // and how many cells point at this row's task, mirrors included.
+                    val taskId = projected.cells[cellId]?.taskId
+                    taskId?.let { similarities[it] }?.let { TaskSimilarityFigure(it) }
+                    taskId?.let { occurrenceCounts[it] }?.let { TaskOccurrenceCount(it) }
+                },
             )
-            Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-
-            if (rootCells.isEmpty()) {
-                Text(
-                    text = "No task yet — name one in the tree.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                )
-            } else {
-                TaskTreeView(
-                    state = projected,
-                    priorities = priorities,
-                    onIntent = { intent -> onIntent(intent.forTaskList(rootCells)) },
-                    keyboardActive = focused,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        // Grows with the tasks up to a cap, then scrolls — an account may hold hundreds.
-                        .heightIn(max = 460.dp)
-                        .padding(vertical = 8.dp, horizontal = 12.dp),
-                    onSetWeightWindow = onSetWeightWindow,
-                    onSetRelativeWindow = onSetRelativeWindow,
-                    onSetEditTask = onSetEditTask,
-                    onSetEditCategory = onSetEditCategory,
-                    onSetDeepCopyCell = onSetDeepCopyCell,
-                    onGoToTaskTree = onGoToTaskTree,
-                    // The root's order is the sorter's: nothing may be dropped into it, and its rows are
-                    // always renaming (see the class note).
-                    allowRootDrop = false,
-                    rootRenameOnly = true,
-                    // The window's own raise-on-press is what focuses it, so the rows claim no app-wide
-                    // focus.
-                    refocusWindow = null,
-                    // Colours are solved over the LIVE tree, not the projection: a task must be the same
-                    // colour here, in the tree and on the calendar (ADR 0013), and the projection's root is
-                    // ordered by the sorter.
-                    colorSource = state,
-                    rowTrailing = { cellId ->
-                        // The window's own figures, in the order the sorter offers them: how alike this
-                        // row's title is to another task's (only while that is the sort — see `similarities`)
-                        // and how many cells point at this row's task, mirrors included.
-                        val taskId = projected.cells[cellId]?.taskId
-                        taskId?.let { similarities[it] }?.let { TaskSimilarityFigure(it) }
-                        taskId?.let { occurrenceCounts[it] }?.let { TaskOccurrenceCount(it) }
-                    },
-                )
-            }
         }
     }
 }

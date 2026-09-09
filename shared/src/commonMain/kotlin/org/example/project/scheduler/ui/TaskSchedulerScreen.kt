@@ -6,11 +6,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -20,6 +19,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
@@ -28,13 +28,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -133,8 +133,8 @@ import org.example.project.scheduler.state.EditExitNavigation
 import org.example.project.scheduler.state.SchedulerIntent
 import org.example.project.scheduler.state.SchedulerReducer
 import org.example.project.scheduler.state.SchedulerState
-import org.example.project.scheduler.state.defaultSubtreeIsEmpty
 import org.example.project.scheduler.state.SelectionNavigate
+import org.example.project.scheduler.state.defaultSubtreeIsEmpty
 import org.example.project.ui.ControlChords
 import org.example.project.ui.INDENT_STEP_DP
 import org.example.project.ui.PERCENT_COLUMN_WIDTH
@@ -142,22 +142,22 @@ import org.example.project.ui.PRIORITY_COLUMN_MAX
 import org.example.project.ui.PRIORITY_COLUMN_MIN
 import org.example.project.ui.SheetColors
 import org.example.project.ui.ShortcutHint
+import org.example.project.ui.TaskTreeFindBar
 import org.example.project.ui.borderColor
 import org.example.project.ui.borderWidth
+import org.example.project.ui.isModifierKey
 import org.example.project.ui.taskCellOutline
 import org.example.project.ui.TransientPopupLayer
 import org.example.project.ui.TaskPalette
 import org.example.project.ui.TaskHueMemo
 import org.example.project.ui.rememberTaskHues
 import org.example.project.ui.transientMenuDismissal
-import org.example.project.ui.transientPopupCard
-import org.example.project.ui.windowDragHandle
-import org.example.project.ui.TaskTreeFindBar
+import org.example.project.ui.AppWindowFrame
+import org.example.project.ui.rememberWindowFrameState
 import org.example.project.ui.TaskSheetExpandArrow
 import org.example.project.ui.TaskSheetTitleBounds
 import org.example.project.ui.taskSheetTitleBounds
 import org.example.project.ui.taskSheetGuideLines
-import org.example.project.ui.isModifierKey
 import org.example.project.ui.printableChar
 import org.example.project.ui.EditMenuItem
 import org.example.project.ui.EditMenuRowActions
@@ -165,6 +165,7 @@ import org.example.project.ui.EditModeMenuBlock
 import org.example.project.ui.TaskCategoryCell
 import org.example.project.ui.EditModeOption
 import kotlinx.coroutines.withTimeoutOrNull
+import org.example.project.ui.windowDragHandle
 
 /** Width of one weight-table column (text field + stacked +/- buttons + pin button). */
 private val WEIGHT_COLUMN_WIDTH = 130.dp
@@ -273,7 +274,7 @@ fun TaskSchedulerScreen(
     // PRD §5: same hoisting for the relative-priority window (the percentage's right-click menu). Pass the
     // clicked cell's id to open it, or null to close.
     onSetRelativeWindow: (CellId?) -> Unit = {},
-    // PRD §13: the same hoisting for the two sort-2 pop-ups the tree opens — the "edit task" window and the
+    // PRD §13: the same hoisting for the two per-object windows the tree opens — the "edit task" window and the
     // "deep copy" depth window. Drawn by the app so they land on the top layer, above every floating window.
     onSetEditTask: (TaskId?) -> Unit = {},
     /** PRD §5: opens a category's own edit window — hoisted to the app like [onSetEditTask]. */
@@ -1656,14 +1657,14 @@ internal fun PriorityWeightWindow(
     // the account.
     var selectedRowId by remember(listId) { mutableStateOf<CellId?>(null) }
     // PRD §4: the tree's "type a letter on the selected cell and it starts renaming" applies to these rows
-    // too, so this window has to OWN the keyboard while it is open — a sort-2 pop-up is not modal, but it
+    // too, so this window has to OWN the keyboard while it is focused — a window is not modal, but it
     // is what the user is working in (TaskTreeView reads the same fact off the pop-up host and goes deaf).
     // Focus is taken when it opens, taken back on every press on a row, and handed to the row's own field
     // while one is being edited.
     val keyboardFocus = remember(listId) { FocusRequester() }
     LaunchedEffect(listId) { keyboardFocus.requestFocus() }
     val tableRows = priorityWeightTableRows(state, listId, optionalTaskIds)
-    var offset by remember(listId) { mutableStateOf(Offset.Zero) }
+    val frame = rememberWindowFrameState("PriorityWeights")
     var draggedColumn by remember(listId) { mutableStateOf<Int?>(null) }
     var columnDropIndex by remember(listId) { mutableStateOf<Int?>(null) }
     var pinnedWeightFields by remember(listId) { mutableStateOf(emptySet<PriorityWeightFieldKey>()) }
@@ -1673,18 +1674,16 @@ internal fun PriorityWeightWindow(
     val openedTable = remember(listId) { weightTableSnapshot(state, listId) }
     val tableEdited = weightTableSnapshot(state, listId) != openedTable
 
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 12.dp,
-        border = BorderStroke(1.dp, SheetColors.grid),
-        // Bound the window to the screen (so the chart on the right is never pushed off-screen).
-        // [transientPopupCard] does the rest: it is a sort-2 pop-up.
+    AppWindowFrame(
+        title = "Priority weights",
+        state = frame,
+        onClose = onDismiss,
+        defaultWidth = 760.dp,
+        defaultHeight = 600.dp,
+        // Its rows ARE task cells (PRD §4), so it answers keystrokes itself and takes the keyboard off the
+        // tree while it is the focused window.
+        claimsKeyboard = true,
         modifier = modifier
-            .offset { IntOffset(offset.x.roundToInt(), offset.y.roundToInt()) }
-            .transientPopupCard(onDismiss)
-            .widthIn(max = 760.dp)
-            .heightIn(max = 600.dp)
             .focusRequester(keyboardFocus)
             .focusable()
             // PRD §4, the tree's own keyboard on the selected row: Delete/Backspace empties it, and a
@@ -1721,320 +1720,297 @@ internal fun PriorityWeightWindow(
                 true
             },
     ) {
-        Column {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .windowDragHandle(onDragEnd = {}) { dragAmount -> offset += dragAmount }
-                    .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Priority weights",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f),
-                )
-                Box(
-                    modifier = Modifier.size(28.dp).clip(CircleShape).clickable(onClick = onDismiss),
-                    contentAlignment = Alignment.Center,
+        Column(Modifier.padding(16.dp)) {
+            // `fill = false` so a short table keeps the window short; the Cancel bar below always shows.
+            Row(Modifier.weight(1f, fill = false), verticalAlignment = Alignment.Top) {
+                // The table takes the remaining width and scrolls if it is wider/taller than the window,
+                // leaving the fixed-width chart column always visible on the right.
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                        .horizontalScroll(rememberScrollState()),
                 ) {
-                    Text("✕", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-            Column(Modifier.padding(16.dp)) {
-                // `fill = false` so a short table keeps the window short; the Cancel bar below always shows.
-                Row(Modifier.weight(1f, fill = false), verticalAlignment = Alignment.Top) {
-                    // The table takes the remaining width and scrolls if it is wider/taller than the window,
-                    // leaving the fixed-width chart column always visible on the right.
-                    Column(
-                        Modifier
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState())
-                            .horizontalScroll(rememberScrollState()),
-                    ) {
-                        WeightTableHeader(
+                    WeightTableHeader(
+                        depth = 0,
+                        leadingWidth = WEIGHT_WINDOW_LEADING_WIDTH,
+                        weightColumns = list.weightColumns,
+                        draggedColumn = draggedColumn,
+                        dropIndex = columnDropIndex,
+                        onDraggedColumnChange = { draggedColumn = it },
+                        onDropIndexChange = { columnDropIndex = it },
+                        onSetColumnWeight = { c, w -> onIntent(SchedulerIntent.SetPriorityColumnWeight(listId, c, w)) },
+                        pinnedColumns = pinnedWeightColumns,
+                        onTogglePinnedColumn = { column ->
+                            val field = PriorityWeightFieldKey(cellId = null, column = column)
+                            pinnedWeightFields = if (field in pinnedWeightFields) {
+                                pinnedWeightFields - field
+                            } else {
+                                pinnedWeightFields + field
+                            }
+                        },
+                        onAddColumn = { i -> onIntent(SchedulerIntent.AddPriorityColumn(listId, i)) },
+                        onResetColumn = { c -> onIntent(SchedulerIntent.ResetPriorityColumn(listId, c)) },
+                        onDeleteColumn = { c -> onIntent(SchedulerIntent.DeletePriorityColumn(listId, c)) },
+                        onMoveColumn = { f, t -> onIntent(SchedulerIntent.MovePriorityColumn(listId, f, t)) },
+                    )
+                    // PRD §4: emptying a row's title is what deletes it, here as in the tree — so an
+                    // optional row left blank is removed as the editor closes. The add row has nothing
+                    // to remove, and a draft that names no task is simply dropped: a weight-table row
+                    // states an EXISTING task's share, so it is only ever committed by picking one out
+                    // of the identity menu.
+                    val closeRowEditor = closeRowEditor@{
+                        val editedTask = editingRowTask
+                        val draft = editingRowDraft
+                        editingRowId = null
+                        editingRowTask = null
+                        editingRowDraft = ""
+                        keyboardFocus.requestFocus()
+                        if (editedTask == null || draft.isNotBlank()) return@closeRowEditor
+                        onIntent(SchedulerIntent.SetPriorityWeightTableRow(listId, replacing = editedTask))
+                    }
+                    tableRows.forEach { row ->
+                        val rowId = priorityWeightRowId(listId, row)
+                        key(rowId.value) {
+                        val cellId = row.cellId
+                        val cell = cellId?.let { state.cells[it] }
+                        val taskId = row.taskId ?: cell?.taskId
+                        // The two rows this table owns — an optional row and the add row — are the ones
+                        // it can edit. A member row is a cell of the TREE and is only drawn here.
+                        val editable = row.isOptional
+                        val isEditing = editable && editingRowId == rowId
+                        val title = taskId?.let { state.tasks[it]?.title }.orEmpty()
+                        val displayedTitle = if (isEditing) editingRowDraft else title
+                        // What the draft names right now — the row's identity menu, measured once for
+                        // the menu AND for the colour below. It is the tree's own Change Task rule
+                        // (`selectedAssignTaskId` = the first eligible task the text matches), which is
+                        // what makes a row answer while it is being typed into.
+                        val eligibleTaskIds =
+                            if (isEditing) {
+                                remember(state.cells, state.lists, state.tasks, editingRowDraft, taskId) {
+                                    SchedulerDomain.eligibleWeightTableTaskIds(
+                                        state,
+                                        listId,
+                                        editingRowDraft,
+                                        replacing = taskId,
+                                    )
+                                }
+                            } else {
+                                emptyList()
+                            }
+                        // PRD §4: in the tree every keystroke commits the title, so the cell takes its
+                        // task's colour as it is typed. A weight-table row cannot do that — it names an
+                        // EXISTING task and creates none — so it shows the colour of the task the draft
+                        // currently resolves to, and none while it resolves to nothing. Same question,
+                        // same instant, the only answer this row can give.
+                        val colorTaskId = if (isEditing) eligibleTaskIds.firstOrNull() else taskId
+                        val path =
+                            if (row.isOptional && taskId != null) {
+                                RelativePriorityDomain.optionalTaskPath(state, listId, taskId)
+                            } else {
+                                emptyList()
+                            }
+                        val representative = path.lastOrNull()?.let { state.cells[it] }
+                        TaskRow(
                             depth = 0,
-                            leadingWidth = WEIGHT_WINDOW_LEADING_WIDTH,
-                            weightColumns = list.weightColumns,
-                            draggedColumn = draggedColumn,
-                            dropIndex = columnDropIndex,
-                            onDraggedColumnChange = { draggedColumn = it },
-                            onDropIndexChange = { columnDropIndex = it },
-                            onSetColumnWeight = { c, w -> onIntent(SchedulerIntent.SetPriorityColumnWeight(listId, c, w)) },
-                            pinnedColumns = pinnedWeightColumns,
-                            onTogglePinnedColumn = { column ->
-                                val field = PriorityWeightFieldKey(cellId = null, column = column)
-                                pinnedWeightFields = if (field in pinnedWeightFields) {
-                                    pinnedWeightFields - field
-                                } else {
-                                    pinnedWeightFields + field
+                            cellId = rowId,
+                            renderVia = null,
+                            displayTitle = displayedTitle,
+                            isMainSelection = selectedRowId == rowId,
+                            isInSelectionRange = false,
+                            // Every row of the table is a live row, so every row is selectable. It is
+                            // what installs the row's gestures AND the one background that wins over
+                            // the task colour (ADR 0013), so the optional rows this was false on were
+                            // both inert and the only rows that could not be told apart by their
+                            // colour. The selection it feeds is the table's own, one row at a time —
+                            // never the tree's.
+                            selectable = true,
+                            isEditing = isEditing,
+                            hasChildren = false,
+                            expanded = false,
+                            moveDropBefore = false,
+                            moveDropAfter = false,
+                            canMoveFromCell = false,
+                            isBeingMoved = false,
+                            priorityLabel = null,
+                            priorityColumnWidth = WEIGHT_WINDOW_TITLE_WIDTH,
+                            taskColor = colorTaskId?.let { taskColors[it] },
+                            searchRanges = emptyList(),
+                            currentSearchRange = null,
+                            textOverflow = false,
+                            minMinutes = taskId?.let { state.tasks[it]?.minimumMinutes } ?: 0,
+                            minTimeEditing = false,
+                            cellMenu = null,
+                            onTogglePriorityWeights = {},
+                            onOpenRelativePriority = {},
+                            onSetMinTime = {},
+                            onActivateMinTime = {},
+                            onClick = { _, _, _, _ ->
+                                // PRD §3/§4, the tree's rule verbatim: a press SELECTS the row and only
+                                // a double-click on the title opens Edit Mode — the add row included,
+                                // which is the tree's empty placeholder by another name. A press on a
+                                // row that is not the one being edited also closes that editor (§4
+                                // Forced Exit), as clicking another cell of the tree ends its session.
+                                if (editingRowId != rowId) closeRowEditor()
+                                selectedRowId = rowId
+                                // The press may have come from a weight field of another row, which
+                                // still held the keyboard; the selected row is what typing acts on.
+                                if (editingRowId == null) keyboardFocus.requestFocus()
+                            },
+                            onDragSelect = { _, _ -> },
+                            moveDragActive = false,
+                            resolveRowAt = { null },
+                            onRowBounds = { _, _, _ -> },
+                            onMoveDragStart = {},
+                            onMoveDropHover = { _, _, _ -> },
+                            onMoveDragEnd = {},
+                            onDoubleClick = {
+                                if (editable && editingRowId != rowId) {
+                                    closeRowEditor()
+                                    editingRowDraft = title
+                                    // Null on the add row, which has no row to replace. A row's id is
+                                    // derived from the task it names, so this cannot go stale.
+                                    editingRowTask = taskId
+                                    editingRowId = rowId
                                 }
                             },
-                            onAddColumn = { i -> onIntent(SchedulerIntent.AddPriorityColumn(listId, i)) },
-                            onResetColumn = { c -> onIntent(SchedulerIntent.ResetPriorityColumn(listId, c)) },
-                            onDeleteColumn = { c -> onIntent(SchedulerIntent.DeletePriorityColumn(listId, c)) },
-                            onMoveColumn = { f, t -> onIntent(SchedulerIntent.MovePriorityColumn(listId, f, t)) },
-                        )
-                        // PRD §4: emptying a row's title is what deletes it, here as in the tree — so an
-                        // optional row left blank is removed as the editor closes. The add row has nothing
-                        // to remove, and a draft that names no task is simply dropped: a weight-table row
-                        // states an EXISTING task's share, so it is only ever committed by picking one out
-                        // of the identity menu.
-                        val closeRowEditor = closeRowEditor@{
-                            val editedTask = editingRowTask
-                            val draft = editingRowDraft
-                            editingRowId = null
-                            editingRowTask = null
-                            editingRowDraft = ""
-                            keyboardFocus.requestFocus()
-                            if (editedTask == null || draft.isNotBlank()) return@closeRowEditor
-                            onIntent(SchedulerIntent.SetPriorityWeightTableRow(listId, replacing = editedTask))
-                        }
-                        tableRows.forEach { row ->
-                            val rowId = priorityWeightRowId(listId, row)
-                            key(rowId.value) {
-                            val cellId = row.cellId
-                            val cell = cellId?.let { state.cells[it] }
-                            val taskId = row.taskId ?: cell?.taskId
-                            // The two rows this table owns — an optional row and the add row — are the ones
-                            // it can edit. A member row is a cell of the TREE and is only drawn here.
-                            val editable = row.isOptional
-                            val isEditing = editable && editingRowId == rowId
-                            val title = taskId?.let { state.tasks[it]?.title }.orEmpty()
-                            val displayedTitle = if (isEditing) editingRowDraft else title
-                            // What the draft names right now — the row's identity menu, measured once for
-                            // the menu AND for the colour below. It is the tree's own Change Task rule
-                            // (`selectedAssignTaskId` = the first eligible task the text matches), which is
-                            // what makes a row answer while it is being typed into.
-                            val eligibleTaskIds =
+                            onTextChange = { draft -> if (isEditing) editingRowDraft = draft },
+                            onExitEdit = { if (isEditing) closeRowEditor() },
+                            onToggleExpand = {},
+                            editMenus =
                                 if (isEditing) {
-                                    remember(state.cells, state.lists, state.tasks, editingRowDraft, taskId) {
-                                        SchedulerDomain.eligibleWeightTableTaskIds(
-                                            state,
-                                            listId,
-                                            editingRowDraft,
-                                            replacing = taskId,
+                                    {
+                                        OptionalTaskEditMenus(
+                                            state = state,
+                                            eligibleTaskIds = eligibleTaskIds,
+                                            draftText = editingRowDraft,
+                                            onDraftChange = { editingRowDraft = it },
+                                            // Picking a task IS the commit — adding a row on the add
+                                            // row, re-pointing this one anywhere else. One intent, so
+                                            // either is one history unit.
+                                            onPickTask = { picked ->
+                                                onIntent(
+                                                    SchedulerIntent.SetPriorityWeightTableRow(
+                                                        listId = listId,
+                                                        replacing = taskId,
+                                                        taskId = picked,
+                                                    ),
+                                                )
+                                                editingRowId = null
+                                                editingRowTask = null
+                                                editingRowDraft = ""
+                                            },
                                         )
                                     }
                                 } else {
-                                    emptyList()
-                                }
-                            // PRD §4: in the tree every keystroke commits the title, so the cell takes its
-                            // task's colour as it is typed. A weight-table row cannot do that — it names an
-                            // EXISTING task and creates none — so it shows the colour of the task the draft
-                            // currently resolves to, and none while it resolves to nothing. Same question,
-                            // same instant, the only answer this row can give.
-                            val colorTaskId = if (isEditing) eligibleTaskIds.firstOrNull() else taskId
-                            val path =
-                                if (row.isOptional && taskId != null) {
-                                    RelativePriorityDomain.optionalTaskPath(state, listId, taskId)
-                                } else {
-                                    emptyList()
-                                }
-                            val representative = path.lastOrNull()?.let { state.cells[it] }
-                            TaskRow(
-                                depth = 0,
-                                cellId = rowId,
-                                renderVia = null,
-                                displayTitle = displayedTitle,
-                                isMainSelection = selectedRowId == rowId,
-                                isInSelectionRange = false,
-                                // Every row of the table is a live row, so every row is selectable. It is
-                                // what installs the row's gestures AND the one background that wins over
-                                // the task colour (ADR 0013), so the optional rows this was false on were
-                                // both inert and the only rows that could not be told apart by their
-                                // colour. The selection it feeds is the table's own, one row at a time —
-                                // never the tree's.
-                                selectable = true,
-                                isEditing = isEditing,
-                                hasChildren = false,
-                                expanded = false,
-                                moveDropBefore = false,
-                                moveDropAfter = false,
-                                canMoveFromCell = false,
-                                isBeingMoved = false,
-                                priorityLabel = null,
-                                priorityColumnWidth = WEIGHT_WINDOW_TITLE_WIDTH,
-                                taskColor = colorTaskId?.let { taskColors[it] },
-                                searchRanges = emptyList(),
-                                currentSearchRange = null,
-                                textOverflow = false,
-                                minMinutes = taskId?.let { state.tasks[it]?.minimumMinutes } ?: 0,
-                                minTimeEditing = false,
-                                cellMenu = null,
-                                onTogglePriorityWeights = {},
-                                onOpenRelativePriority = {},
-                                onSetMinTime = {},
-                                onActivateMinTime = {},
-                                onClick = { _, _, _, _ ->
-                                    // PRD §3/§4, the tree's rule verbatim: a press SELECTS the row and only
-                                    // a double-click on the title opens Edit Mode — the add row included,
-                                    // which is the tree's empty placeholder by another name. A press on a
-                                    // row that is not the one being edited also closes that editor (§4
-                                    // Forced Exit), as clicking another cell of the tree ends its session.
-                                    if (editingRowId != rowId) closeRowEditor()
-                                    selectedRowId = rowId
-                                    // The press may have come from a weight field of another row, which
-                                    // still held the keyboard; the selected row is what typing acts on.
-                                    if (editingRowId == null) keyboardFocus.requestFocus()
+                                    null
                                 },
-                                onDragSelect = { _, _ -> },
-                                moveDragActive = false,
-                                resolveRowAt = { null },
-                                onRowBounds = { _, _, _ -> },
-                                onMoveDragStart = {},
-                                onMoveDropHover = { _, _, _ -> },
-                                onMoveDragEnd = {},
-                                onDoubleClick = {
-                                    if (editable && editingRowId != rowId) {
-                                        closeRowEditor()
-                                        editingRowDraft = title
-                                        // Null on the add row, which has no row to replace. A row's id is
-                                        // derived from the task it names, so this cannot go stale.
-                                        editingRowTask = taskId
-                                        editingRowId = rowId
-                                    }
-                                },
-                                onTextChange = { draft -> if (isEditing) editingRowDraft = draft },
-                                onExitEdit = { if (isEditing) closeRowEditor() },
-                                onToggleExpand = {},
-                                editMenus =
-                                    if (isEditing) {
-                                        {
-                                            OptionalTaskEditMenus(
-                                                state = state,
-                                                eligibleTaskIds = eligibleTaskIds,
-                                                draftText = editingRowDraft,
-                                                onDraftChange = { editingRowDraft = it },
-                                                // Picking a task IS the commit — adding a row on the add
-                                                // row, re-pointing this one anywhere else. One intent, so
-                                                // either is one history unit.
-                                                onPickTask = { picked ->
-                                                    onIntent(
-                                                        SchedulerIntent.SetPriorityWeightTableRow(
-                                                            listId = listId,
-                                                            replacing = taskId,
-                                                            taskId = picked,
-                                                        ),
-                                                    )
-                                                    editingRowId = null
-                                                    editingRowTask = null
-                                                    editingRowDraft = ""
-                                                },
-                                            )
-                                        }
-                                    } else {
-                                        null
-                                    },
-                                rowContent =
-                                    if (taskId != null) {
-                                        {
-                                            for (column in list.weightColumns.indices) {
-                                                if (draggedColumn != null && columnDropIndex == column) ColumnDropLine()
-                                                Box(
-                                                    modifier = Modifier.background(
-                                                        if (draggedColumn == column) SheetColors.moveDragFill else Color.Transparent,
-                                                    ),
-                                                ) {
-                                                    val value =
-                                                        if (row.isOptional) {
-                                                            val taskValue = list.optionalTaskValues[taskId]
-                                                            taskValue?.getOrElse(column) { 0.0 } ?: 0.0
+                            rowContent =
+                                if (taskId != null) {
+                                    {
+                                        for (column in list.weightColumns.indices) {
+                                            if (draggedColumn != null && columnDropIndex == column) ColumnDropLine()
+                                            Box(
+                                                modifier = Modifier.background(
+                                                    if (draggedColumn == column) SheetColors.moveDragFill else Color.Transparent,
+                                                ),
+                                            ) {
+                                                val value =
+                                                    if (row.isOptional) {
+                                                        val taskValue = list.optionalTaskValues[taskId]
+                                                        taskValue?.getOrElse(column) { 0.0 } ?: 0.0
+                                                    } else {
+                                                        cell?.priorityWeights?.getOrElse(column) { 1.0 } ?: 1.0
+                                                    }
+                                                val fieldKey = PriorityWeightFieldKey(
+                                                    cellId = representative?.id ?: cellId,
+                                                    column = column,
+                                                )
+                                                WeightInputCell(
+                                                    value = value,
+                                                    pinned = fieldKey in pinnedWeightFields,
+                                                    onTogglePinned = {
+                                                        pinnedWeightFields = if (fieldKey in pinnedWeightFields) {
+                                                            pinnedWeightFields - fieldKey
                                                         } else {
-                                                            cell?.priorityWeights?.getOrElse(column) { 1.0 } ?: 1.0
+                                                            pinnedWeightFields + fieldKey
                                                         }
-                                                    val fieldKey = PriorityWeightFieldKey(
-                                                        cellId = representative?.id ?: cellId,
-                                                        column = column,
-                                                    )
-                                                    WeightInputCell(
-                                                        value = value,
-                                                        pinned = fieldKey in pinnedWeightFields,
-                                                        onTogglePinned = {
-                                                            pinnedWeightFields = if (fieldKey in pinnedWeightFields) {
-                                                                pinnedWeightFields - fieldKey
-                                                            } else {
-                                                                pinnedWeightFields + fieldKey
+                                                    },
+                                                    onSet = {
+                                                        when {
+                                                            row.isOptional -> {
+                                                                val old = value
+                                                                val factor = if (old > 0.0) it / old else it
+                                                                onIntent(
+                                                                    SchedulerIntent.SetOptionalTaskPathWeight(
+                                                                        listId,
+                                                                        taskId,
+                                                                        column,
+                                                                        factor,
+                                                                        pinnedCells = pinnedWeightFields
+                                                                            .filter { it.column == column }
+                                                                            .mapNotNull { it.cellId }
+                                                                            .toSet(),
+                                                                    ),
+                                                                )
                                                             }
-                                                        },
-                                                        onSet = {
-                                                            when {
-                                                                row.isOptional -> {
-                                                                    val old = value
-                                                                    val factor = if (old > 0.0) it / old else it
-                                                                    onIntent(
-                                                                        SchedulerIntent.SetOptionalTaskPathWeight(
-                                                                            listId,
-                                                                            taskId,
-                                                                            column,
-                                                                            factor,
-                                                                            pinnedCells = pinnedWeightFields
-                                                                                .filter { it.column == column }
-                                                                                .mapNotNull { it.cellId }
-                                                                                .toSet(),
-                                                                        ),
-                                                                    )
-                                                                }
-                                                                cellId != null -> {
-                                                                    onIntent(SchedulerIntent.SetPriorityWeight(cellId, column, it))
-                                                                }
+                                                            cellId != null -> {
+                                                                onIntent(SchedulerIntent.SetPriorityWeight(cellId, column, it))
                                                             }
-                                                        },
-                                                    )
-                                                }
+                                                        }
+                                                    },
+                                                )
                                             }
-                                            if (draggedColumn != null && columnDropIndex == list.weightColumns.size) ColumnDropLine()
                                         }
-                                    } else {
-                                        null
-                                    },
-                            )
-                            }
-                        }
-                        // PRD §5: the **default row**, under the add row — what a task arriving in this
-                        // table is given. It is in no sum and no slice of the chart beside it, so it is
-                        // drawn after every row that is.
-                        WeightTableDefaultRow(
-                            weights = SchedulerDomain.defaultWeightRow(list),
-                            draggedColumn = draggedColumn,
-                            dropIndex = columnDropIndex,
-                            onSet = { column, value ->
-                                onIntent(SchedulerIntent.SetPriorityDefaultWeight(listId, column, value))
-                            },
+                                        if (draggedColumn != null && columnDropIndex == list.weightColumns.size) ColumnDropLine()
+                                    }
+                                } else {
+                                    null
+                                },
                         )
+                        }
                     }
-                    Spacer(Modifier.width(16.dp))
-                    val chartRows = tableRows.filter { it.taskId != null }
-                    PriorityChart(
-                        titles = chartRows.map { it.title },
-                        // PRD §5: each row's share of THIS sub-list — the number the table on the left sets —
-                        // rather than the task's absolute priority (its share of the whole tree).
-                        fractions = chartRows.map { row ->
-                            row.cellId?.let { RelativePriorityDomain.cellShare(state, it) } ?: 0.0
+                    // PRD §5: the **default row**, under the add row — what a task arriving in this
+                    // table is given. It is in no sum and no slice of the chart beside it, so it is
+                    // drawn after every row that is.
+                    WeightTableDefaultRow(
+                        weights = SchedulerDomain.defaultWeightRow(list),
+                        draggedColumn = draggedColumn,
+                        dropIndex = columnDropIndex,
+                        onSet = { column, value ->
+                            onIntent(SchedulerIntent.SetPriorityDefaultWeight(listId, column, value))
                         },
-                        modifier = Modifier.width(220.dp).verticalScroll(rememberScrollState()),
                     )
                 }
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    // PRD §5 Cancel: back to the table this window opened on, as one undoable content delta.
-                    TextButton(
-                        onClick = {
-                            onIntent(
-                                SchedulerIntent.RestorePriorityWeights(
-                                    listId = listId,
-                                    weightColumns = openedTable.weightColumns,
-                                    cellWeights = openedTable.cellWeights,
-                                    defaultWeights = openedTable.defaultWeights,
-                                )
+                Spacer(Modifier.width(16.dp))
+                val chartRows = tableRows.filter { it.taskId != null }
+                PriorityChart(
+                    titles = chartRows.map { it.title },
+                    // PRD §5: each row's share of THIS sub-list — the number the table on the left sets —
+                    // rather than the task's absolute priority (its share of the whole tree).
+                    fractions = chartRows.map { row ->
+                        row.cellId?.let { RelativePriorityDomain.cellShare(state, it) } ?: 0.0
+                    },
+                    modifier = Modifier.width(220.dp).verticalScroll(rememberScrollState()),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                // PRD §5 Cancel: back to the table this window opened on, as one undoable content delta.
+                TextButton(
+                    onClick = {
+                        onIntent(
+                            SchedulerIntent.RestorePriorityWeights(
+                                listId = listId,
+                                weightColumns = openedTable.weightColumns,
+                                cellWeights = openedTable.cellWeights,
+                                defaultWeights = openedTable.defaultWeights,
                             )
-                        },
-                        enabled = tableEdited,
-                    ) {
-                        Text("Cancel")
-                    }
+                        )
+                    },
+                    enabled = tableEdited,
+                ) {
+                    Text("Cancel")
                 }
             }
         }
@@ -2069,7 +2045,7 @@ internal fun RelativePriorityWindow(
     onDismiss: () -> Unit,
     /**
      * PRD §5: clicking a chain cell's percentage opens that sub-list's priority-weight window — the same
-     * answer the tree gives. Hoisted like the tree's own, because both windows are sort-2 pop-ups on the
+     * answer the tree gives. Hoisted like the tree's own, because both windows share the
      * app's top layer and opening one closes the other.
      */
     onOpenWeightWindow: (CellListId) -> Unit = {},
@@ -2091,7 +2067,7 @@ internal fun RelativePriorityWindow(
     val taskColors = remember(taskHues) { TaskPalette.sheetColors(taskHues) }
     val value = RelativePriorityDomain.relativePriority(state, taskId, relativeTo)
     val pinned = state.relativePriorityPins[RelativePriorityPinKey(taskId, relativeTo)].orEmpty()
-    var offset by remember(cellId) { mutableStateOf(Offset.Zero) }
+    val frame = rememberWindowFrameState("RelativePriority")
 
     // PRD §5 the **task relations** window: opening this window on a (task, `t_r`) pair is what puts that
     // pair on the account's relations list, and whether it ends up in that window's "edited" or "opened"
@@ -2109,129 +2085,102 @@ internal fun RelativePriorityWindow(
         onIntent(SchedulerIntent.RecordTaskRelation(taskId, relativeTo, changed = shownPercent != baseline))
     }
 
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 12.dp,
-        border = BorderStroke(1.dp, SheetColors.grid),
-        // Same contract as the weight window — a sort-2 pop-up.
-        modifier = modifier
-            .offset { IntOffset(offset.x.roundToInt(), offset.y.roundToInt()) }
-            .transientPopupCard(onDismiss)
-            .widthIn(max = 760.dp)
-            .heightIn(max = 600.dp),
+    AppWindowFrame(
+        title = "Relative priority of " + quoted(state.tasks[taskId]?.title.orEmpty()),
+        state = frame,
+        onClose = onDismiss,
+        defaultWidth = 520.dp,
+        defaultHeight = 420.dp,
+        claimsKeyboard = true,
+        modifier = modifier,
     ) {
-        Column {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .windowDragHandle(onDragEnd = {}) { dragAmount -> offset += dragAmount }
-                    .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Relative priority of " + quoted(state.tasks[taskId]?.title.orEmpty()),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.weight(1f),
+        Column(Modifier.padding(16.dp)) {
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                PercentInputField(
+                    fraction = value,
+                    onSet = { onIntent(SchedulerIntent.SetRelativePriority(taskId, relativeTo, it)) },
                 )
-                Box(
-                    modifier = Modifier.size(28.dp).clip(CircleShape).clickable(onClick = onDismiss),
-                    contentAlignment = Alignment.Center,
+                Spacer(Modifier.width(16.dp))
+                Text(
+                    text = "Relative to:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(6.dp))
+                Box {
+                    TextButton(onClick = { relativeToMenuOpen = true }) {
+                        Text(relativeToLabel(state, relativeTo))
+                    }
+                    DropdownMenu(
+                        expanded = relativeToMenuOpen,
+                        onDismissRequest = { relativeToMenuOpen = false },
+                    ) {
+                        // Root first, then this cell's ancestors from the root-most down to its parent.
+                        options.forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(relativeToLabel(state, option)) },
+                                onClick = {
+                                    relativeToMenuOpen = false
+                                    relativeTo = option
+                                },
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                TextButton(
+                    onClick = { onIntent(SchedulerIntent.ClearRelativePriorityPins(taskId, relativeTo)) },
+                    enabled = pinned.isNotEmpty(),
                 ) {
-                    Text("✕", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Clear pins")
                 }
             }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-            Column(Modifier.padding(16.dp)) {
-                Spacer(Modifier.height(10.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    PercentInputField(
-                        fraction = value,
-                        onSet = { onIntent(SchedulerIntent.SetRelativePriority(taskId, relativeTo, it)) },
-                    )
-                    Spacer(Modifier.width(16.dp))
-                    Text(
-                        text = "Relative to:",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Box {
-                        TextButton(onClick = { relativeToMenuOpen = true }) {
-                            Text(relativeToLabel(state, relativeTo))
-                        }
-                        DropdownMenu(
-                            expanded = relativeToMenuOpen,
-                            onDismissRequest = { relativeToMenuOpen = false },
+            Spacer(Modifier.height(6.dp))
+            HorizontalDivider(color = SheetColors.grid)
+            Spacer(Modifier.height(8.dp))
+            if (chains.isEmpty()) {
+                Text(
+                    text = "No occurrence of this task under " + relativeToLabel(state, relativeTo) + ".",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Column(
+                    Modifier
+                        .verticalScroll(rememberScrollState())
+                        .horizontalScroll(rememberScrollState()),
+                ) {
+                    chains.forEach { chain ->
+                        Row(
+                            modifier = Modifier.padding(vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            // Root first, then this cell's ancestors from the root-most down to its parent.
-                            options.forEach { option ->
-                                DropdownMenuItem(
-                                    text = { Text(relativeToLabel(state, option)) },
-                                    onClick = {
-                                        relativeToMenuOpen = false
-                                        relativeTo = option
-                                    },
-                                )
-                            }
-                        }
-                    }
-                    Spacer(Modifier.weight(1f))
-                    TextButton(
-                        onClick = { onIntent(SchedulerIntent.ClearRelativePriorityPins(taskId, relativeTo)) },
-                        enabled = pinned.isNotEmpty(),
-                    ) {
-                        Text("Clear pins")
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                HorizontalDivider(color = SheetColors.grid)
-                Spacer(Modifier.height(8.dp))
-                if (chains.isEmpty()) {
-                    Text(
-                        text = "No occurrence of this task under " + relativeToLabel(state, relativeTo) + ".",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    Column(
-                        Modifier
-                            .verticalScroll(rememberScrollState())
-                            .horizontalScroll(rememberScrollState()),
-                    ) {
-                        chains.forEach { chain ->
-                            Row(
-                                modifier = Modifier.padding(vertical = 3.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                chain.forEachIndexed { index, chainCellId ->
-                                    if (index > 0) {
-                                        Text(
-                                            text = " > ",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                    RelativePriorityChainCell(
-                                        state = state,
-                                        cellId = chainCellId,
-                                        taskColors = taskColors,
-                                        pinned = chainCellId in pinned,
-                                        onTogglePin = {
-                                            onIntent(
-                                                SchedulerIntent.ToggleRelativePriorityPin(
-                                                    taskId,
-                                                    relativeTo,
-                                                    chainCellId,
-                                                )
-                                            )
-                                        },
-                                        onOpenWeightWindow = onOpenWeightWindow,
-                                        onOpenRelativePriority = onOpenRelativePriority,
+                            chain.forEachIndexed { index, chainCellId ->
+                                if (index > 0) {
+                                    Text(
+                                        text = " > ",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
+                                RelativePriorityChainCell(
+                                    state = state,
+                                    cellId = chainCellId,
+                                    taskColors = taskColors,
+                                    pinned = chainCellId in pinned,
+                                    onTogglePin = {
+                                        onIntent(
+                                            SchedulerIntent.ToggleRelativePriorityPin(
+                                                taskId,
+                                                relativeTo,
+                                                chainCellId,
+                                            )
+                                        )
+                                    },
+                                    onOpenWeightWindow = onOpenWeightWindow,
+                                    onOpenRelativePriority = onOpenRelativePriority,
+                                )
                             }
                         }
                     }
@@ -3319,7 +3268,7 @@ internal fun TaskEditWindow(
     /**
      * The ✎ on a period's row: open **that period's** edit window, which is where it is deleted and where
      * every task's resilience to it is handed out at once. This row shows one TASK's value for every kind;
-     * that window shows one KIND's value for every task. It is a sort-2 pop-up like this one, so opening it
+     * that window shows one KIND's value for every task. It is a window about one kind, so opening it
      * dismisses this window — the price of the sort (see `ui/PopupWindows.kt`).
      */
     onEditPeriodKind: (String) -> Unit,
@@ -3336,22 +3285,22 @@ internal fun TaskEditWindow(
     val sum = SchedulerDomain.scheduleUnitSumMinutes(entries)
     // A parent task's schedule unit is not editable here, so it can never block its own Save.
     val canSave = !isLeaf || SchedulerDomain.canSaveScheduleUnit(entries, minimumMinutes)
+    val frame = rememberWindowFrameState("TaskEdit")
 
-        // A sort-2 pop-up: it draws on the top layer, blocks nothing behind it, and the host
-        // dismisses it as soon as a press lands anywhere else (see TransientPopupHost).
-    TransientPopupLayer {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 12.dp,
-            border = BorderStroke(1.dp, SheetColors.grid),
-            modifier = Modifier.transientPopupCard(onDismiss).width(360.dp),
+    TransientPopupLayer(frame.id) {
+        AppWindowFrame(
+            title = task.title.ifBlank { "Task" },
+            state = frame,
+            onClose = onDismiss,
+            defaultWidth = 360.dp,
+            defaultHeight = 620.dp,
+            claimsKeyboard = true,
+            modifier = Modifier.align(Alignment.Center),
         ) {
             Column(
-                Modifier.padding(16.dp).verticalScroll(rememberScrollState()),
+                Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(task.title.ifBlank { "Task" }, style = MaterialTheme.typography.titleSmall)
 
                 // Section 1 (leaf only): `side-dev/README.md` § *Restrictive Period* — this task's
                 // RESILIENCE to each kind of restrictive period, and the place new kinds are defined.
@@ -3559,7 +3508,7 @@ internal fun TaskEditWindow(
  *   typing one percentage is one gesture. "Select all" is the shortcut to the whole list, and reads "select
  *   none" once everything is checked, since that is the only thing left it can usefully do.
  *
- * A **sort-2** pop-up (`ui/PopupWindows.kt`): it is about ONE object — this period — so "the window of period
+ * A window about ONE object (`docs/invariants/popups.md`) — this period — so "the window of period
  * A" and "the window of period B" are two different windows and only the one just asked for is ever meant.
  * Opening it therefore dismisses the task edit window it was opened from, discarding whatever was half-typed
  * there; that is the sort's price, not an oversight. Unlike the task window it has no Save: every field
@@ -3583,31 +3532,27 @@ internal fun PeriodKindEditWindow(
     val checked = selected.intersect(present)
     val common = SchedulerDomain.commonResilience(rows, checked)
     val allChecked = rows.isNotEmpty() && checked.size == rows.size
+    val frame = rememberWindowFrameState("PeriodKindEdit")
 
-        // A sort-2 pop-up: it draws on the top layer, blocks nothing behind it, and the host
-        // dismisses it as soon as a press lands anywhere else (see TransientPopupHost).
-    TransientPopupLayer {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 12.dp,
-            border = BorderStroke(1.dp, SheetColors.grid),
-            modifier = Modifier.transientPopupCard(onDismiss).width(400.dp),
+    TransientPopupLayer(frame.id) {
+        AppWindowFrame(
+            title = kind,
+            state = frame,
+            onClose = onDismiss,
+            defaultWidth = 400.dp,
+            defaultHeight = 560.dp,
+            claimsKeyboard = true,
+            modifier = Modifier.align(Alignment.Center),
+            // The one place a period is deleted. A built-in kind has no button at all rather than a
+            // disabled one: it is not a thing the account could ever do.
+            headTrailing = {
+                if (canDelete) TextButton(onClick = onDelete) { Text("Delete period") }
+            },
         ) {
             Column(
-                Modifier.padding(16.dp).heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
+                Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(kind, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                    // The one place a period is deleted. A built-in kind has no button at all rather than a
-                    // disabled one: it is not a thing the account could ever do.
-                    if (canDelete) TextButton(onClick = onDelete) { Text("Delete period") }
-                }
                 Text(
                     "Each task’s resilience to a period of this kind: 0 % forbids it there, " +
                         "100 % leaves it untouched.",
@@ -3758,18 +3703,19 @@ internal fun DeepCopyWindow(
     fun setDepth(value: Int) {
         depthText = value.coerceIn(SchedulerDomain.DEEP_COPY_DEPTH_RANGE).toString()
     }
+    val frame = rememberWindowFrameState("DeepCopy")
 
-        // A sort-2 pop-up: it draws on the top layer, blocks nothing behind it, and the host
-        // dismisses it as soon as a press lands anywhere else (see TransientPopupHost).
-    TransientPopupLayer {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 12.dp,
-            border = BorderStroke(1.dp, SheetColors.grid),
+    TransientPopupLayer(frame.id) {
+        AppWindowFrame(
+            // Say how many cells are going, since the menu was opened on one of them.
+            title = if (cellIds.size > 1) "Deep copy — ${cellIds.size} cells" else "Deep copy",
+            state = frame,
+            onClose = onDismiss,
+            defaultWidth = 420.dp,
+            defaultHeight = 380.dp,
+            claimsKeyboard = true,
             modifier = Modifier
-                .transientPopupCard(onDismiss)
-                .width(420.dp)
+                .align(Alignment.Center)
                 // The depth field holds the focus, so this ancestor sees its keys first: Enter is the
                 // window's own accept, not a character the field should ever receive.
                 .onPreviewKeyEvent { event ->
@@ -3782,15 +3728,9 @@ internal fun DeepCopyWindow(
                 },
         ) {
             Column(
-                Modifier.padding(16.dp),
+                Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(
-                    // Say how many cells are going, since the menu was opened on one of them.
-                    text = if (cellIds.size > 1) "Deep copy — ${cellIds.size} cells" else "Deep copy",
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                HorizontalDivider()
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),

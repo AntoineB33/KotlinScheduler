@@ -1,6 +1,5 @@
 package org.example.project.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -31,11 +30,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
@@ -64,10 +61,10 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableDoubleStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -83,6 +80,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.graphicsLayer
@@ -129,7 +127,6 @@ import kotlin.math.floor
 import kotlin.math.roundToInt
 import kotlin.time.Instant
 import kotlinx.datetime.DateTimeUnit
-import kotlinx.datetime.DayOfWeek
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.LocalTime
@@ -1284,8 +1281,10 @@ fun ChoresManagerWindow(
     modifier: Modifier = Modifier,
     /** Initial position relative to centered; staggered per window so they open in a clickable cascade. */
     initialOffset: Offset = Offset.Zero,
-    /** Persists the window's new drag position when a drag gesture ends (local-only geometry). */
-    onOffsetChange: (Offset) -> Unit = {},
+    /** Initial size in px; `Size.Zero` opens the window at its default size. */
+    initialSize: Size = Size.Zero,
+    /** Persists the window's new position/size when a move or resize gesture ends (local-only geometry). */
+    onGeometryChange: (Offset, Size) -> Unit = { _, _ -> },
     /** Raise this window to the top of the layers — fired on a press anywhere inside it. */
     onRaise: () -> Unit = {},
     /**
@@ -1318,7 +1317,7 @@ fun ChoresManagerWindow(
     /** PRD §14 "constrained in": the title of a known reminder id (shown beside the "constrained in" button). */
     titleForReminderId: (String) -> String? = { null },
 ) {
-    var offset by remember { mutableStateOf(initialOffset) }
+    val frame = rememberWindowFrameState("Reminders", initialOffset, initialSize)
     val focusManager = LocalFocusManager.current
     // PRD §14 "constrained in": the index of the row whose constraint picker is open, or null when closed.
     var constrainingRowIndex by remember { mutableStateOf<Int?>(null) }
@@ -1404,215 +1403,178 @@ fun ChoresManagerWindow(
         )
     }
 
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 10.dp,
-        border = BorderStroke(1.dp, CalColors.grid),
-        modifier = modifier
-            .offset { IntOffset(offset.x.roundToInt(), offset.y.roundToInt()) }
-            // requiredSize (not size) so the window keeps its fixed size and does not adapt to the app's
-            // width when the content area is narrower than it.
-            .requiredSize(width = 560.dp, height = 480.dp)
-            // Raise on press AFTER the offset so the hit region tracks the (possibly dragged) window.
-            .raiseOnPress(onRaise),
+    AppWindowFrame(
+        title = "Reminders",
+        state = frame,
+        onClose = onDismiss,
+        defaultWidth = 560.dp,
+        defaultHeight = 480.dp,
+        // PRD §14: clicking anywhere in the window that is not the focused title field or its edit-mode
+        // menus leaves Edit mode — a tap on empty/non-interactive space clears focus, which the title
+        // field's onFocusChanged turns into focusedIndex = null (hiding the menus). Interactive children
+        // (the title field, menu rows, other inputs/buttons) consume their own taps, so this only fires
+        // for clicks that land on bare window chrome.
+        modifier = modifier.pointerInput(Unit) { detectTapGestures { focusManager.clearFocus() } },
+        onRaise = onRaise,
+        onGeometryChange = onGeometryChange,
     ) {
         Column(
-            // PRD §14: clicking anywhere in the window that is not the focused title field or its edit-mode
-            // menus leaves Edit mode — a tap on empty/non-interactive space clears focus, which the title
-            // field's onFocusChanged turns into focusedIndex = null (hiding the menus). Interactive children
-            // (the title field, menu rows, other inputs/buttons) consume their own taps, so this only fires
-            // for clicks that land on bare window chrome.
-            Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) { detectTapGestures { focusManager.clearFocus() } },
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // Title bar doubles as the drag handle for moving the window.
-            Row(
+            rows.forEachIndexed { index, row ->
+              // The row is a focus group so that opening the Mode dropdown (a focusable anchor) keeps the
+              // editor open rather than collapsing it. Entering Edit mode still requires focusing the
+              // *title* field (set below); the group only governs *staying* in edit mode — the menus
+              // vanish once focus leaves the whole row.
+              Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(CalColors.menuBackground)
-                    .windowDragHandle(onDragEnd = { onOffsetChange(offset) }) { dragAmount ->
-                        offset += dragAmount
-                    }
-                    .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Reminders",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f),
-                )
-                Box(
-                    modifier = Modifier
-                        .size(28.dp)
-                        .clip(CircleShape)
-                        .clickable(onClick = onDismiss),
-                    contentAlignment = Alignment.Center,
+                    .onFocusChanged { if (!it.hasFocus && focusedIndex == index) focusedIndex = null }
+                    .focusGroup(),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+              ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Text("✕", style = MaterialTheme.typography.titleSmall, color = CalColors.muted)
+                    OutlinedTextField(
+                        value = row.title,
+                        // Editing the title reverts an explicit "New Reminder" pick so the id resolves from
+                        // the title again (mirrors the "add a checked reminder" window, PRD §14).
+                        onValueChange = { rows[index] = row.copy(title = it, explicitNew = false); push() },
+                        singleLine = true,
+                        label = { Text("Reminder") },
+                        modifier = Modifier
+                            .weight(1f)
+                            .onFocusChanged { if (it.isFocused) focusedIndex = index },
+                    )
+                    OutlinedTextField(
+                        value = row.daysText,
+                        onValueChange = { rows[index] = row.copy(daysText = sanitizeFormula(it)); push() },
+                        singleLine = true,
+                        label = { Text("Every") },
+                        modifier = Modifier.width(72.dp),
+                    )
+                    // PRD §14: when the recurrence field holds a formula, show its evaluated value (rounded
+                    // to two decimals, comma separator) just to its right — e.g. "30/21" → "=1,43".
+                    val daysResult =
+                        if (isDayFormula(row.daysText)) SchedulerDomain.evaluateDayFormula(row.daysText) else null
+                    if (daysResult != null && daysResult.isFinite()) {
+                        Text(
+                            text = "=${formatFormulaResult(daysResult)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CalColors.muted,
+                        )
+                    }
+                    // PRD §14: unit selector — every n days (default) / months / years, or n times per
+                    // month / per year (rate units divide the period instead of multiplying).
+                    RecurrenceUnitDropdown(
+                        unit = row.unit,
+                        onSelect = { rows[index] = row.copy(unit = it); push() },
+                    )
+                    OutlinedTextField(
+                        value = row.timeText,
+                        onValueChange = { rows[index] = row.copy(timeText = sanitizeTimeOfDay(it)); push() },
+                        singleLine = true,
+                        label = { Text("Time") },
+                        modifier = Modifier.width(80.dp),
+                    )
+                    // Bin: remove this row.
+                    TextButton(onClick = { rows.removeAt(index); push() }) { Text("🗑") }
+                    // Plus: insert a new row above this one.
+                    TextButton(onClick = { rows.add(index, newRow()); push() }) { Text("+") }
                 }
-            }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(CalColors.grid))
 
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                rows.forEachIndexed { index, row ->
-                  // The row is a focus group so that opening the Mode dropdown (a focusable anchor) keeps the
-                  // editor open rather than collapsing it. Entering Edit mode still requires focusing the
-                  // *title* field (set below); the group only governs *staying* in edit mode — the menus
-                  // vanish once focus leaves the whole row.
-                  Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onFocusChanged { if (!it.hasFocus && focusedIndex == index) focusedIndex = null }
-                        .focusGroup(),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                  ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        OutlinedTextField(
-                            value = row.title,
-                            // Editing the title reverts an explicit "New Reminder" pick so the id resolves from
-                            // the title again (mirrors the "add a checked reminder" window, PRD §14).
-                            onValueChange = { rows[index] = row.copy(title = it, explicitNew = false); push() },
-                            singleLine = true,
-                            label = { Text("Reminder") },
-                            modifier = Modifier
-                                .weight(1f)
-                                .onFocusChanged { if (it.isFocused) focusedIndex = index },
-                        )
-                        OutlinedTextField(
-                            value = row.daysText,
-                            onValueChange = { rows[index] = row.copy(daysText = sanitizeFormula(it)); push() },
-                            singleLine = true,
-                            label = { Text("Every") },
-                            modifier = Modifier.width(72.dp),
-                        )
-                        // PRD §14: when the recurrence field holds a formula, show its evaluated value (rounded
-                        // to two decimals, comma separator) just to its right — e.g. "30/21" → "=1,43".
-                        val daysResult =
-                            if (isDayFormula(row.daysText)) SchedulerDomain.evaluateDayFormula(row.daysText) else null
-                        if (daysResult != null && daysResult.isFinite()) {
-                            Text(
-                                text = "=${formatFormulaResult(daysResult)}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = CalColors.muted,
-                            )
-                        }
-                        // PRD §14: unit selector — every n days (default) / months / years, or n times per
-                        // month / per year (rate units divide the period instead of multiplying).
-                        RecurrenceUnitDropdown(
-                            unit = row.unit,
-                            onSelect = { rows[index] = row.copy(unit = it); push() },
-                        )
-                        OutlinedTextField(
-                            value = row.timeText,
-                            onValueChange = { rows[index] = row.copy(timeText = sanitizeTimeOfDay(it)); push() },
-                            singleLine = true,
-                            label = { Text("Time") },
-                            modifier = Modifier.width(80.dp),
-                        )
-                        // Bin: remove this row.
-                        TextButton(onClick = { rows.removeAt(index); push() }) { Text("🗑") }
-                        // Plus: insert a new row above this one.
-                        TextButton(onClick = { rows.add(index, newRow()); push() }) { Text("+") }
-                    }
-
-                    // PRD §14 "constrained in": a button opening the constraint picker, with the chosen
-                    // constraining reminder's name shown to its right. A constrained reminder is only placed
-                    // on the days the chosen reminder also occurs (averaging its own cadence).
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        TextButton(onClick = { constrainingRowIndex = index }) { Text("constrained in") }
-                        val constrainedName =
-                            row.constrainedToReminderId.takeIf { it.isNotBlank() }?.let(titleForReminderId)
-                        if (constrainedName != null) {
-                            Text(constrainedName, style = MaterialTheme.typography.bodyMedium)
-                            // A small clear affordance to detach the constraint.
-                            TextButton(
-                                onClick = {
-                                    rows[index] = row.copy(constrainedToReminderId = ""); push()
-                                },
-                            ) { Text("✕", color = CalColors.muted) }
-                        } else {
-                            Text("(none)", style = MaterialTheme.typography.bodyMedium, color = CalColors.muted)
-                        }
-                    }
-
-                    // PRD §14: the row's Edit mode — the shared mode selector + menus show beneath the fields
-                    // (and vanish when focus leaves the row). The id menu lists reminders matching the draft
-                    // that are NOT already a row in this window — i.e. reminders that exist only as "add a
-                    // checked reminder" panels on the calendar. Picking one adopts its id (adding that reminder
-                    // to the manager); "New Reminder" keeps this row's own freshly-minted id. The default
-                    // highlight is the first such reminder, or "New Reminder" when there are none.
-                    if (focusedIndex == index) {
-                        // PRD §14: exclude reminders already represented by a row — every OTHER row's resolved
-                        // id, plus the focused row's **own** id. Excluding the focused row's own id hides its
-                        // provisional "New Reminder" self-identity (only persisted while "New Reminder" is
-                        // selected; it must not reappear as a selectable entry). EXCEPTION: when the row's own
-                        // id is independently referenced by a checked or pinned tag, it is a real reminder —
-                        // show it so the user can re-pick it or detach (picking "New Reminder") while that tag
-                        // keeps it alive. The reminder a row merely adopts by default always has a different id
-                        // (minted ids dodge known reminder ids), so it is never the excluded one.
-                        val referencedIds = referencedReminderIds()
-                        val ownReferenced = row.id in referencedIds
-                        val resolved = resolvedRowIds()
-                        val excludedIds = buildSet {
-                            rows.forEachIndexed { i, r ->
-                                if (i == index) { if (!ownReferenced) add(r.id) } else add(resolved[i])
-                            }
-                        }
-                        val entries = reminderMenuEntries(row.title).filter { it.id !in excludedIds }
-                        // A referenced own id makes the row a real reminder, so its "New Reminder" pick no
-                        // longer forces the New highlight: the menu defaults to the first matching reminder.
-                        val provisionalNew = row.explicitNew && !ownReferenced
-                        // The default highlight mirrors the resolved id in push(): "New Reminder" (null) when
-                        // the user explicitly chose it or nothing matches, else the first matching reminder.
-                        val selectedEntryId = if (provisionalNew) null else entries.firstOrNull()?.id
-                        ReminderEditModeMenus(
-                            mode = editMode,
-                            onSelectMode = { editMode = it },
-                            // The Mode selector must appear whenever the id menu resolves to a real reminder —
-                            // i.e. anything other than "New Reminder". That covers a row that already is/became a
-                            // real reminder (adopted via onPickEntry or kept alive by a checked/pinned tag) AND a
-                            // row whose id menu merely defaults to a matching existing reminder (e.g. after
-                            // picking a title suggestion). Only hide it when "New Reminder" is selected (PRD §14).
-                            showModeSelector =
-                                row.id in existingReminderIds || ownReferenced || selectedEntryId != null,
-                            idMenuEntries = entries,
-                            selectedEntryId = selectedEntryId,
-                            // Explicitly choosing "New Reminder" keeps this row's own freshly-minted id even
-                            // though its title matches a calendar-only reminder (PRD §14).
-                            onPickNewReminder = { rows[index] = row.copy(explicitNew = true); push() },
-                            onPickEntry = { entry ->
-                                // Adopting an existing reminder makes this row an existing reminder too —
-                                // record its id so the Mode selector (Change/Rename) now appears for it.
-                                existingReminderIds.add(entry.id)
-                                rows[index] = row.copy(id = entry.id, title = entry.title, explicitNew = false)
-                                push()
+                // PRD §14 "constrained in": a button opening the constraint picker, with the chosen
+                // constraining reminder's name shown to its right. A constrained reminder is only placed
+                // on the days the chosen reminder also occurs (averaging its own cadence).
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    TextButton(onClick = { constrainingRowIndex = index }) { Text("constrained in") }
+                    val constrainedName =
+                        row.constrainedToReminderId.takeIf { it.isNotBlank() }?.let(titleForReminderId)
+                    if (constrainedName != null) {
+                        Text(constrainedName, style = MaterialTheme.typography.bodyMedium)
+                        // A small clear affordance to detach the constraint.
+                        TextButton(
+                            onClick = {
+                                rows[index] = row.copy(constrainedToReminderId = ""); push()
                             },
-                            titleSuggestions = titleSuggestions(row.title),
-                            onPickSuggestion = { suggestion -> rows[index] = row.copy(title = suggestion); push() },
-                            // The row editor lives only while the row has focus, so a pick must not blur it.
-                            focusPreserving = true,
-                        )
+                        ) { Text("✕", color = CalColors.muted) }
+                    } else {
+                        Text("(none)", style = MaterialTheme.typography.bodyMedium, color = CalColors.muted)
                     }
-                  }
                 }
-                // Trailing single plus: append a new row at the end of the list.
-                TextButton(onClick = { rows.add(newRow()); push() }) { Text("+ add reminder") }
+
+                // PRD §14: the row's Edit mode — the shared mode selector + menus show beneath the fields
+                // (and vanish when focus leaves the row). The id menu lists reminders matching the draft
+                // that are NOT already a row in this window — i.e. reminders that exist only as "add a
+                // checked reminder" panels on the calendar. Picking one adopts its id (adding that reminder
+                // to the manager); "New Reminder" keeps this row's own freshly-minted id. The default
+                // highlight is the first such reminder, or "New Reminder" when there are none.
+                if (focusedIndex == index) {
+                    // PRD §14: exclude reminders already represented by a row — every OTHER row's resolved
+                    // id, plus the focused row's **own** id. Excluding the focused row's own id hides its
+                    // provisional "New Reminder" self-identity (only persisted while "New Reminder" is
+                    // selected; it must not reappear as a selectable entry). EXCEPTION: when the row's own
+                    // id is independently referenced by a checked or pinned tag, it is a real reminder —
+                    // show it so the user can re-pick it or detach (picking "New Reminder") while that tag
+                    // keeps it alive. The reminder a row merely adopts by default always has a different id
+                    // (minted ids dodge known reminder ids), so it is never the excluded one.
+                    val referencedIds = referencedReminderIds()
+                    val ownReferenced = row.id in referencedIds
+                    val resolved = resolvedRowIds()
+                    val excludedIds = buildSet {
+                        rows.forEachIndexed { i, r ->
+                            if (i == index) { if (!ownReferenced) add(r.id) } else add(resolved[i])
+                        }
+                    }
+                    val entries = reminderMenuEntries(row.title).filter { it.id !in excludedIds }
+                    // A referenced own id makes the row a real reminder, so its "New Reminder" pick no
+                    // longer forces the New highlight: the menu defaults to the first matching reminder.
+                    val provisionalNew = row.explicitNew && !ownReferenced
+                    // The default highlight mirrors the resolved id in push(): "New Reminder" (null) when
+                    // the user explicitly chose it or nothing matches, else the first matching reminder.
+                    val selectedEntryId = if (provisionalNew) null else entries.firstOrNull()?.id
+                    ReminderEditModeMenus(
+                        mode = editMode,
+                        onSelectMode = { editMode = it },
+                        // The Mode selector must appear whenever the id menu resolves to a real reminder —
+                        // i.e. anything other than "New Reminder". That covers a row that already is/became a
+                        // real reminder (adopted via onPickEntry or kept alive by a checked/pinned tag) AND a
+                        // row whose id menu merely defaults to a matching existing reminder (e.g. after
+                        // picking a title suggestion). Only hide it when "New Reminder" is selected (PRD §14).
+                        showModeSelector =
+                            row.id in existingReminderIds || ownReferenced || selectedEntryId != null,
+                        idMenuEntries = entries,
+                        selectedEntryId = selectedEntryId,
+                        // Explicitly choosing "New Reminder" keeps this row's own freshly-minted id even
+                        // though its title matches a calendar-only reminder (PRD §14).
+                        onPickNewReminder = { rows[index] = row.copy(explicitNew = true); push() },
+                        onPickEntry = { entry ->
+                            // Adopting an existing reminder makes this row an existing reminder too —
+                            // record its id so the Mode selector (Change/Rename) now appears for it.
+                            existingReminderIds.add(entry.id)
+                            rows[index] = row.copy(id = entry.id, title = entry.title, explicitNew = false)
+                            push()
+                        },
+                        titleSuggestions = titleSuggestions(row.title),
+                        onPickSuggestion = { suggestion -> rows[index] = row.copy(title = suggestion); push() },
+                        // The row editor lives only while the row has focus, so a pick must not blur it.
+                        focusPreserving = true,
+                    )
+                }
+              }
             }
+            // Trailing single plus: append a new row at the end of the list.
+            TextButton(onClick = { rows.add(newRow()); push() }) { Text("+ add reminder") }
         }
     }
 
@@ -1831,12 +1793,14 @@ fun HistoryManagerWindow(
     schedulerRuns: List<SchedulerRunEntry> = emptyList(),
     /** Initial position relative to centered; staggered per window so they open in a clickable cascade. */
     initialOffset: Offset = Offset.Zero,
-    /** Persists the window's new drag position when a drag gesture ends (local-only geometry). */
-    onOffsetChange: (Offset) -> Unit = {},
+    /** Initial size in px; `Size.Zero` opens the window at its default size. */
+    initialSize: Size = Size.Zero,
+    /** Persists the window's new position/size when a move or resize gesture ends (local-only geometry). */
+    onGeometryChange: (Offset, Size) -> Unit = { _, _ -> },
     /** Raise this window to the top of the layers — fired on a press anywhere inside it. */
     onRaise: () -> Unit = {},
 ) {
-    var offset by remember { mutableStateOf(initialOffset) }
+    val frame = rememberWindowFrameState("History", initialOffset, initialSize)
     // PRD §6: the row whose information window is open — ANY row, not only a History Unit: a scheduler run
     // holds the set of rules the user came here to copy, and a notification / Supabase call holds fields the
     // row itself elides. Opened by a DOUBLE click.
@@ -1844,185 +1808,159 @@ fun HistoryManagerWindow(
     var filter by remember { mutableStateOf(HistoryFilterConfig()) }
     val rows = filteredHistoryUnits(histories, filter, notificationLog, supabaseUsageLog, schedulerRuns)
 
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 10.dp,
-        border = BorderStroke(1.dp, CalColors.grid),
-        modifier = modifier
-            .offset { IntOffset(offset.x.roundToInt(), offset.y.roundToInt()) }
-            .requiredSize(width = 980.dp, height = 520.dp)
-            .raiseOnPress(onRaise),
-    ) {
-        Box(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize()) {
+    // The pair — this window and the row-info window beside it — is what stands among the app's other
+    // windows, so the stacking order goes on the Box, not only on the frame inside it ([windowStackZ]).
+    Box(modifier.windowStackZ(frame.id)) {
+        AppWindowFrame(
+            title = "History",
+            state = frame,
+            onClose = onDismiss,
+            defaultWidth = 980.dp,
+            defaultHeight = 520.dp,
+            onRaise = onRaise,
+            onGeometryChange = onGeometryChange,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(CalColors.menuBackground)
-                        .windowDragHandle(onDragEnd = { onOffsetChange(offset) }) { dragAmount ->
-                            offset += dragAmount
-                        }
-                        .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = "History",
-                        style = MaterialTheme.typography.titleSmall,
+                    OutlinedTextField(
+                        value = filter.query,
+                        onValueChange = { filter = filter.copy(query = it) },
+                        label = { Text("Filter") },
+                        placeholder = { Text("a label, a detail line, a rule, a notification") },
+                        singleLine = true,
                         modifier = Modifier.weight(1f),
                     )
-                    Box(
-                        modifier = Modifier
-                            .size(28.dp)
-                            .clip(CircleShape)
-                            .clickable(onClick = onDismiss),
-                        contentAlignment = Alignment.Center,
+                    Button(
+                        // Back to the default view: all windows, any chord, no query.
+                        onClick = { filter = HistoryFilterConfig() },
                     ) {
-                        Text("✕", style = MaterialTheme.typography.titleSmall, color = CalColors.muted)
+                        Text("Reset")
                     }
                 }
-                Box(Modifier.fillMaxWidth().height(1.dp).background(CalColors.grid))
 
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                // PRD §6 configuration menu: the two ORIGIN fields with the check box that says which
+                // of them is filtering, and the undo-chord field, which narrows the History-Unit half
+                // and so is enabled and greyed with the window field rather than on its own. An
+                // inactive field is greyed and inert rather than hidden, so what the other half of the
+                // filter would ask stays readable.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    HistoryDropdownField(
+                        label = "Window",
+                        // The whole point of the default: "All windows" is no restriction at all.
+                        selected = filter.window?.label ?: ALL_WINDOWS_LABEL,
+                        options =
+                            listOf(ALL_WINDOWS_LABEL to null) +
+                                HistoryWindow.entries.map { it.label to it },
+                        enabled = !filter.filterBySource,
+                        onSelect = { filter = filter.copy(window = it) },
+                    )
+                    HistoryDropdownField(
+                        label = "Undo chord",
+                        selected = chordFilterLabel(filter.chords),
+                        options = CHORD_FILTER_OPTIONS,
+                        enabled = !filter.filterBySource,
+                        onSelect = { filter = filter.copy(chords = it) },
+                    )
+                    HistoryDropdownField(
+                        label = "Other source",
+                        selected = filter.source?.label ?: ALL_SOURCES_LABEL,
+                        options =
+                            listOf(ALL_SOURCES_LABEL to null) +
+                                HistorySource.entries.map { it.label to it },
+                        enabled = filter.filterBySource,
+                        onSelect = { filter = filter.copy(source = it) },
+                    )
+                    Spacer(Modifier.weight(1f))
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        OutlinedTextField(
-                            value = filter.query,
-                            onValueChange = { filter = filter.copy(query = it) },
-                            label = { Text("Filter") },
-                            placeholder = { Text("a label, a detail line, a rule, a notification") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Button(
-                            // Back to the default view: all windows, any chord, no query.
-                            onClick = { filter = HistoryFilterConfig() },
-                        ) {
-                            Text("Reset")
-                        }
-                    }
-
-                    // PRD §6 configuration menu: the two ORIGIN fields with the check box that says which
-                    // of them is filtering, and the undo-chord field, which narrows the History-Unit half
-                    // and so is enabled and greyed with the window field rather than on its own. An
-                    // inactive field is greyed and inert rather than hidden, so what the other half of the
-                    // filter would ask stays readable.
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        HistoryDropdownField(
-                            label = "Window",
-                            // The whole point of the default: "All windows" is no restriction at all.
-                            selected = filter.window?.label ?: ALL_WINDOWS_LABEL,
-                            options =
-                                listOf(ALL_WINDOWS_LABEL to null) +
-                                    HistoryWindow.entries.map { it.label to it },
-                            enabled = !filter.filterBySource,
-                            onSelect = { filter = filter.copy(window = it) },
-                        )
-                        HistoryDropdownField(
-                            label = "Undo chord",
-                            selected = chordFilterLabel(filter.chords),
-                            options = CHORD_FILTER_OPTIONS,
-                            enabled = !filter.filterBySource,
-                            onSelect = { filter = filter.copy(chords = it) },
-                        )
-                        HistoryDropdownField(
-                            label = "Other source",
-                            selected = filter.source?.label ?: ALL_SOURCES_LABEL,
-                            options =
-                                listOf(ALL_SOURCES_LABEL to null) +
-                                    HistorySource.entries.map { it.label to it },
-                            enabled = filter.filterBySource,
-                            onSelect = { filter = filter.copy(source = it) },
-                        )
-                        Spacer(Modifier.weight(1f))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .clickable { filter = filter.copy(filterBySource = !filter.filterBySource) }
-                                .padding(end = 8.dp),
-                        ) {
-                            Checkbox(
-                                checked = filter.filterBySource,
-                                onCheckedChange = { filter = filter.copy(filterBySource = it) },
-                            )
-                            Text(
-                                text = "Filter by the other sources",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = CalColors.muted,
-                            )
-                        }
-                    }
-
-                    Box(
                         modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFFF8F9FA)),
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { filter = filter.copy(filterBySource = !filter.filterBySource) }
+                            .padding(end = 8.dp),
                     ) {
-                        if (rows.isEmpty()) {
-                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                Text("(nothing matches the filter)", color = CalColors.muted)
-                            }
-                        } else {
-                            SelectionContainer(
+                        Checkbox(
+                            checked = filter.filterBySource,
+                            onCheckedChange = { filter = filter.copy(filterBySource = it) },
+                        )
+                        Text(
+                            text = "Filter by the other sources",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CalColors.muted,
+                        )
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFFF8F9FA)),
+                ) {
+                    if (rows.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("(nothing matches the filter)", color = CalColors.muted)
+                        }
+                    } else {
+                        SelectionContainer(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            Column(
                                 modifier = Modifier
-                                    .fillMaxSize()
-                                    .verticalScroll(rememberScrollState()),
+                                    .fillMaxWidth()
+                                    .padding(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    rows.take(HISTORY_LIST_MAX_ROWS).forEach { row ->
-                                        // PRD §6: a DOUBLE click opens the row's information window. A
-                                        // single click is left alone so the list stays text-selectable.
-                                        val open = { infoRow = row }
-                                        when (row) {
-                                            is FilteredHistoryEntry.Unit ->
-                                                HistoryUnitRow(entry = row, onOpen = open)
-                                            is FilteredHistoryEntry.Notification ->
-                                                NotificationLogRow(entry = row.entry, onOpen = open)
-                                            is FilteredHistoryEntry.SupabaseUsage ->
-                                                SupabaseUsageRow(entry = row.entry, onOpen = open)
-                                            is FilteredHistoryEntry.SchedulerRun ->
-                                                SchedulerRunRow(entry = row.entry, onOpen = open)
-                                        }
+                                rows.take(HISTORY_LIST_MAX_ROWS).forEach { row ->
+                                    // PRD §6: a DOUBLE click opens the row's information window. A
+                                    // single click is left alone so the list stays text-selectable.
+                                    val open = { infoRow = row }
+                                    when (row) {
+                                        is FilteredHistoryEntry.Unit ->
+                                            HistoryUnitRow(entry = row, onOpen = open)
+                                        is FilteredHistoryEntry.Notification ->
+                                            NotificationLogRow(entry = row.entry, onOpen = open)
+                                        is FilteredHistoryEntry.SupabaseUsage ->
+                                            SupabaseUsageRow(entry = row.entry, onOpen = open)
+                                        is FilteredHistoryEntry.SchedulerRun ->
+                                            SchedulerRunRow(entry = row.entry, onOpen = open)
                                     }
-                                    if (rows.size > HISTORY_LIST_MAX_ROWS) {
-                                        Text(
-                                            text = "+${rows.size - HISTORY_LIST_MAX_ROWS} older entries " +
-                                                "match — narrow the filter to reach them.",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = CalColors.muted,
-                                            modifier = Modifier.padding(top = 4.dp),
-                                        )
-                                    }
+                                }
+                                if (rows.size > HISTORY_LIST_MAX_ROWS) {
+                                    Text(
+                                        text = "+${rows.size - HISTORY_LIST_MAX_ROWS} older entries " +
+                                            "match — narrow the filter to reach them.",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = CalColors.muted,
+                                        modifier = Modifier.padding(top = 4.dp),
+                                    )
                                 }
                             }
                         }
                     }
                 }
             }
+        }
 
-            infoRow?.let { row ->
-                HistoryEntryInfoWindow(entry = row, onDismiss = { infoRow = null })
-            }
+        // PRD §6: the row's own information window, opened by a double click. About ONE row, so opening it
+        // on another row replaces it — but, like every window now, it stays until it is closed.
+        infoRow?.let { row ->
+            HistoryEntryInfoWindow(entry = row, onDismiss = { infoRow = null })
         }
     }
 }
@@ -2464,42 +2402,32 @@ private fun historyEntryTitle(entry: FilteredHistoryEntry): String =
 @Composable
 private fun HistoryEntryInfoWindow(entry: FilteredHistoryEntry, onDismiss: () -> Unit) {
     val infos = historyEntryInfos(entry)
-    // A sort-2 pop-up: it draws on the top layer, blocks nothing behind it, and the host
-    // dismisses it as soon as a press lands anywhere else (see TransientPopupHost).
-    TransientPopupLayer {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 14.dp,
-            border = BorderStroke(1.dp, CalColors.grid),
-            modifier = Modifier
-                .transientPopupCard(onDismiss)
-                .padding(24.dp)
-                .widthIn(min = 320.dp, max = 560.dp),
+    val frame = rememberWindowFrameState("HistoryEntryInfo")
+    TransientPopupLayer(frame.id) {
+        AppWindowFrame(
+            title = historyEntryTitle(entry),
+            state = frame,
+            onClose = onDismiss,
+            defaultWidth = 480.dp,
+            defaultHeight = 420.dp,
+            claimsKeyboard = true,
+            modifier = Modifier.align(Alignment.Center),
+            // "Copy all" belongs in this window's head rather than its body: it is about the window's whole
+            // subject, exactly like the five buttons beside it.
+            headTrailing = {
+                HistoryCopyButton(
+                    label = "Copy all",
+                    value = infos.joinToString("\n") { "${it.label}: ${it.value}" },
+                )
+            },
         ) {
             Column(
-                modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState()),
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = historyEntryTitle(entry),
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.weight(1f),
-                    )
-                    HistoryCopyButton(
-                        label = "Copy all",
-                        value = infos.joinToString("\n") { "${it.label}: ${it.value}" },
-                    )
-                    Box(
-                        modifier = Modifier.size(28.dp).clip(CircleShape).clickable(onClick = onDismiss),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text("✕", style = MaterialTheme.typography.titleSmall, color = CalColors.muted)
-                    }
-                }
-                Box(Modifier.fillMaxWidth().height(1.dp).background(CalColors.grid))
-
                 infos.forEach { info -> HistoryInfoLine(info) }
             }
         }
@@ -2968,8 +2896,10 @@ fun CalendarFloatingWindow(
     onRedo: () -> Unit = {},
     /** Initial (persisted) drag position; centered by default. */
     initialOffset: Offset = Offset.Zero,
-    /** Persists the window's new drag position when a drag gesture ends (local-only geometry). */
-    onOffsetChange: (Offset) -> Unit = {},
+    /** Initial size in px; `Size.Zero` opens the window at its default size. */
+    initialSize: Size = Size.Zero,
+    /** Persists the window's new position/size when a move or resize gesture ends (local-only geometry). */
+    onGeometryChange: (Offset, Size) -> Unit = { _, _ -> },
     /**
      * PRD §8/§9: the day span the endless scroll currently has on screen — its first (top-left) day and
      * how many days the grid covers. There is no focused WEEK to derive it from any more, so the
@@ -2995,25 +2925,7 @@ fun CalendarFloatingWindow(
      */
     jumpNonce: Int = 0,
 ) {
-    var offset by remember { mutableStateOf(initialOffset) }
-    // Keep the title bar (the only drag handle) reachable: this window has a fixed [requiredSize] that, on a
-    // small screen (e.g. Android), is taller than the content area it is centered in. Centering an over-tall
-    // window puts its head above the top edge, where it can't be grabbed to move it. We track the parent /
-    // window / header heights and clamp the vertical offset so the header stays within the parent's bounds.
-    var containerHeightPx by remember { mutableStateOf(0) }
-    var windowHeightPx by remember { mutableStateOf(0) }
-    var headerHeightPx by remember { mutableStateOf(0) }
-    // Lowest (most negative) and highest offset.y that keep the header on-screen, given a centered placement:
-    // resting top = (containerH - windowH) / 2, and we want that top + offset.y to stay in
-    // [0, containerH - headerH]. Returns [y] unchanged until the sizes are known.
-    fun clampOffsetY(y: Float): Float {
-        if (containerHeightPx == 0 || windowHeightPx == 0) return y
-        val restingTop = (containerHeightPx - windowHeightPx) / 2f
-        val maxTop = (containerHeightPx - headerHeightPx).coerceAtLeast(0).toFloat()
-        val a = -restingTop // offset that places the header's top at 0
-        val b = maxTop - restingTop // offset that places the header's top at the lowest visible row
-        return y.coerceIn(minOf(a, b), maxOf(a, b))
-    }
+    val frame = rememberWindowFrameState("Calendar", initialOffset, initialSize)
     // PRD §8 zoom: the zoom mechanics live in WeekView (which owns the scroll state + viewport geometry,
     // so it can keep the point under the cursor fixed). The keyboard shortcuts here drive it through this
     // action holder; [ctrlHeld] tracks the Ctrl modifier so WeekView's scroll handler knows when a wheel
@@ -3032,23 +2944,13 @@ fun CalendarFloatingWindow(
     // tree normally holds focus. Focus is (re)claimed when the window opens and on every press inside it.
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 10.dp,
-        border = BorderStroke(1.dp, CalColors.grid),
+    AppWindowFrame(
+        title = "Calendar",
+        state = frame,
+        onClose = onDismiss,
+        defaultWidth = 720.dp,
+        defaultHeight = 540.dp,
         modifier = modifier
-            .offset { IntOffset(offset.x.roundToInt(), offset.y.roundToInt()) }
-            // requiredSize (not size) so the window keeps its fixed size and does not adapt to the app's
-            // width when the content area is narrower than it.
-            .requiredSize(width = 720.dp, height = 540.dp)
-            // Measure the window and its parent so an over-tall window (small screens) is nudged down until
-            // its header is visible; clamping a fixed point converges, so re-applying on each layout is safe.
-            .onGloballyPositioned { coords ->
-                containerHeightPx = coords.parentLayoutCoordinates?.size?.height ?: 0
-                windowHeightPx = coords.size.height
-                offset = offset.copy(y = clampOffsetY(offset.y))
-            }
             .focusRequester(focusRequester)
             .focusable()
             // PRD §8: calendar-owned keyboard shortcuts while it is the focused surface.
@@ -3087,140 +2989,106 @@ fun CalendarFloatingWindow(
                     }
                     else -> false
                 }
-            }
-            // PRD §8 focus: observe presses on the Initial pass (without consuming, so the week view /
-            // blocks still get them) to mark the calendar as the focused surface — and reclaim the
-            // keyboard so its shortcuts fire — so clicking back into the calendar re-engages focus.
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        if (event.type == PointerEventType.Press) {
-                            onFocus()
-                            runCatching { focusRequester.requestFocus() }
-                        }
-                    }
-                }
             },
-    ) {
-        Column(Modifier.fillMaxSize()) {
-            // Title bar doubles as the drag handle for moving the window.
+        // PRD §8 focus: the frame observes every press inside the window on the Initial pass (without
+        // consuming, so the week view and its blocks still get them). That marks the calendar as the
+        // focused surface AND reclaims the keyboard, so clicking back into the calendar re-engages its
+        // own shortcuts.
+        onRaise = {
+            onFocus()
+            runCatching { focusRequester.requestFocus() }
+        },
+        onGeometryChange = onGeometryChange,
+        headTrailing = {
+            // PRD §9/§17: a distant future week fills its plan off the UI thread — show it's working.
+            if (calculating) {
+                Text(
+                    text = "Calculating…",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = CalColors.muted,
+                    modifier = Modifier.padding(end = 8.dp),
+                )
+            }
+            // PRD §8: hold the now-line at the middle of the view (see [WeekView]'s lock). The Switch
+            // consumes its own press and [windowDragHandle] requires an unconsumed one, so toggling it
+            // never starts the title-bar drag — not even when the click wobbles past the touch slop.
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onSizeChanged { headerHeightPx = it.height }
-                    .background(CalColors.menuBackground)
-                    .windowDragHandle(onDragEnd = { onOffsetChange(offset) }) { dragAmount ->
-                        // Clamp the vertical drag so the header can't be dragged off the top/bottom edge.
-                        offset = Offset(offset.x + dragAmount.x, clampOffsetY(offset.y + dragAmount.y))
-                    }
-                    .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(end = 8.dp),
             ) {
                 Text(
-                    text = "Calendar",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f),
+                    text = "Lock to now",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = CalColors.muted,
                 )
-                // PRD §9/§17: a distant future week fills its plan off the UI thread — show it's working.
-                if (calculating) {
-                    Text(
-                        text = "Calculating…",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = CalColors.muted,
-                        modifier = Modifier.padding(end = 8.dp),
-                    )
-                }
-                // PRD §8: hold the now-line at the middle of the view (see [WeekView]'s lock). The Switch
-                // consumes its own press and [windowDragHandle] requires an unconsumed one, so toggling it
-                // never starts the title-bar drag — not even when the click wobbles past the touch slop.
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.padding(end = 8.dp),
-                ) {
-                    Text(
-                        text = "Lock to now",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = CalColors.muted,
-                    )
-                    Switch(
-                        checked = lockNowLine,
-                        onCheckedChange = { lockNowLine = it },
-                    )
-                }
-                // PRD §14/§15: toggle whether reminders / screen breaks are drawn (cosmetic; notifications keep
-                // firing). As above, the drag handle leaves these presses alone.
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.padding(end = 8.dp),
-                ) {
-                    Text(
-                        text = "Reminders",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = CalColors.muted,
-                    )
-                    Switch(
-                        checked = showReminders,
-                        onCheckedChange = onToggleReminders,
-                    )
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.padding(end = 8.dp),
-                ) {
-                    Text(
-                        text = "Screen breaks",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = CalColors.muted,
-                    )
-                    Switch(
-                        checked = showScreenBreaks,
-                        onCheckedChange = onToggleScreenBreaks,
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .size(28.dp)
-                        .clip(CircleShape)
-                        .clickable(onClick = onDismiss),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("✕", style = MaterialTheme.typography.titleSmall, color = CalColors.muted)
-                }
-            }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(CalColors.grid))
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                WeekView(
-                    selectedDate = selectedDate,
-                    today = today,
-                    nowMillis = nowMillis,
-                    nowExactMillis = nowExactMillis,
-                    records = records,
-                    taskColors = taskColors,
-                    zoomActions = zoomActions,
-                    ctrlHeld = ctrlHeld,
-                    onAddTaskAt = onAddTaskAt,
-                    onAddReminderAt = onAddReminderAt,
-                    onAddNoScreenAt = onAddNoScreenAt,
-                    onAddInactivityAt = onAddInactivityAt,
-                    onCommitBounds = onCommitBounds,
-                    onEditEntry = onEditEntry,
-                    onEditTask = onEditTask,
-                    onGoToTaskTree = onGoToTaskTree,
-                    onRemoveEntry = onRemoveEntry,
-                    onToggleReminder = onToggleReminder,
-                    onAdjustWeights = onAdjustWeights,
-                    overlapArmed = overlapArmed,
-                    jumpNonce = jumpNonce,
-                    onVisibleDaysChanged = onVisibleDaysChanged,
-                    onNowLineResolutionChanged = onNowLineResolutionChanged,
-                    lockNowLine = lockNowLine,
-                    onLockNowLineChange = { lockNowLine = it },
+                Switch(
+                    checked = lockNowLine,
+                    onCheckedChange = { lockNowLine = it },
                 )
             }
+            // PRD §14/§15: toggle whether reminders / screen breaks are drawn (cosmetic; notifications keep
+            // firing). As above, the drag handle leaves these presses alone.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(end = 8.dp),
+            ) {
+                Text(
+                    text = "Reminders",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = CalColors.muted,
+                )
+                Switch(
+                    checked = showReminders,
+                    onCheckedChange = onToggleReminders,
+                )
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(end = 8.dp),
+            ) {
+                Text(
+                    text = "Screen breaks",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = CalColors.muted,
+                )
+                Switch(
+                    checked = showScreenBreaks,
+                    onCheckedChange = onToggleScreenBreaks,
+                )
+            }
+        },
+    ) {
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            WeekView(
+                selectedDate = selectedDate,
+                today = today,
+                nowMillis = nowMillis,
+                nowExactMillis = nowExactMillis,
+                records = records,
+                taskColors = taskColors,
+                zoomActions = zoomActions,
+                ctrlHeld = ctrlHeld,
+                onAddTaskAt = onAddTaskAt,
+                onAddReminderAt = onAddReminderAt,
+                onAddNoScreenAt = onAddNoScreenAt,
+                onAddInactivityAt = onAddInactivityAt,
+                onCommitBounds = onCommitBounds,
+                onEditEntry = onEditEntry,
+                onEditTask = onEditTask,
+                onGoToTaskTree = onGoToTaskTree,
+                onRemoveEntry = onRemoveEntry,
+                onToggleReminder = onToggleReminder,
+                onAdjustWeights = onAdjustWeights,
+                overlapArmed = overlapArmed,
+                jumpNonce = jumpNonce,
+                onVisibleDaysChanged = onVisibleDaysChanged,
+                onNowLineResolutionChanged = onNowLineResolutionChanged,
+                lockNowLine = lockNowLine,
+                onLockNowLineChange = { lockNowLine = it },
+            )
         }
     }
 }
@@ -6443,19 +6311,22 @@ fun ManualEntryEditWindow(
     // enforced today (a pinned panel survives a reschedule); position/spanning/distance are stored and
     // shown so they round-trip across edits until their enforcement lands.
     var pins by remember { mutableStateOf(initialPins) }
+    val frame = rememberWindowFrameState("CalendarEntryEdit")
 
-        // A sort-2 pop-up: it draws on the top layer, blocks nothing behind it, and the host
-        // dismisses it as soon as a press lands anywhere else (see TransientPopupHost).
-    TransientPopupLayer {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 12.dp,
-            border = BorderStroke(1.dp, CalColors.grid),
-            modifier = Modifier.transientPopupCard(onDismiss).width(320.dp),
+    TransientPopupLayer(frame.id) {
+        AppWindowFrame(
+            title = "Edit task",
+            state = frame,
+            onClose = onDismiss,
+            defaultWidth = 320.dp,
+            defaultHeight = 560.dp,
+            claimsKeyboard = true,
+            modifier = Modifier.align(Alignment.Center),
         ) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Edit task", style = MaterialTheme.typography.titleSmall)
+            Column(
+                Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
 
                 OutlinedTextField(
                     value = title,
@@ -6658,28 +6529,27 @@ fun PeriodEditWindow(
     // Save stays disabled while a field is half-typed or the period runs backwards, so a malformed entry can
     // never be silently rounded into a panel the user did not ask for.
     val saveable = resolvedStart != null && resolvedEnd != null && resolvedEnd > resolvedStart
+    val frame = rememberWindowFrameState("CalendarPeriodEdit")
 
-        // A sort-2 pop-up: it draws on the top layer, blocks nothing behind it, and the host
-        // dismisses it as soon as a press lands anywhere else (see TransientPopupHost).
-    TransientPopupLayer {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 12.dp,
-            border = BorderStroke(1.dp, CalColors.grid),
-            // Swallow clicks so they don't reach the dismissing scrim.
-            modifier = Modifier.width(340.dp).clickable(enabled = false) {},
+    TransientPopupLayer(frame.id) {
+        AppWindowFrame(
+            title =
+                when {
+                    !isNew -> "Edit $label"
+                    noScreen -> "Add a $label"
+                    else -> "Add an $label"
+                },
+            state = frame,
+            onClose = onDismiss,
+            defaultWidth = 340.dp,
+            defaultHeight = 520.dp,
+            claimsKeyboard = true,
+            modifier = Modifier.align(Alignment.Center),
         ) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text =
-                        when {
-                            !isNew -> "Edit $label"
-                            noScreen -> "Add a $label"
-                            else -> "Add an $label"
-                        },
-                    style = MaterialTheme.typography.titleSmall,
-                )
+            Column(
+                Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
                 Text(
                     text =
                         if (noScreen) {
@@ -6838,18 +6708,22 @@ fun ReminderEditWindow(
             else -> reminderIdForTitle(title) ?: ""
         }
 
-        // A sort-2 pop-up: it draws on the top layer, blocks nothing behind it, and the host
-        // dismisses it as soon as a press lands anywhere else (see TransientPopupHost).
-    TransientPopupLayer {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 12.dp,
-            border = BorderStroke(1.dp, CalColors.grid),
-            modifier = Modifier.transientPopupCard(onDismiss).width(320.dp),
+    val frame = rememberWindowFrameState("CalendarReminderEdit")
+
+    TransientPopupLayer(frame.id) {
+        AppWindowFrame(
+            title = "Add reminder",
+            state = frame,
+            onClose = onDismiss,
+            defaultWidth = 320.dp,
+            defaultHeight = 480.dp,
+            claimsKeyboard = true,
+            modifier = Modifier.align(Alignment.Center),
         ) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Add reminder", style = MaterialTheme.typography.titleSmall)
+            Column(
+                Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
 
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
@@ -6956,24 +6830,29 @@ fun ReminderConstraintEditWindow(
             selectedReminderId != null && entries.any { it.id == selectedReminderId } -> selectedReminderId!!
             else -> reminderIdForTitle(title)?.takeIf { it != excludeReminderId } ?: ""
         }
+    val frame = rememberWindowFrameState("ReminderConstraintEdit")
 
     Popup(
         alignment = Alignment.Center,
         onDismissRequest = onDismiss,
         properties = PopupProperties(focusable = true),
     ) {
-        // A sort-2 pop-up (see TransientPopupHost); the Popup above only lifts it out of the
-        // manager window's nesting.
-        TransientPopupLayer {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surface,
-                shadowElevation = 12.dp,
-                border = BorderStroke(1.dp, CalColors.grid),
-                modifier = Modifier.transientPopupCard(onDismiss).width(320.dp),
+        // The `Popup` above only lifts this window out of the manager window's nesting; the frame is
+        // the ordinary one, so it stays until it is closed like every other window.
+        TransientPopupLayer(frame.id) {
+            AppWindowFrame(
+                title = "Constrain to reminder",
+                state = frame,
+                onClose = onDismiss,
+                defaultWidth = 320.dp,
+                defaultHeight = 420.dp,
+                claimsKeyboard = true,
+                modifier = Modifier.align(Alignment.Center),
             ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Constrain to reminder", style = MaterialTheme.typography.titleSmall)
+                Column(
+                    Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
 
                     OutlinedTextField(
                         value = title,

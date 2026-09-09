@@ -1,6 +1,5 @@
 package org.example.project.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -12,10 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -24,7 +20,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -41,6 +36,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -49,9 +45,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.datetime.DayOfWeek
 import kotlinx.datetime.isoDayNumber
@@ -131,14 +125,16 @@ fun AlarmWindow(
     modifier: Modifier = Modifier,
     /** Initial position relative to centered; staggered per window so they open in a clickable cascade. */
     initialOffset: Offset = Offset.Zero,
-    /** Persists the window's new drag position when a drag gesture ends (local-only geometry). */
-    onOffsetChange: (Offset) -> Unit = {},
+    /** Initial size in px; `Size.Zero` opens the window at its default size. */
+    initialSize: Size = Size.Zero,
+    /** Persists the window's new position/size when a move or resize gesture ends (local-only geometry). */
+    onGeometryChange: (Offset, Size) -> Unit = { _, _ -> },
     /** Raise this window to the top of the layers — fired on a press anywhere inside it. */
     onRaise: () -> Unit = {},
     /** Time of day (minutes since midnight) to pre-fill a newly added row with — the current clock time. */
     newRowTimeOfDayMinutes: () -> Int = { 0 },
 ) {
-    var offset by remember { mutableStateOf(initialOffset) }
+    val frame = rememberWindowFrameState("Alarms", initialOffset, initialSize)
     // Per-row editable text for the parsed fields, so an in-progress "7:" / "" isn't reformatted on each
     // keystroke. Seeded from the incoming alarms; live edits drive both this and the pushed list.
     val rows = remember { mutableStateListOf<AlarmRow>().apply { addAll(alarms.map(::alarmRowOf)) } }
@@ -264,16 +260,13 @@ fun AlarmWindow(
         onTimersChange(entries, editKey)
     }
 
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 10.dp,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    AppWindowFrame(
+        title = "Alarms",
+        state = frame,
+        onClose = onDismiss,
+        defaultWidth = 440.dp,
+        defaultHeight = 560.dp,
         modifier = modifier
-            .offset { IntOffset(offset.x.roundToInt(), offset.y.roundToInt()) }
-            // requiredWidth (not width) so the window keeps its fixed width and does not adapt to the app's
-            // width when the content area is narrower than it.
-            .requiredWidth(440.dp)
             .focusRequester(windowFocus)
             .focusable()
             // PRD §5: the window's own undo/redo, read by the app's ONE interpreter of those chords. A
@@ -286,158 +279,136 @@ fun AlarmWindow(
                     else -> return@onPreviewKeyEvent false
                 }
                 true
-            }
-            // Raise on press AFTER the offset so the hit region tracks the (possibly dragged) window — and
-            // reclaim the keyboard with it, on the Initial pass, so a press that DESTROYS the focused node
-            // (the bin striking off the row whose field was being typed into) still leaves the window
-            // holding the focus its Ctrl+Z needs. `raiseOnPress` does not consume the press, so the field
-            // under it still takes the caret afterwards.
-            .raiseOnPress {
-                onRaise()
-                runCatching { windowFocus.requestFocus() }
             },
+        // The frame raises the window on the Initial pass of every press inside it — and this reclaims the
+        // keyboard with it, so a press that DESTROYS the focused node (the bin striking off the row whose
+        // field was being typed into) still leaves the window holding the focus its Ctrl+Z needs. The
+        // press is not consumed, so the field under it still takes the caret afterwards.
+        onRaise = {
+            onRaise()
+            runCatching { windowFocus.requestFocus() }
+        },
+        onGeometryChange = onGeometryChange,
     ) {
-        Column(Modifier.fillMaxWidth()) {
-            // Title bar doubles as the drag handle for moving the window.
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .windowDragHandle(onDragEnd = { onOffsetChange(offset) }) { dragAmount ->
-                        offset += dragAmount
-                    }
-                    .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(text = "Alarms", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                Box(
-                    modifier = Modifier.size(28.dp).clip(CircleShape).clickable(onClick = onDismiss),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("✕", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                // Follows the height the window was given (it is resizable), then scrolls — an account
+                // may hold many alarms.
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            SectionHeader("Alarms")
+            if (rows.isEmpty()) {
+                Text(
+                    text = "No alarm yet.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            rows.forEachIndexed { index, row ->
+                AlarmRowEditor(
+                    row = row,
+                    onRowChange = { updated, field ->
+                        rows[index] = updated
+                        push(sessionKeyFor(row.id, field))
+                    },
+                    onRemove = {
+                        rows.removeAt(index)
+                        push()
+                    },
+                    onFieldFocus = { field, focused -> onFieldFocus(row.id + "/" + field, focused) },
+                )
+                if (index != rows.lastIndex) {
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
                 }
             }
+
+            Text(
+                text = "+ Add alarm",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable {
+                        rows.add(
+                            AlarmRow(
+                                // A locally-unique id right away, so the row has an identity before the
+                                // round-trip through onChange (the reducer mints one for a blank id too).
+                                id = AlarmDomain.mintAlarmId(rows.map { it.id }),
+                                timeText = formatAlarmTime(newRowTimeOfDayMinutes()),
+                            ),
+                        )
+                        push()
+                    }
+                    .padding(vertical = 4.dp, horizontal = 2.dp),
+            )
+            Text(
+                text = "Alarms ring on every phone signed in to this account.",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            // PRD §18 Timers: the second section. A timer is the same ring at a different kind of due
+            // instant, which is why it lives in this window and not in one of its own.
             Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // Grows with the rows up to a cap, then scrolls — an account may hold many alarms.
-                    .heightIn(max = 420.dp)
-                    .verticalScroll(rememberScrollState())
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                SectionHeader("Alarms")
-                if (rows.isEmpty()) {
-                    Text(
-                        text = "No alarm yet.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                rows.forEachIndexed { index, row ->
-                    AlarmRowEditor(
-                        row = row,
-                        onRowChange = { updated, field ->
-                            rows[index] = updated
-                            push(sessionKeyFor(row.id, field))
-                        },
-                        onRemove = {
-                            rows.removeAt(index)
-                            push()
-                        },
-                        onFieldFocus = { field, focused -> onFieldFocus(row.id + "/" + field, focused) },
-                    )
-                    if (index != rows.lastIndex) {
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-                    }
-                }
-
+            SectionHeader("Timers")
+            if (timerRows.isEmpty()) {
                 Text(
-                    text = "+ Add alarm",
+                    text = "No timer yet.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable {
-                            rows.add(
-                                AlarmRow(
-                                    // A locally-unique id right away, so the row has an identity before the
-                                    // round-trip through onChange (the reducer mints one for a blank id too).
-                                    id = AlarmDomain.mintAlarmId(rows.map { it.id }),
-                                    timeText = formatAlarmTime(newRowTimeOfDayMinutes()),
-                                ),
-                            )
-                            push()
-                        }
-                        .padding(vertical = 4.dp, horizontal = 2.dp),
-                )
-                Text(
-                    text = "Alarms ring on every phone signed in to this account.",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                // PRD §18 Timers: the second section. A timer is the same ring at a different kind of due
-                // instant, which is why it lives in this window and not in one of its own.
-                Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-                SectionHeader("Timers")
-                if (timerRows.isEmpty()) {
-                    Text(
-                        text = "No timer yet.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                timerRows.forEachIndexed { index, row ->
-                    TimerRowEditor(
-                        row = row,
-                        // The live entry, which is where the run state lives; null only for the instant
-                        // between adding a row and the push landing.
-                        entry = timers.firstOrNull { it.id == row.id },
-                        nowMillis = displayNowMillis,
-                        onRowChange = { updated, field ->
-                            timerRows[index] = updated
-                            pushTimers(sessionKeyFor(row.id, field))
-                        },
-                        onStart = { onStartTimer(row.id) },
-                        onPause = { onPauseTimer(row.id) },
-                        onReset = { onResetTimer(row.id) },
-                        onSetCountdownField = { field, value -> onSetTimerCountdownField(row.id, field, value) },
-                        onNudge = { onNudgeTimerRemaining(row.id, it) },
-                        onRemove = {
-                            timerRows.removeAt(index)
-                            pushTimers()
-                        },
-                        onFieldFocus = { field, focused -> onFieldFocus(row.id + "/" + field, focused) },
-                    )
-                    if (index != timerRows.lastIndex) {
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-                    }
-                }
-
-                Text(
-                    text = "+ Add timer",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable {
-                            timerRows.add(
-                                TimerRow(id = TimerDomain.mintTimerId(timerRows.map { it.id })),
-                            )
-                            pushTimers()
-                        }
-                        .padding(vertical = 4.dp, horizontal = 2.dp),
-                )
-                Text(
-                    text = "A running timer belongs to the account, not to this device: every device rings " +
-                        "when it ends.",
-                    style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            timerRows.forEachIndexed { index, row ->
+                TimerRowEditor(
+                    row = row,
+                    // The live entry, which is where the run state lives; null only for the instant
+                    // between adding a row and the push landing.
+                    entry = timers.firstOrNull { it.id == row.id },
+                    nowMillis = displayNowMillis,
+                    onRowChange = { updated, field ->
+                        timerRows[index] = updated
+                        pushTimers(sessionKeyFor(row.id, field))
+                    },
+                    onStart = { onStartTimer(row.id) },
+                    onPause = { onPauseTimer(row.id) },
+                    onReset = { onResetTimer(row.id) },
+                    onSetCountdownField = { field, value -> onSetTimerCountdownField(row.id, field, value) },
+                    onNudge = { onNudgeTimerRemaining(row.id, it) },
+                    onRemove = {
+                        timerRows.removeAt(index)
+                        pushTimers()
+                    },
+                    onFieldFocus = { field, focused -> onFieldFocus(row.id + "/" + field, focused) },
+                )
+                if (index != timerRows.lastIndex) {
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
+                }
+            }
+
+            Text(
+                text = "+ Add timer",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable {
+                        timerRows.add(
+                            TimerRow(id = TimerDomain.mintTimerId(timerRows.map { it.id })),
+                        )
+                        pushTimers()
+                    }
+                    .padding(vertical = 4.dp, horizontal = 2.dp),
+            )
+            Text(
+                text = "A running timer belongs to the account, not to this device: every device rings " +
+                    "when it ends.",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

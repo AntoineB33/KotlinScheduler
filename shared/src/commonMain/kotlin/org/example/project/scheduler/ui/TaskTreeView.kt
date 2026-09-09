@@ -18,12 +18,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -63,7 +63,8 @@ import org.example.project.ui.TaskPalette
 import org.example.project.ui.rememberTaskHues
 import org.example.project.ui.TaskTreeFindBar
 import org.example.project.ui.isModifierKey
-import org.example.project.ui.LocalTransientPopupHost
+import org.example.project.ui.LocalTransientMenuHost
+import org.example.project.ui.LocalWindowFrameHost
 import org.example.project.ui.printableChar
 
 /**
@@ -91,7 +92,7 @@ import org.example.project.ui.printableChar
  *
  * - [state] is the tree to draw, [priorities] the percentages its rows show (the template's are its own
  *   shares — see `defaultSubtreePriorities`), and [onIntent] where its intents go.
- * - the four `onSet…` callbacks hoist the sort-2 pop-ups it opens up to the app, so they land on the top
+ * - the four `onSet…` callbacks hoist the windows it opens up to the app, so they land on the top
  *   layer above every floating window rather than under one (CLAUDE.md *Pop-up windows*).
  * - [keyboardActive] says whether this tree currently owns the keyboard; [aboveTreeKeyHandler] lets whatever
  *   sits above it claim a key first (returning null to decline).
@@ -112,7 +113,7 @@ internal fun TaskTreeView(
     onSetEditTask: (TaskId?) -> Unit = {},
     /**
      * PRD §5: opens a **category's** own window ([org.example.project.ui.CategoryEditWindow]) — hoisted to
-     * the app for the same reason the four `onSet…` above are: it is a sort-2 pop-up and must draw on the
+     * the app for the same reason the four `onSet…` above are: it is a window and must draw on the
      * top layer, not under whatever floating window this tree is inside.
      */
     onSetEditCategory: (org.example.project.scheduler.model.CategoryId?) -> Unit = {},
@@ -352,19 +353,27 @@ internal fun TaskTreeView(
         }
     }
 
-    // A sort-2 pop-up is what the user is working in, so the tree behind it does not own the keyboard —
-    // one rule, read here rather than passed down by each of the three surfaces that draw this tree.
-    // Without it, typing a letter with the priority-weight window open began a RENAME of the selected tree
-    // cell, and entering Edit Mode is exactly what closes that window: the keystroke aimed at the pop-up
-    // dismissed it. The tree is only deaf, never blind: the pop-up is not modal, and a press still reaches
-    // the tree (and dismisses the pop-up) as before.
-    val keyboardOwned = keyboardActive && LocalTransientPopupHost.current?.anyOpen != true
+    // What the user is working in is what owns the keyboard, so the tree behind it goes DEAF — one rule,
+    // read here rather than passed down by each of the three surfaces that draw this tree. Without it,
+    // typing a letter with the priority-weight window open began a RENAME of the selected tree cell.
+    //
+    // Two things take it: a contextual MENU standing over a cell (which still leaves on the first press
+    // outside it), and a focused window that answers keystrokes itself ([WindowFrameHost.keyboardClaimed]
+    // — a window no longer leaves on an outside press, so this has to follow the FOCUS and not merely
+    // "something is open", or the tree could never be typed in again without closing it).
+    //
+    // The tree is only deaf, never blind: nothing here is modal, and a press still reaches the tree — which
+    // is exactly what hands the keyboard back.
+    val keyboardOwned =
+        keyboardActive &&
+            LocalTransientMenuHost.current?.anyOpen != true &&
+            LocalWindowFrameHost.current?.keyboardClaimed != true
 
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
     }
 
-    // `keyboardOwned` is a key so the tree takes the keyboard BACK when the pop-up closes.
+    // `keyboardOwned` is a key so the tree takes the keyboard BACK the moment it is handed over.
     LaunchedEffect(state.editSession, state.selection.main, keyboardOwned) {
         // PRD §10: don't pull focus to the tree root while a min-time input is open — that field
         // auto-focuses itself, and grabbing focus here would steal its caret. Same while anything above
@@ -575,7 +584,7 @@ internal fun TaskTreeView(
                         event.printableChar() ?: return@onPreviewKeyEvent false
                     }
                 // PRD §7/§8 focus: while something else is focused, this tree must not hijack letter
-                // typing into Edit Mode — whatever holds focus owns the keyboard then. A sort-2 pop-up
+                // typing into Edit Mode — whatever holds focus owns the keyboard then. A window
                 // counts as something else, which is what `keyboardOwned` adds.
                 if (!keyboardOwned) return@onPreviewKeyEvent false
                 onIntent(SchedulerIntent.BeginEdit(main, typed))
@@ -753,7 +762,7 @@ internal fun TaskTreeView(
  * PRD §4: focusing another window no longer ends the edit session (the cell keeps its Edit-Mode outline and
  * its half-typed draft), so something else has to make sure the caret is not still sitting in a field the
  * user has walked away from: the session survives, the **focus** follows the keyboard. Read from a local
- * rather than threaded down as a parameter for the same reason `LocalTransientPopupHost` is — all three
+ * rather than threaded down as a parameter for the same reason `LocalTransientMenuHost` is — all three
  * drawings of the tree get it at once, and no surface can forget to pass it on.
  *
  * Defaults to `true` for a task cell drawn outside any tree (the relative-priority window's occurrence

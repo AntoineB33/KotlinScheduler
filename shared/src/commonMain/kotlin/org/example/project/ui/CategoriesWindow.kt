@@ -1,6 +1,5 @@
 package org.example.project.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -10,20 +9,15 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -35,10 +29,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import kotlin.math.roundToInt
 import org.example.project.scheduler.domain.CategoryRules
 import org.example.project.scheduler.model.CategoryId
 import org.example.project.scheduler.state.SchedulerIntent
@@ -70,8 +63,8 @@ import org.example.project.scheduler.state.SchedulerState
  *    anything to: picking an existing category **opens it** (that is the answer to "I meant this one"), and
  *    only a name the account has not got is created ([SchedulerIntent.CreateCategory]).
  *
- * A **sort-1** window (`ui/PopupWindows.kt`): there is exactly one of it, so it stacks and stays open until
- * it is closed, like every other lateral-menu window. The category window a row opens is sort 2 and is about
+ * A lateral-menu window (`docs/invariants/popups.md`): there is exactly one of it, and like every window it
+ * stacks and stays open until it is closed. The category window a row opens is about
  * ONE category, which is why pressing ✎ on another row replaces it rather than stacking beside it.
  *
  * Read-only about the tree in the sense that matters: nothing here moves a priority, and — like defining a
@@ -83,18 +76,20 @@ fun CategoriesWindow(
     /** The live state: the account's categories, and the tree their rules are measured against. */
     state: SchedulerState,
     onIntent: (SchedulerIntent) -> Unit,
-    /** Opens the row's own (sort-2) [CategoryEditWindow] — the one place a category is edited or deleted. */
+    /** Opens the row's own [CategoryEditWindow] — the one place a category is edited or deleted. */
     onOpenCategoryEdit: (CategoryId) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     /** Initial position relative to centered; staggered per window so they open in a clickable cascade. */
     initialOffset: Offset = Offset.Zero,
-    /** Persists the window's new drag position when a drag gesture ends (local-only geometry). */
-    onOffsetChange: (Offset) -> Unit = {},
+    /** Initial size in px; `Size.Zero` opens the window at its default size. */
+    initialSize: Size = Size.Zero,
+    /** Persists the window's new position/size when a move or resize gesture ends (local-only geometry). */
+    onGeometryChange: (Offset, Size) -> Unit = { _, _ -> },
     /** Raise this window to the top of the layers — fired on a press anywhere inside it. */
     onRaise: () -> Unit = {},
 ) {
-    var offset by remember { mutableStateOf(initialOffset) }
+    val frame = rememberWindowFrameState("Categories", initialOffset, initialSize)
     // What is being typed in the naming field. Compose-only state, like a cell's own draft title: a
     // half-typed name is not a category until the button below commits it.
     var draft by remember { mutableStateOf("") }
@@ -107,123 +102,91 @@ fun CategoriesWindow(
     val typed = draft.trim()
     val existing = state.categories.firstOrNull { it.title.equals(typed, ignoreCase = true) }
 
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 10.dp,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = modifier
-            .offset { IntOffset(offset.x.roundToInt(), offset.y.roundToInt()) }
-            // requiredWidth (not width) so the window keeps its fixed width and does not adapt to the
-            // app's width when the content area is narrower than it.
-            .requiredWidth(460.dp)
-            // Raise on press AFTER the offset so the hit region tracks the (possibly dragged) window.
-            .raiseOnPress(onRaise),
+    AppWindowFrame(
+        title = "Categories",
+        state = frame,
+        onClose = onDismiss,
+        defaultWidth = 460.dp,
+        defaultHeight = 520.dp,
+        modifier = modifier,
+        onRaise = onRaise,
+        onGeometryChange = onGeometryChange,
     ) {
-        Column(Modifier.fillMaxWidth()) {
-            // Title bar doubles as the drag handle for moving the window.
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .windowDragHandle(onDragEnd = { onOffsetChange(offset) }) { dragAmount ->
-                        offset += dragAmount
-                    }
-                    .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                // Follows the height the window was given (it is resizable), then scrolls — an
+                // account may hold many categories.
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (rows.isEmpty()) {
                 Text(
-                    text = "Categories",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f),
+                    text =
+                        "No category yet. Name one below, or give a task one from its categories " +
+                            "field in the tree — both reach this same list.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Box(
-                    modifier = Modifier.size(28.dp).clip(CircleShape).clickable(onClick = onDismiss),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        "✕",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
             }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
+            for (row in rows) {
+                CategoryRow(row = row, onEdit = { onOpenCategoryEdit(row.category.id) })
+            }
 
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // Grows with the categories up to a cap, then scrolls — an account may hold many.
-                    .heightIn(max = 460.dp)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                if (rows.isEmpty()) {
-                    Text(
-                        text =
-                            "No category yet. Name one below, or give a task one from its categories " +
-                                "field in the tree — both reach this same list.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                for (row in rows) {
-                    CategoryRow(row = row, onEdit = { onOpenCategoryEdit(row.category.id) })
-                }
+            HorizontalDivider()
 
-                HorizontalDivider()
-
-                // The naming field: the task cell's "add" option, minus the task. Its identity rows OPEN a
-                // category instead of attaching it — there is nothing here to attach one to — which is also
-                // what keeps a name the account already holds from being minted a second time.
-                Text("Add a category", style = MaterialTheme.typography.labelMedium)
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
-                    singleLine = true,
-                    label = { Text("Name") },
+            // The naming field: the task cell's "add" option, minus the task. Its identity rows OPEN a
+            // category instead of attaching it — there is nothing here to attach one to — which is also
+            // what keeps a name the account already holds from being minted a second time.
+            Text("Add a category", style = MaterialTheme.typography.labelMedium)
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                singleLine = true,
+                label = { Text("Name") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            EditModeMenuBlock(
+                identityLabel = "Categories",
+                identityRows =
+                    CategoryRules.menuEntries(state, draft, emptyList()).map { category ->
+                        EditMenuItem(
+                            label = category.title,
+                            selected = category.title.equals(typed, ignoreCase = true),
+                        ) { onOpenCategoryEdit(category.id) }
+                    },
+                // A suggestion only FILLS the field, as it does in a cell — the button below is what
+                // commits, and the identity row above is what points at one that already exists.
+                suggestions =
+                    CategoryRules.titleSuggestions(state, draft).map { suggestion ->
+                        EditMenuItem(suggestion) { draft = suggestion }
+                    },
+            )
+            if (typed.isNotEmpty()) {
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                )
-                EditModeMenuBlock(
-                    identityLabel = "Categories",
-                    identityRows =
-                        CategoryRules.menuEntries(state, draft, emptyList()).map { category ->
-                            EditMenuItem(
-                                label = category.title,
-                                selected = category.title.equals(typed, ignoreCase = true),
-                            ) { onOpenCategoryEdit(category.id) }
-                        },
-                    // A suggestion only FILLS the field, as it does in a cell — the button below is what
-                    // commits, and the identity row above is what points at one that already exists.
-                    suggestions =
-                        CategoryRules.titleSuggestions(state, draft).map { suggestion ->
-                            EditMenuItem(suggestion) { draft = suggestion }
-                        },
-                )
-                if (typed.isNotEmpty()) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (existing != null) {
-                            Text(
-                                text = "“${existing.title}” already exists — open it above.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.weight(1f),
-                            )
-                        } else {
-                            Spacer(Modifier.weight(1f))
-                        }
-                        TextButton(
-                            enabled = existing == null,
-                            onClick = {
-                                onIntent(SchedulerIntent.CreateCategory(typed))
-                                draft = ""
-                            },
-                        ) { Text("Create") }
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (existing != null) {
+                        Text(
+                            text = "“${existing.title}” already exists — open it above.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                    } else {
+                        Spacer(Modifier.weight(1f))
                     }
+                    TextButton(
+                        enabled = existing == null,
+                        onClick = {
+                            onIntent(SchedulerIntent.CreateCategory(typed))
+                            draft = ""
+                        },
+                    ) { Text("Create") }
                 }
             }
         }

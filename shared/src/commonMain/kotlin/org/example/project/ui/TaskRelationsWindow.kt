@@ -1,6 +1,5 @@
 package org.example.project.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -9,18 +8,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -31,10 +25,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import kotlin.math.roundToInt
 import org.example.project.scheduler.domain.TaskRelationsDomain
 import org.example.project.scheduler.state.SchedulerIntent
 import org.example.project.scheduler.state.SchedulerState
@@ -78,12 +71,14 @@ fun TaskRelationsWindow(
     modifier: Modifier = Modifier,
     /** Initial position relative to centered; staggered per window so they open in a clickable cascade. */
     initialOffset: Offset = Offset.Zero,
-    /** Persists the window's new drag position when a drag gesture ends (local-only geometry). */
-    onOffsetChange: (Offset) -> Unit = {},
+    /** Initial size in px; `Size.Zero` opens the window at its default size. */
+    initialSize: Size = Size.Zero,
+    /** Persists the window's new position/size when a move or resize gesture ends (local-only geometry). */
+    onGeometryChange: (Offset, Size) -> Unit = { _, _ -> },
     /** Raise this window to the top of the layers — fired on a press anywhere inside it. */
     onRaise: () -> Unit = {},
 ) {
-    var offset by remember { mutableStateOf(initialOffset) }
+    val frame = rememberWindowFrameState("TaskRelations", initialOffset, initialSize)
 
     // Keyed on what the rows actually read rather than on the whole state, which is replaced by every
     // engine tick (records live on the tasks) — ADR 0009. Section 4 asks the tree for every pair's
@@ -93,98 +88,65 @@ fun TaskRelationsWindow(
             TaskRelationsDomain.rows(state)
         }
 
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 10.dp,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = modifier
-            .offset { IntOffset(offset.x.roundToInt(), offset.y.roundToInt()) }
-            // requiredWidth (not width) so the window keeps its fixed width and does not adapt to the
-            // app's width when the content area is narrower than it.
-            .requiredWidth(560.dp)
-            // Raise on press AFTER the offset so the hit region tracks the (possibly dragged) window.
-            .raiseOnPress(onRaise),
+    AppWindowFrame(
+        title = "Task relations",
+        state = frame,
+        onClose = onDismiss,
+        defaultWidth = 560.dp,
+        defaultHeight = 520.dp,
+        modifier = modifier,
+        onRaise = onRaise,
+        onGeometryChange = onGeometryChange,
     ) {
-        Column(Modifier.fillMaxWidth()) {
-            // Title bar doubles as the drag handle for moving the window.
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .windowDragHandle(onDragEnd = { onOffsetChange(offset) }) { dragAmount ->
-                        offset += dragAmount
-                    }
-                    .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                // Follows the height the window was given (it is resizable), then scrolls — an
+                // account may hold many pairs.
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(vertical = 8.dp),
+        ) {
+            if (rows.isEmpty()) {
                 Text(
-                    text = "Task relations",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f),
+                    text =
+                        "No task relation yet. One appears here as soon as a task is added to a " +
+                            "priority-weight table, or a cell's percentage is right-clicked for " +
+                            "\"relative priority\".",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                 )
-                Box(
-                    modifier = Modifier.size(28.dp).clip(CircleShape).clickable(onClick = onDismiss),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        "✕",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
             }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
-
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // Grows with the pairs up to a cap, then scrolls — an account may hold many.
-                    .heightIn(max = 420.dp)
-                    .verticalScroll(rememberScrollState())
-                    .padding(vertical = 8.dp),
-            ) {
-                if (rows.isEmpty()) {
+            // Every section is drawn, empty ones included: the four are a fixed frame the user reads
+            // the list against, and a section that vanishes when it empties makes the numbering move.
+            // (An account with no relation at all shows the sentence above and no frame.)
+            val bySection = rows.groupBy { it.section }
+            for (section in if (rows.isEmpty()) emptyList() else TaskRelationsDomain.Section.entries) {
+                val inSection = bySection[section].orEmpty()
+                SectionHeader(section, inSection.size)
+                if (inSection.isEmpty()) {
                     Text(
-                        text =
-                            "No task relation yet. One appears here as soon as a task is added to a " +
-                                "priority-weight table, or a cell's percentage is right-clicked for " +
-                                "\"relative priority\".",
-                        style = MaterialTheme.typography.bodyMedium,
+                        text = "(none)",
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                        modifier = Modifier.padding(horizontal = 22.dp, vertical = 4.dp),
                     )
                 }
-                // Every section is drawn, empty ones included: the four are a fixed frame the user reads
-                // the list against, and a section that vanishes when it empties makes the numbering move.
-                // (An account with no relation at all shows the sentence above and no frame.)
-                val bySection = rows.groupBy { it.section }
-                for (section in if (rows.isEmpty()) emptyList() else TaskRelationsDomain.Section.entries) {
-                    val inSection = bySection[section].orEmpty()
-                    SectionHeader(section, inSection.size)
-                    if (inSection.isEmpty()) {
-                        Text(
-                            text = "(none)",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 22.dp, vertical = 4.dp),
-                        )
-                    }
-                    inSection.forEach { row ->
-                        TaskRelationRow(
-                            row = row,
-                            onKeep = {
-                                onIntent(
-                                    SchedulerIntent.KeepTaskRelation(row.key.taskId, row.key.relativeTo),
-                                )
-                            },
-                            onDrop = {
-                                onIntent(
-                                    SchedulerIntent.DropTaskRelation(row.key.taskId, row.key.relativeTo),
-                                )
-                            },
-                        )
-                    }
+                inSection.forEach { row ->
+                    TaskRelationRow(
+                        row = row,
+                        onKeep = {
+                            onIntent(
+                                SchedulerIntent.KeepTaskRelation(row.key.taskId, row.key.relativeTo),
+                            )
+                        },
+                        onDrop = {
+                            onIntent(
+                                SchedulerIntent.DropTaskRelation(row.key.taskId, row.key.relativeTo),
+                            )
+                        },
+                    )
                 }
             }
         }

@@ -1,16 +1,15 @@
 package org.example.project.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -23,178 +22,102 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.boundsInWindow
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.dp
 
 /**
- * ## The two sorts of pop-up window
+ * ## What leaves on an outside press, and what does not
  *
- * **Sort 1 — a window.** It opens on the top layer and then behaves like every other window: whatever the
- * user focuses next stacks on top of it, and it stays open until it is closed. These are the lateral-menu
- * windows, managed by `App`'s `windowStack`; there is exactly ONE of each.
+ * `docs/invariants/popups.md`. There is now **one sort of window** — it opens on the top layer, wears the
+ * frame in `WindowFrame.kt`, and stays until it is closed. A press somewhere else never takes a window
+ * away: half-typed edits are not thrown out by a click aimed at something else, and a window put on screen
+ * is a window the user can still see after looking at what is behind it.
  *
- * **Sort 2 — a transient pop-up.** It opens on the top layer and **disappears the moment anything else
- * takes focus**. These are the pop-ups that are about ONE object — a task, a cell, a sub-list, a calendar
- * block, a history unit. That is the whole test: a pop-up that could have several instances open at once if
- * it stacked is a sort-2 pop-up, because "the edit window of task A" and "the edit window of task B" are two
- * different windows and the user only ever means the one they just asked for.
+ * The exception, and the whole subject of this file, is a **menu**: a right-click contextual menu or a
+ * drop-down. A menu is not a window — it is a question the app is asking about one cell, one percentage,
+ * one id row — and it closes on the first press outside it. That press still does its normal job (PRD §13:
+ * right-click one cell, click another, and the second cell is selected in the same gesture), which is why
+ * dismissal is decided by ONE observer at the app root ([transientMenuDismissRoot]) that watches the
+ * **Initial** pass without consuming, and never by a per-menu outside-press handler.
  *
- * Consequences, and the reason this lives in one file rather than at each call site:
- *
- * - **At most one sort-2 pop-up is open at a time.** [TransientPopupHost.open] dismisses the others, so the
- *   invariant holds by construction instead of by every opener remembering to close its predecessor.
- * - **The press that dismisses still does its normal job.** A sort-2 pop-up is NOT modal: it draws no scrim
- *   and blocks nothing, so clicking the calendar both closes the pop-up and focuses the calendar. (The
- *   pre-existing full-screen scrims cost a second click for that, and made "disappears when something else
- *   is in focus" unobservable — the scrim ate the press that would have focused the something else.)
- * - **Dismissal discards.** A sort-2 pop-up holding a half-typed edit loses it, exactly as clicking its old
- *   scrim did. That is the price of the sort, not an oversight.
+ * A press inside a `DropdownMenu`/`Popup` draws in its own layer and never reaches that observer, which is
+ * exactly what makes "any press the observer sees" mean "a press outside the menu" — so a menu publishes no
+ * bounds. It does have to be made **non-focusable** (`PopupProperties(focusable = false)`): a focusable
+ * `DropdownMenu` consumes the outside press for its own `onDismissRequest`, and that is the press PRD §13
+ * needs to go on and select the next cell. Wherever a menu is given `focusable = false`, the registration
+ * here must come with it — a non-focusable menu that no one registered never closes at all.
  */
-class TransientPopupHost {
-    private class Entry(val onDismiss: () -> Unit) {
-        /** Window-space bounds of the pop-up's card; a press inside them is a press "in" the pop-up. */
-        var bounds: Rect? = null
-    }
-
-    private val entries = LinkedHashMap<Any, Entry>()
+class TransientMenuHost {
+    private val entries = LinkedHashMap<Any, () -> Unit>()
 
     /**
-     * Whether a sort-2 pop-up is open at all — **observable**, because the task tree reads it.
+     * Whether a menu is open at all — **observable**, because the task tree reads it.
      *
-     * A pop-up is what the user is working in, so the tree behind it must not own the keyboard. PRD §4's
-     * "type a letter on the selected cell to start renaming it" would otherwise rename a cell nobody is
-     * looking at — and, because the weight and relative-priority windows close the moment any cell enters
-     * Edit Mode, the pop-up being typed into would vanish under the very keystroke meant for it.
+     * A menu standing over a cell is what the user is answering, so the tree behind it goes **deaf** while
+     * it is up (`TaskTreeView`'s `keyboardOwned`, together with [WindowFrameHost.keyboardClaimed]). PRD §4's
+     * "type a letter on the selected cell to start renaming it" would otherwise fire behind the menu.
      */
     var anyOpen: Boolean by mutableStateOf(false)
         private set
 
-    /** Registers a newly opened pop-up, dismissing every sort-2 pop-up already open (see the class doc). */
+    /** Registers a newly opened menu, closing any menu already open — a second one is never wanted. */
     fun open(key: Any, onDismiss: () -> Unit) {
         dismissAll()
-        entries[key] = Entry(onDismiss)
+        entries[key] = onDismiss
         anyOpen = true
     }
 
-    /** Forgets a pop-up that left the composition. Never calls its `onDismiss` — it is already gone. */
+    /** Forgets a menu that left the composition. Never calls its `onDismiss` — it is already gone. */
     fun close(key: Any) {
         entries.remove(key)
         anyOpen = entries.isNotEmpty()
     }
 
-    fun setBounds(key: Any, bounds: Rect) {
-        entries[key]?.bounds = bounds
-    }
-
     /**
-     * A press landed at [windowPos]. Every open pop-up it did NOT land inside is dismissed — that press is
-     * the user focusing something else. The press itself is neither consumed nor altered.
+     * A press landed somewhere the observer can see it, i.e. outside every open menu. They all close; the
+     * press itself is neither consumed nor altered.
      */
-    fun onPress(windowPos: Offset) {
+    fun onPress() {
         if (entries.isEmpty()) return
-        for ((key, entry) in entries.entries.toList()) {
-            if (entry.bounds?.contains(windowPos) != true) {
-                entries.remove(key)
-                entry.onDismiss()
-            }
-        }
-        anyOpen = entries.isNotEmpty()
-    }
-
-    private fun dismissAll() {
-        if (entries.isEmpty()) return
-        for ((key, entry) in entries.entries.toList()) {
+        for ((key, onDismiss) in entries.entries.toList()) {
             entries.remove(key)
-            entry.onDismiss()
+            onDismiss()
         }
         anyOpen = false
     }
+
+    private fun dismissAll() = onPress()
 }
 
-val LocalTransientPopupHost = staticCompositionLocalOf<TransientPopupHost?> { null }
+val LocalTransientMenuHost = staticCompositionLocalOf<TransientMenuHost?> { null }
 
 /**
- * The app-root observer that turns a press into a dismissal. It watches the **Initial** pass without
- * consuming anything, so it is an ancestor of every window and every pop-up alike and the press still
- * reaches whatever it was aimed at. Presses inside a menu (`DropdownMenu`/`Popup` draw in their own layer)
- * never reach it, which is what keeps a pop-up's own menus from closing it.
+ * The app-root observer that turns a press into a menu dismissal. It watches the **Initial** pass without
+ * consuming anything, so it is an ancestor of every window and every menu alike and the press still reaches
+ * whatever it was aimed at. Presses inside a menu (`DropdownMenu`/`Popup` draw in their own layer) never
+ * reach it, which is what keeps a window's own menus from closing on their own first click.
  */
 @Composable
-fun Modifier.transientPopupDismissRoot(host: TransientPopupHost): Modifier {
-    var coords by remember { mutableStateOf<LayoutCoordinates?>(null) }
-    return this
-        .onGloballyPositioned { coords = it }
-        .pointerInput(host) {
-            awaitPointerEventScope {
-                while (true) {
-                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                    if (event.type != PointerEventType.Press) continue
-                    val position = event.changes.firstOrNull()?.position ?: continue
-                    val window = coords?.localToWindow(position) ?: continue
-                    host.onPress(window)
-                }
+fun Modifier.transientMenuDismissRoot(host: TransientMenuHost): Modifier =
+    this.pointerInput(host) {
+        awaitPointerEventScope {
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                if (event.type == PointerEventType.Press) host.onPress()
             }
         }
-}
-
-/**
- * The full-screen layer a sort-2 pop-up centres its card in. Deliberately inert — no scrim, no pointer
- * input — so the app behind it stays live and the dismissing press gets through (see the class doc above).
- */
-@Composable
-fun TransientPopupLayer(
-    modifier: Modifier = Modifier,
-    contentAlignment: Alignment = Alignment.Center,
-    content: @Composable BoxScope.() -> Unit,
-) {
-    Box(modifier = modifier.fillMaxSize(), contentAlignment = contentAlignment, content = content)
-}
-
-/**
- * Applied to a sort-2 pop-up's card. It registers the pop-up with the host (which closes any other one)
- * and keeps its window-space bounds published so a press inside it is never read as a press elsewhere.
- *
- * The card intentionally does not consume the press: the top bar and other controls inside the popup need
- * their own drag / click handlers to run, and the one observer at the app root is already handling the
- * outside-dismiss decision. The popup still stays non-modal and the first press outside it still closes it.
- */
-@Composable
-fun Modifier.transientPopupCard(onDismiss: () -> Unit): Modifier {
-    val host = LocalTransientPopupHost.current
-    val key = remember { Any() }
-    val latestDismiss by rememberUpdatedState(onDismiss)
-    DisposableEffect(host, key) {
-        host?.open(key) { latestDismiss() }
-        onDispose { host?.close(key) }
     }
-    return this
-        .onGloballyPositioned { host?.setBounds(key, it.boundsInWindow()) }
-}
 
 /**
- * The same dismissal, for a **right-click contextual menu** — a `DropdownMenu`, which draws its own
- * `Popup` and therefore has no card of ours to measure.
- *
- * A menu is about ONE object (this cell, this percentage, this id row), so it is sort 2 like any other, and
- * routing it through the host is what makes PRD §13's rule hold: the press that closes the menu **still does
- * its normal job**, so right-clicking a cell and then clicking another one selects that other cell in the
- * same gesture instead of being eaten as a dismissal. That requires the menu's own popup to be
- * **non-focusable** — a focusable one consumes the outside press for its own `onDismissRequest` — so pass
- * `PopupProperties(focusable = false)` wherever this is used.
- *
- * No bounds are ever published: a press inside a `Popup` never reaches the app-root observer (it draws in
- * its own layer), so "any press the observer sees" is exactly "a press outside the menu".
+ * Registers a **right-click contextual menu** (or a drop-down) with the host, so the first press outside it
+ * closes it — see the class doc for why this is the only thing in the app that still works that way, and
+ * why the menu's own `Popup` must be `focusable = false`.
  */
 @Composable
 fun transientMenuDismissal(open: Boolean, onDismiss: () -> Unit) {
-    val host = LocalTransientPopupHost.current
+    val host = LocalTransientMenuHost.current
     val key = remember { Any() }
     val latestDismiss by rememberUpdatedState(onDismiss)
     DisposableEffect(host, key, open) {
@@ -204,25 +127,53 @@ fun transientMenuDismissal(open: Boolean, onDismiss: () -> Unit) {
 }
 
 /**
- * The one way the app says something back to a gesture it could not carry out — today the calendar's
- * "go to task tree" on a panel whose task no cell holds (PRD §8).
+ * The full-screen layer a per-object window is centred in. Deliberately inert — no scrim, no pointer input
+ * — so the app behind it stays live and a press aimed at something else still reaches it.
  *
- * A **sort-2** pop-up, by the sort's own test: there is only ever one message, and it is about the one
- * gesture that just failed, so it leaves the moment anything else takes focus — which is exactly what a
- * notice wants, and why it needs no timer and no scrim. Dismissal discards it, like every sort-2 pop-up.
+ * It takes the window's frame [id] because it is that window's **outermost** element, and `zIndex` only
+ * orders a node among its own siblings: the frame inside this layer can say what it likes about the
+ * stacking order, the app compares the LAYER against the other windows ([windowStackZ]). A layer that
+ * carried no z is what pinned every per-object window above the whole stack.
  */
 @Composable
-fun MessagePopup(message: String, onDismiss: () -> Unit) {
-    TransientPopupLayer {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            shadowElevation = 12.dp,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-            modifier = Modifier.transientPopupCard(onDismiss).widthIn(max = 420.dp),
+fun TransientPopupLayer(
+    id: String,
+    modifier: Modifier = Modifier,
+    contentAlignment: Alignment = Alignment.Center,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    Box(
+        modifier = modifier.fillMaxSize().windowStackZ(id),
+        contentAlignment = contentAlignment,
+        content = content,
+    )
+}
+
+/**
+ * The one way the app says something back to a gesture it could not carry out — the calendar's "go to task
+ * tree" on a panel whose task no cell holds (PRD §8), and the reducer's refusal of an edit that would have
+ * broken a category rule (PRD §5).
+ *
+ * A window like any other, and closed like any other: by its **OK** button or its head's ✕. It used to
+ * leave on the next press anywhere, which meant a notice could be gone before it had been read. It is the
+ * one window that cannot be **reduced** — a notice filed in the bottom bar is a notice nobody reads.
+ */
+@Composable
+fun MessagePopup(message: String, onDismiss: () -> Unit, id: String = "Notice") {
+    val frame = rememberWindowFrameState(id)
+    TransientPopupLayer(frame.id) {
+        AppWindowFrame(
+            title = "Notice",
+            state = frame,
+            onClose = onDismiss,
+            defaultWidth = 420.dp,
+            defaultHeight = 200.dp,
+            canMinimize = false,
+            claimsKeyboard = true,
+            modifier = Modifier.align(Alignment.Center),
         ) {
             Column(
-                Modifier.padding(16.dp),
+                Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 horizontalAlignment = Alignment.End,
             ) {

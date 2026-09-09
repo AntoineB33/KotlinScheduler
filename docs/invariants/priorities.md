@@ -214,8 +214,9 @@ relative-priority window's number said once and then **kept**.
   every rule at once and so belongs where all of them are shown — the same pair the task cell's category row
   and the resilience row both make; and the **same naming field** the "add" option is, whose identity rows
   here **open** a category (there is no task to attach one to) so that `CreateCategory` only ever mints a
-  name the account has not got. Sort 1, like every other lateral-menu window; the row's ✎ opens a sort-2
-  window, which is why pressing it on another row replaces it.
+  name the account has not got. A lateral-menu window like any other; the row's ✎ opens the window of ONE
+  category, which is why pressing it on another row replaces it rather than stacking beside it
+  (`popups.md`).
 - **The "add" option is a task cell in Edit Mode, minus the Mode selector** — the same `EditModeMenuBlock`,
   with the account's categories as the **identity** rows and their titles as the **suggestions**. There is no
   Mode selector because neither of its questions exists here: naming a category IS pointing at it. The row's

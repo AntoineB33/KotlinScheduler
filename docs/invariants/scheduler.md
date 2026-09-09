@@ -159,7 +159,8 @@ model exists to prevent.
   as soon as anything is checked, showing the value the checked tasks share or **blank** where they do not
   (`SchedulerDomain.commonResilience`). That field and each row's own write through the **one** intent,
   `SetPeriodResilience`, so checking twenty tasks and typing one percentage is **one** history unit — never a
-  fan-out of `SetTaskResilience`. It is a sort-2 pop-up like the window it opens from, so it dismisses it.
+  fan-out of `SetTaskResilience`. It is a window about ONE kind, so opening it on another kind replaces it;
+  neither it nor the window it was opened from leaves on a press elsewhere (`popups.md`).
 - **A panel's kind is `TaskPanel.restrictiveKind`**, the single reading of `periodKind` and the legacy
   `noScreen`/`inactivity`/`sleep`/`screenBreak` flags. A payload written before kinds existed is healed from
   those flags on decode. **Ask through it, never through the four flags**: a period of a kind that has no

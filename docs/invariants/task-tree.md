@@ -173,7 +173,8 @@ the menu's "deep copy") and the bare **task-id reference** `taskIdReferenceText`
   title, or an indent jump ⇒ `null` ⇒ the reducer returns the state unchanged. A plain tab-indented title tree
   still pastes, with its min-times left null.
 - The pre-1.6.0 form-feed shape is still **read** (a clipboard outlives a rebuild), never written.
-- **The cell menus are sort-2 pop-ups and dismiss through the app-root observer** (`transientMenuDismissal`,
+- **The cell menus are the one thing an outside press still closes, through the app-root observer**
+  (`transientMenuDismissal`,
   `popups.md`), never through their own `DropdownMenu`. A focusable popup CONSUMES the outside press for its
   own `onDismissRequest`, which is exactly the press that had to go on and select the next cell — so both cell
   menus (the row's and the percentage column's) pass `PopupProperties(focusable = false)` and register with

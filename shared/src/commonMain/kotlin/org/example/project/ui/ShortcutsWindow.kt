@@ -1,6 +1,5 @@
 package org.example.project.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -12,18 +11,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -39,6 +33,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -50,9 +45,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import kotlin.math.roundToInt
 import org.example.project.scheduler.platform.GlobalHotkeyClaim
 import org.example.project.scheduler.platform.GlobalShortcut
 import org.example.project.scheduler.platform.GlobalShortcutBindings
@@ -92,11 +85,13 @@ fun ShortcutsWindow(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     initialOffset: Offset = Offset.Zero,
-    /** Persists the window's new drag position when a drag gesture ends (local-only geometry). */
-    onOffsetChange: (Offset) -> Unit = {},
+    /** Initial size in px; `Size.Zero` opens the window at its default size. */
+    initialSize: Size = Size.Zero,
+    /** Persists the window's new position/size when a move or resize gesture ends (local-only geometry). */
+    onGeometryChange: (Offset, Size) -> Unit = { _, _ -> },
     onRaise: () -> Unit = {},
 ) {
-    var offset by remember { mutableStateOf(initialOffset) }
+    val frame = rememberWindowFrameState("Shortcuts", initialOffset, initialSize)
     // The row currently listening for a chord, or null. Compose-only state: a capture in flight is not a
     // fact about the account, and closing the window must simply abandon it.
     var capturing by remember { mutableStateOf<GlobalShortcut?>(null) }
@@ -117,189 +112,159 @@ fun ShortcutsWindow(
     }
     LaunchedEffect(capturingNow) { if (capturingNow != null) captureFocus.requestFocus() }
 
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 10.dp,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = modifier
-            .offset { IntOffset(offset.x.roundToInt(), offset.y.roundToInt()) }
-            // requiredWidth (not width) so the window keeps its fixed width whatever the content area is.
-            .requiredWidth(470.dp)
-            .raiseOnPress(onRaise)
-            // Focusable ONLY while a row is listening: the window is an overlay over the tree, and a node
-            // that could hold the keyboard the rest of the time would swallow the tree's own typing.
-            .then(
-                if (capturingNow == null) {
-                    Modifier
-                } else {
-                    Modifier
-                        // A press anywhere else abandons the capture. Without this the row would sit
-                        // listening with the OS claim standing down — every chord dead until the user
-                        // happened to come back and press Cancel.
-                        .onFocusChanged { focus ->
-                            if (focus.isFocused) {
-                                captureHasFocus = true
-                            } else if (captureHasFocus) {
-                                captureHasFocus = false
-                                capturing = null
-                                rejection = null
-                            }
-                        }
-                        .focusRequester(captureFocus)
-                        .focusable()
-                        .onPreviewKeyEvent { event ->
-                            // Everything is consumed while listening, key-ups included: a chord half-read
-                            // must not also reach whatever is underneath.
-                            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent true
-                            if (event.key == Key.Escape) {
-                                capturing = null
-                                rejection = null
-                                return@onPreviewKeyEvent true
-                            }
-                            // A modifier on its own, or a key outside the bindable set, is the user still
-                            // reaching for the chord — keep listening.
-                            val key = capturableKeys[event.key] ?: return@onPreviewKeyEvent true
-                            val binding =
-                                ShortcutBinding(
-                                    key = key,
-                                    ctrl = event.isCtrlPressed,
-                                    shift = event.isShiftPressed,
-                                    alt = event.isAltPressed,
-                                )
-                            val why = GlobalShortcutBindings.rejection(bindings, capturingNow, binding)
-                            rejection = why
-                            if (why == null) {
-                                capturing = null
-                                onRebind(capturingNow, binding)
-                            }
-                            true
-                        }
-                },
-            ),
-    ) {
-        Column(Modifier.fillMaxWidth()) {
-            // Title bar doubles as the drag handle for moving the window.
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .windowDragHandle(onDragEnd = { onOffsetChange(offset) }) { dragAmount ->
-                        offset += dragAmount
+    // The keyboard the window takes while a row is listening for a chord — and nothing at all the rest of
+    // the time (see the note on [AppWindowFrame]'s modifier below).
+    val captureModifier =
+        if (capturingNow == null) {
+            Modifier
+        } else {
+            Modifier
+                // A press anywhere else abandons the capture. Without this the row would sit listening
+                // with the OS claim standing down — every chord dead until the user happened to come back
+                // and press Cancel.
+                .onFocusChanged { focus ->
+                    if (focus.isFocused) {
+                        captureHasFocus = true
+                    } else if (captureHasFocus) {
+                        captureHasFocus = false
+                        capturing = null
+                        rejection = null
                     }
-                    .padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+                }
+                .focusRequester(captureFocus)
+                .focusable()
+                .onPreviewKeyEvent { event ->
+                    // Everything is consumed while listening, key-ups included: a chord half-read must
+                    // not also reach whatever is underneath.
+                    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent true
+                    if (event.key == Key.Escape) {
+                        capturing = null
+                        rejection = null
+                        return@onPreviewKeyEvent true
+                    }
+                    // A modifier on its own, or a key outside the bindable set, is the user still reaching
+                    // for the chord — keep listening.
+                    val key = capturableKeys[event.key] ?: return@onPreviewKeyEvent true
+                    val binding =
+                        ShortcutBinding(
+                            key = key,
+                            ctrl = event.isCtrlPressed,
+                            shift = event.isShiftPressed,
+                            alt = event.isAltPressed,
+                        )
+                    val why = GlobalShortcutBindings.rejection(bindings, capturingNow, binding)
+                    rejection = why
+                    if (why == null) {
+                        capturing = null
+                        onRebind(capturingNow, binding)
+                    }
+                    true
+                }
+        }
+
+    AppWindowFrame(
+        title = "Keyboard shortcuts",
+        state = frame,
+        onClose = onDismiss,
+        defaultWidth = 470.dp,
+        defaultHeight = 620.dp,
+        // Focusable ONLY while a row is listening for a chord: the window is an overlay over the tree, and
+        // a node that could hold the keyboard the rest of the time would swallow the tree's own typing.
+        modifier = modifier.then(captureModifier),
+        onRaise = onRaise,
+        onGeometryChange = onGeometryChange,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                // Follows the height the window was given (it is resizable) and scrolls inside it,
+                // rather than growing past the bottom of the app.
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            val globalGroup = KeyboardShortcutCatalog.globalGroup(bindings)
+            GroupBlock(globalGroup) {
                 Text(
-                    text = "Keyboard shortcuts",
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f),
+                    text = claim.explain(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (claim == GlobalHotkeyClaim.Exclusive) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
                 )
                 Box(
-                    modifier = Modifier.size(28.dp).clip(CircleShape).clickable(onClick = onDismiss),
-                    contentAlignment = Alignment.Center,
-                ) {
+                    Modifier.fillMaxWidth().height(1.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant),
+                )
+                GlobalShortcut.entries.forEach { shortcut ->
+                    GlobalShortcutRow(
+                        shortcut = shortcut,
+                        chord = GlobalShortcutBindings.chordOf(bindings, shortcut),
+                        // Only an override can be reset — a shortcut already on its shipped chord has
+                        // nothing to put back.
+                        overridden = shortcut in bindings,
+                        listening = capturingNow == shortcut,
+                        // The chords do nothing on a platform that cannot claim them, so there is
+                        // nothing to rebind there either.
+                        rebindable = claim != GlobalHotkeyClaim.Unsupported,
+                        onStartCapture = {
+                            rejection = null
+                            captureHasFocus = false
+                            capturing = shortcut
+                        },
+                        onCancelCapture = {
+                            rejection = null
+                            capturing = null
+                        },
+                        onReset = {
+                            rejection = null
+                            capturing = null
+                            onRebind(shortcut, null)
+                        },
+                    )
+                }
+                rejection?.let {
                     Text(
-                        "✕",
-                        style = MaterialTheme.typography.titleSmall,
+                        text = it,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                if (capturingNow != null) {
+                    Text(
+                        text = "Press the chord you want — at least " +
+                            "${GlobalShortcutBindings.MIN_MODIFIERS} of Ctrl, Shift and Alt, then a " +
+                            "letter, a digit or a function key. Escape cancels.",
+                        style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
                     )
                 }
             }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
 
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // The list is longer than most screens leave room for, so it scrolls inside the window
-                    // rather than growing past the bottom of the app.
-                    .heightIn(max = 560.dp)
-                    .verticalScroll(rememberScrollState())
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                val globalGroup = KeyboardShortcutCatalog.globalGroup(bindings)
-                GroupBlock(globalGroup) {
-                    Text(
-                        text = claim.explain(),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (claim == GlobalHotkeyClaim.Exclusive) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            MaterialTheme.colorScheme.error
-                        },
-                    )
+            KeyboardShortcutCatalog.fixedGroups.forEach { group ->
+                GroupBlock(group) {
                     Box(
                         Modifier.fillMaxWidth().height(1.dp)
                             .background(MaterialTheme.colorScheme.outlineVariant),
                     )
-                    GlobalShortcut.entries.forEach { shortcut ->
-                        GlobalShortcutRow(
-                            shortcut = shortcut,
-                            chord = GlobalShortcutBindings.chordOf(bindings, shortcut),
-                            // Only an override can be reset — a shortcut already on its shipped chord has
-                            // nothing to put back.
-                            overridden = shortcut in bindings,
-                            listening = capturingNow == shortcut,
-                            // The chords do nothing on a platform that cannot claim them, so there is
-                            // nothing to rebind there either.
-                            rebindable = claim != GlobalHotkeyClaim.Unsupported,
-                            onStartCapture = {
-                                rejection = null
-                                captureHasFocus = false
-                                capturing = shortcut
-                            },
-                            onCancelCapture = {
-                                rejection = null
-                                capturing = null
-                            },
-                            onReset = {
-                                rejection = null
-                                capturing = null
-                                onRebind(shortcut, null)
-                            },
-                        )
-                    }
-                    rejection?.let {
-                        Text(
-                            text = it,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                    }
-                    if (capturingNow != null) {
-                        Text(
-                            text = "Press the chord you want — at least " +
-                                "${GlobalShortcutBindings.MIN_MODIFIERS} of Ctrl, Shift and Alt, then a " +
-                                "letter, a digit or a function key. Escape cancels.",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                    }
-                }
-
-                KeyboardShortcutCatalog.fixedGroups.forEach { group ->
-                    GroupBlock(group) {
-                        Box(
-                            Modifier.fillMaxWidth().height(1.dp)
-                                .background(MaterialTheme.colorScheme.outlineVariant),
-                        )
-                        group.shortcuts.forEach { shortcut ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
-                                verticalAlignment = Alignment.Top,
-                            ) {
-                                ChordText(shortcut.keys)
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = shortcut.description,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.weight(1f),
-                                )
-                            }
+                    group.shortcuts.forEach { shortcut ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            ChordText(shortcut.keys)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = shortcut.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
                         }
                     }
                 }
