@@ -4268,7 +4268,7 @@ private fun DayColumn(
                             CalendarBubbleSection(
                                 CalendarBubbleSection.Kind.NoScreen,
                                 "No screen",
-                                "${formatHm(range.startEpochMillis, tz)} – ${formatHm(range.endEpochMillis, tz)}",
+                                bubbleTimeRange(range.startEpochMillis, range.endEpochMillis, tz),
                             ),
                         ),
                     )
@@ -4594,8 +4594,7 @@ private fun DayColumn(
                     )
                     Text(
                         text =
-                            "${hmOrInfinity(target.fullStartMillis, target.openStart, tz)} – " +
-                                hmOrInfinityEnd(target.fullEndMillis, tz),
+                            placedTimeRange(target, tz),
                         style = MaterialTheme.typography.labelSmall,
                         color = CalColors.muted,
                     )
@@ -5307,7 +5306,7 @@ private fun ScreenBreakBand(
     showsDayDate: Boolean,
 ) {
     val height = (hourHeight * (slice.bottomHour - slice.topHour)).coerceAtLeast(SCREEN_BREAK_MIN_HEIGHT)
-    val timeRange = "${formatHm(marker.fullStartMillis, tz)} – ${formatHm(marker.fullEndMillis, tz)}"
+    val timeRange = bubbleTimeRange(marker.fullStartMillis, marker.fullEndMillis, tz)
     Box(
         modifier = Modifier
             .offset(x = colWidth * slice.xFraction, y = hourHeight * slice.topHour)
@@ -5568,7 +5567,7 @@ private fun blockBubbleOverlays(
     bottom: Float,
     tz: TimeZone,
 ): List<BubbleOverlay> {
-    val timeRange = "${formatHm(record.fullStartMillis, tz)} – ${formatHm(record.fullEndMillis, tz)}"
+    val timeRange = bubbleTimeRange(record.fullStartMillis, record.fullEndMillis, tz)
     return deviceHoverZones(record.deviceSegments, top, bottom).map { zone ->
         val line = zone.devices?.let { d ->
             if (d.isEmpty()) "Open: no device" else "Open: ${d.joinToString(", ")}"
@@ -5607,7 +5606,7 @@ private fun panelBubbleSection(r: PlacedRecord, tz: TimeZone, times: String? = n
 
 /** PRD §8/§12: a placed element's true (un-clipped) start–end line; an open-ended start shows "∞". */
 private fun placedTimeRange(r: PlacedRecord, tz: TimeZone): String =
-    "${hmOrInfinity(r.fullStartMillis, r.openStart, tz)} – ${hmOrInfinityEnd(r.fullEndMillis, tz)}"
+    bubbleTimeRange(r.fullStartMillis, r.fullEndMillis, tz, r.openStart)
 
 /**
  * PRD §8 hover: the section stack the cursor is currently over, and where. [pos] is the cursor position in
@@ -5812,7 +5811,7 @@ internal fun reminderBubbleSection(tag: PlacedRecord, tz: TimeZone): CalendarBub
     CalendarBubbleSection(
         CalendarBubbleSection.Kind.Reminder,
         tag.title,
-        formatHm(tag.fullStartMillis, tz),
+        formatHms(tag.fullStartMillis, tz),
     )
 
 /**
@@ -5904,7 +5903,7 @@ internal fun alarmBubbleSection(marker: PlacedRecord, tz: TimeZone): CalendarBub
     CalendarBubbleSection(
         CalendarBubbleSection.Kind.Alarm,
         "${alarmMarkerIcon(marker)} ${marker.title}".trim(),
-        formatHm(marker.fullStartMillis, tz),
+        formatHms(marker.fullStartMillis, tz),
     )
 
 /**
@@ -6550,19 +6549,44 @@ private fun formatHm(millis: Long, tz: TimeZone): String {
 }
 
 /**
+ * PRD §8: the wall-clock time of [millis] **to the second**, `HH:MM:SS` — what the info surface says.
+ *
+ * The bubble is the one place that answers "when exactly is this", and the calendar is full of things a
+ * minute cannot express: a 20-second look-away (§15) reads as a zero-length range at `HH:MM`, and every
+ * derived band is cut at the millisecond a device locked or a session opened, so two of them abutting look
+ * like they overlap. The EDITORS keep `formatHm` — their fields parse `H:mm` and commit on the minute.
+ */
+private fun formatHms(millis: Long, tz: TimeZone): String {
+    val dt = Instant.fromEpochMilliseconds(millis).toLocalDateTime(tz)
+    return "${twoDigits(dt.hour)}:${twoDigits(dt.minute)}:${twoDigits(dt.second)}"
+}
+
+/**
  * PRD §12: the start label for a derived band. "∞" when the band is open-ended into the past ([openStart] —
  * the inactivity extends indefinitely back and the drawn start is only the display floor), else the
- * wall-clock `HH:MM`.
+ * wall-clock `HH:MM:SS`.
  */
-private fun hmOrInfinity(millis: Long, openStart: Boolean, tz: TimeZone): String =
-    if (openStart || SchedulerDomain.isOpenPast(millis)) "∞" else formatHm(millis, tz)
+private fun hmsOrInfinity(millis: Long, openStart: Boolean, tz: TimeZone): String =
+    if (openStart || SchedulerDomain.isOpenPast(millis)) "∞" else formatHms(millis, tz)
 
 /**
  * PRD §8/§12: the END label of a period — "∞" when it never ends (a hand-added period saved with an open
- * end, [SchedulerDomain.isOpenFuture]), else the wall-clock `HH:MM`.
+ * end, [SchedulerDomain.isOpenFuture]), else the wall-clock `HH:MM:SS`.
  */
-private fun hmOrInfinityEnd(millis: Long, tz: TimeZone): String =
-    if (SchedulerDomain.isOpenFuture(millis)) "∞" else formatHm(millis, tz)
+private fun hmsOrInfinityEnd(millis: Long, tz: TimeZone): String =
+    if (SchedulerDomain.isOpenFuture(millis)) "∞" else formatHms(millis, tz)
+
+/**
+ * PRD §8: the start–end line of ONE info-surface section — the one funnel every section's times go through
+ * (the block path then appends its "Open: …" device line to it), so a second call site cannot start writing
+ * the bubble's times to a different precision or with a different open-ended dash.
+ */
+internal fun bubbleTimeRange(
+    startMillis: Long,
+    endMillis: Long,
+    tz: TimeZone,
+    openStart: Boolean = false,
+): String = "${hmsOrInfinity(startMillis, openStart, tz)} – ${hmsOrInfinityEnd(endMillis, tz)}"
 
 /** Parse "H:mm" / "HH:mm" onto the calendar date of [refMillis]; null when malformed. */
 private fun parseHmOnDateOf(text: String, refMillis: Long, tz: TimeZone): Long? {

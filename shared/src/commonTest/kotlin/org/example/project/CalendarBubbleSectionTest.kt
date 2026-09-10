@@ -4,10 +4,12 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
+import org.example.project.scheduler.domain.SchedulerDomain
 import org.example.project.ui.CalendarBubbleSection
 import org.example.project.ui.CalendarBubbleSection.Kind
 import org.example.project.ui.PlacedRecord
 import org.example.project.ui.alarmBubbleSection
+import org.example.project.ui.bubbleTimeRange
 import org.example.project.ui.orderedBubbleSections
 import org.example.project.ui.reminderBubbleSection
 
@@ -134,7 +136,7 @@ class CalendarBubbleSectionTest {
         // at the moment it was ticked off, and the user hovering it is asking when the reminder is for.
         // A reminder has no duration, so the line is one time and not a range.
         val tz = TimeZone.UTC
-        val due = Instant.parse("2026-09-06T09:30:00Z").toEpochMilliseconds()
+        val due = Instant.parse("2026-09-06T09:30:20Z").toEpochMilliseconds()
         val tag = PlacedRecord(
             title = "Take the pills",
             startHour = 14f,
@@ -149,7 +151,7 @@ class CalendarBubbleSectionTest {
         val section = reminderBubbleSection(tag, tz)
         assertEquals(Kind.Reminder, section.kind)
         assertEquals("Take the pills", section.title)
-        assertEquals("09:30", section.times)
+        assertEquals("09:30:20", section.times)
     }
 
     // ----- a ring's own section ------------------------------------------------------------------------
@@ -179,10 +181,10 @@ class CalendarBubbleSectionTest {
         // Not where the marker is DRAWN: coinciding rings stack downward, so a marker can sit below its own
         // time, and "when does this go off" is the whole of what hovering it asks.
         val tz = TimeZone.UTC
-        val due = Instant.parse("2026-09-10T16:45:00Z").toEpochMilliseconds()
+        val due = Instant.parse("2026-09-10T16:45:07Z").toEpochMilliseconds()
         val section = alarmBubbleSection(ring("5:00", due, timer = true), tz)
         assertEquals(Kind.Alarm, section.kind)
-        assertEquals("16:45", section.times)
+        assertEquals("16:45:07", section.times)
     }
 
     @Test
@@ -194,6 +196,35 @@ class CalendarBubbleSectionTest {
         val due = Instant.parse("2026-09-10T16:45:00Z").toEpochMilliseconds()
         assertEquals("⏳ Tea", alarmBubbleSection(ring("Tea", due, timer = true), tz).title)
         assertEquals("⏰ Wake up", alarmBubbleSection(ring("Wake up", due, timer = false), tz).title)
+    }
+
+    // ----- the times, to the second --------------------------------------------------------------------
+
+    @Test
+    fun a_section_names_its_times_to_the_second() {
+        // The bubble is the one place that answers "when exactly is this". Truncated to the minute, a 20s
+        // look-away (§15) reads as an empty range and two abutting derived bands read as overlapping.
+        val tz = TimeZone.UTC
+        val start = Instant.parse("2026-09-10T11:04:38Z").toEpochMilliseconds()
+        val end = Instant.parse("2026-09-10T11:04:58Z").toEpochMilliseconds()
+        assertEquals("11:04:38 – 11:04:58", bubbleTimeRange(start, end, tz))
+    }
+
+    @Test
+    fun an_open_ended_side_is_infinity_and_the_other_side_still_carries_its_seconds() {
+        // PRD §12: an ∞ end is the absence of a time, not a time formatted differently — so adding the
+        // seconds must not turn either open side into a printed clock.
+        val tz = TimeZone.UTC
+        val start = Instant.parse("2026-09-10T07:15:09Z").toEpochMilliseconds()
+        assertEquals(
+            "∞ – 07:15:09",
+            bubbleTimeRange(SchedulerDomain.OPEN_PAST_MILLIS, start, tz),
+        )
+        assertEquals(
+            "07:15:09 – ∞",
+            bubbleTimeRange(start, SchedulerDomain.OPEN_FUTURE_MILLIS, tz),
+        )
+        assertEquals("∞ – 07:15:09", bubbleTimeRange(start, start, tz, openStart = true))
     }
 
     private fun ring(title: String, dueMillis: Long, timer: Boolean) =
@@ -213,11 +244,15 @@ class CalendarBubbleSectionTest {
         val ordered =
             orderedBubbleSections(
                 listOf(
-                    CalendarBubbleSection(Kind.NoComputerUnlocked, "No computer unlocked", "08:00 – 09:00"),
-                    CalendarBubbleSection(Kind.Task, "Write the report", "08:30 – 08:45"),
+                    CalendarBubbleSection(
+                        Kind.NoComputerUnlocked,
+                        "No computer unlocked",
+                        "08:00:00 – 09:00:00",
+                    ),
+                    CalendarBubbleSection(Kind.Task, "Write the report", "08:30:00 – 08:45:00"),
                 ),
             )
         assertEquals(listOf("Write the report", "No computer unlocked"), ordered.map { it.title })
-        assertEquals(listOf("08:30 – 08:45", "08:00 – 09:00"), ordered.map { it.times })
+        assertEquals(listOf("08:30:00 – 08:45:00", "08:00:00 – 09:00:00"), ordered.map { it.times })
     }
 }

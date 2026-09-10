@@ -11,6 +11,26 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### The calendar's info bubble writes its times to the second — 2026-09-10
+
+→ `docs/invariants/calendar.md`, PRD §8. `shared` (`ui/CalendarUi.kt`); `CalendarBubbleSectionTest`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy, no schema migration.**
+
+Asked for as: in the calendar, in the info bubble, the times must include the seconds.
+
+- **Every section's times are now `HH:MM:SS`** — the start–end range of a task panel, a screen break, a
+  no-screen or inactivity band, a sleep window, a layer, and the single instant of the two zero-duration
+  markers (a §14 reminder tag, a §18 alarm/timer ring). The phone's contextual-menu panel info follows,
+  being the same content by spec.
+- **Why it was wrong at the minute.** The bubble is the one surface that answers *when exactly is this*. A
+  20-second look-away (§15) truncated to a range with two equal ends, and every derived band is cut at the
+  millisecond a device locked or a session opened — so two abutting bands read as overlapping.
+- **One funnel, `bubbleTimeRange`.** The five call sites that each built their own `"$a – $b"` (the block
+  overlays, the break band, a sleep window's wider no-screen line, `placedTimeRange`, the phone menu) now
+  read it, and it is where the "∞" open-bound rule lives — an absent bound stays "∞" at any precision.
+- **The editors keep `formatHm`.** Their fields parse `H:mm` and commit on the minute, so a hand-edited
+  bound lands on `:00` seconds; that is a statement about the edit, not about the bubble.
+
 ### Overlapping "No screen" periods unify instead of splitting the column — 2026-09-10
 
 → `docs/invariants/calendar.md`, PRD §8. `shared` (`scheduler/domain/SchedulerDomain.kt`,

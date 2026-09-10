@@ -69,6 +69,14 @@ Global rules that always apply: `CLAUDE.md`.
   site. The **two zero-duration markers lead** it for the same reason they are emitted last: a §14 reminder tag
   and a §18 alarm/timer ring are the top-most things the column draws, so each is what the cursor is on and
   each is what hides everything below it (the tag over the ring, which is the order they are drawn in).
+- **The bubble's times are written TO THE SECOND** (`HH:MM:SS`), through the one funnel `bubbleTimeRange` —
+  `placedTimeRange`, the block/break/no-screen lines and the phone menu's panel info all read it, and the two
+  zero-duration sections (`reminderBubbleSection`, `alarmBubbleSection`) share its `formatHms`. The bubble is
+  the one surface that answers *when exactly is this*, and a minute cannot say it: a 20-second look-away
+  (§15) truncates to a range whose two ends are equal, and every derived band is cut at the millisecond a
+  device locked, so two abutting ones read as overlapping. An "∞" bound is the ABSENCE of a time, so it stays
+  a dash-and-∞ at any precision. The **editors keep `formatHm`** — their fields parse `H:mm` and commit on
+  the minute — so an edited period's seconds go to `:00`, which is a statement about the edit, not the bubble.
 - **AN INERT ELEMENT OWES THE BUBBLE WHAT IT HIDES JUST AS MUCH AS A CLICKABLE ONE**, and it is the case that
   goes unnoticed. A §14 tag is a pointer-input node, so leaving it silent showed at once as a bubble naming
   *nothing*; a §18 ring registers no input at all, so the tiles under it went on reporting and the bubble
