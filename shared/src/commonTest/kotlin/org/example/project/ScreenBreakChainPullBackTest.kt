@@ -4,6 +4,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import org.example.project.scheduler.domain.DynamicPeriods
+import org.example.project.scheduler.domain.DynamicPeriods.MODE_AT_SCREEN
+import org.example.project.scheduler.domain.DynamicPeriods.MODE_AWAY
 import org.example.project.scheduler.domain.PeriodKinds
 import org.example.project.scheduler.domain.PlanTask
 import org.example.project.scheduler.domain.RestrictivePeriod
@@ -76,27 +78,53 @@ class ScreenBreakChainPullBackTest {
     }
 
     @Test
-    fun a_chain_that_ended_before_the_line_pulls_nothing_back() {
-        // The bullet's own condition — the chain has to END somewhere in [now line, +infinity) — and it is
-        // what keeps the exception to the frozen past confined to the case it is written for. A pause the user
-        // came back from is finished business: the break that fell due at the end of it is placed there, where
-        // the line already crossed it, and re-anchoring it backwards would rewrite a past that is fixed.
+    fun a_chain_the_line_has_left_still_holds_the_break_it_took() {
+        // The bullet's own clause — the chain has to END somewhere in [now line, +infinity) — is the PRESENT
+        // TENSE of "the chain took this break": a chain reaching the line is one the user is still inside, so
+        // the break is still being taken. Once the line is past it the question is no longer about the line at
+        // all, and answering it with the line's CURRENT position is what broke the frozen past: the break was
+        // placed at the chain's start for the whole time the line was inside the chain, and the instant the
+        // user came back it moved to the chain's end and was then dragged onto the line by mode 1. A chain
+        // that outlasted the break took it, and that answer never changes as the line advances.
         val chainStart = 50 * MIN
         val chainEnd = 52 * MIN
         val base = awayChain(chainStart, chainEnd, closedEnd = false)
         val spec = DynamicPeriods.Spec(DynamicPeriods.LABEL_20S, 20 * SEC, 25 * MIN)
+        fun placedAt(tp: Long) =
+            DynamicPeriods.instances(
+                base, listOf(spec), 0L, 2 * HOUR, tpMillis = tp,
+                mode = DynamicPeriods.MODE_AWAY, sweepFromMillis = 0L,
+            ).map { it.startMillis }.filter { it in chainStart..chainEnd }
+
+        assertEquals(listOf(chainStart), placedAt(51 * MIN), "while the line is inside the chain")
+        assertEquals(listOf(chainStart), placedAt(90 * MIN), "and still, once the line has left it")
+        assertEquals(chainStart, DynamicPeriods.chainTaking(base, spec, chainEnd, 90 * MIN, MODE_AWAY)?.startMillis)
+    }
+
+    @Test
+    fun a_chain_shorter_than_the_break_took_nothing() {
+        // The other half of the same sentence, and what keeps the exception to the frozen past confined to the
+        // case it is written for: the user came back too soon, so the break was never completed. It is owed
+        // again — mode 1 goes back to dragging it — and nothing is written into a past it did not happen in.
+        val chainStart = 50 * MIN
+        val chainEnd = chainStart + 2 * MIN
+        val base = awayChain(chainStart, chainEnd, closedEnd = false)
+        val specs =
+            listOf(
+                DynamicPeriods.Spec(DynamicPeriods.LABEL_20S, 20 * SEC, 10 * HOUR),
+                DynamicPeriods.Spec(DynamicPeriods.LABEL_5MIN, 5 * MIN, 50 * MIN),
+            )
+        val pose = specs.last()
+        assertEquals(null, DynamicPeriods.chainTaking(base, pose, chainEnd, 90 * MIN, MODE_AT_SCREEN))
         val placed =
             DynamicPeriods.instances(
-                base, listOf(spec), 0L, 2 * HOUR, tpMillis = 90 * MIN,
-                mode = DynamicPeriods.MODE_AWAY, sweepFromMillis = 0L,
+                base, specs, 0L, 2 * HOUR, tpMillis = 90 * MIN,
+                mode = DynamicPeriods.MODE_AT_SCREEN, sweepFromMillis = 0L,
             )
-        assertEquals(
-            listOf(chainEnd),
-            placed.map { it.startMillis }.filter { it in chainStart..chainEnd },
-            "the break stays at the end of a chain the line has left behind: $placed",
+        assertTrue(
+            placed.none { it.startMillis in chainStart until chainEnd },
+            "a two-minute pause is no five-minute pose: $placed",
         )
-        assertEquals(null, DynamicPeriods.chainStartTouching(base, chainEnd, 90 * MIN))
-        assertEquals(chainStart, DynamicPeriods.chainStartTouching(base, chainEnd, chainEnd))
     }
 
     @Test

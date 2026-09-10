@@ -11,6 +11,45 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### The pause a screen break was taken in IS the break — 2026-09-10
+
+→ `docs/invariants/screen-breaks.md`, `docs/adr/0003-screen-breaks.md` (post-mortem at the end), PRD §15.
+`shared` (`scheduler/domain/DynamicPeriods.kt`); `ScreenBreakTakenWhileAwayTest` (new),
+`ScreenBreakChainPullBackTest`, `DynamicPeriodsTest`, `RestPosePresenceWindowTest`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy, no schema migration.**
+
+Reported as: *"I got a notification for a 5min screen break, did the 5min break, woke the app up, and saw in
+the calendar an inactivity period instead of the 5min break."* Confirmed off the release account's own
+diagnostics: `17:36:20 notification [Screen break] take a 5min pose`, then `device sleep 6min (17:36:16 →
+17:42:55): now-line swept in mode 2`, and nothing drawn over those six minutes but the grey band.
+
+The requirements' pull-back (*"when a 'no on-screen task' period touches the start of a dynamic restrictive
+period … the period now starts at the start of this chain"*) shipped for exactly this case in ADR 0003 and was
+reaching almost nothing. Three rules each erased the break on their own:
+
+- **A rest stretch was barring the break it was the taking of.** *"After any ≥ 5-minute stretch … no 5min
+  period in the next 1 hour"* — and a five-minute pause is exactly long enough both to BE a 5-min pose and to
+  bar one, so the occurrence was pushed an hour past the pause and nothing touched its start any more. The bar
+  is about what comes **after** a stretch; the break placed at the stretch's own start is not after it
+  (`barStretch`'s `spared`, asked per label against every label's current bar).
+- **The mode-1 drag carried the owed pose over the pause to the now-line.** The past-side re-derivation asks
+  with the mode the account is in NOW, and the user is back at the screen — the same "the mode is the
+  JOURNEY's, not the arrival's" mistake `sweepMode` exists to prevent, in the display path. The drag now puts
+  an owed pose **down** at the first `no on-screen task` chain it meets, and picks it back up where that chain
+  is too short to have taken it.
+- **Coming back undid the pull-back.** "The chain ends in `[now line, +∞)`" was read as a question about where
+  the line is now, so the break sat at the pause's start while the user was away and left it the instant they
+  returned — the **frozen past** broken by a mode flip. It is now *the chain reaches the line, **or** it
+  outlasted the break*, the second being a fact of the past that never changes.
+
+`chainStartTouching` → **`chainTaking`**, which is where all three answers and both refusals now live. Falling
+out of it: **a chain gives each of the three one occurrence** and is an ordinary rest stretch to it afterwards
+— without that the break's re-anchor lands back in the chain that just took it and the walk crawls a
+millisecond at a time until `MAX_STEPS` stops it.
+
+Visible consequence, stated because it is new on screen: a break falling due inside **any** `no on-screen
+task` chain is now drawn at that chain's start — a night, a long pause, a period the user drew.
+
 ### The calendar's info bubble writes its times to the second — 2026-09-10
 
 → `docs/invariants/calendar.md`, PRD §8. `shared` (`ui/CalendarUi.kt`); `CalendarBubbleSectionTest`.

@@ -168,20 +168,46 @@ identifiers, persisted keys.
   layers** hatch that stretch by their own rule and need nothing added: in mode 2 this device's OS lock scan
   hatches its own layer and a peer that cannot be asked is assumed locked, and in mode 3 the away button feeds
   its own layer, drawn dotted (`SchedulerDomain.declaredAwayRegions`).
-- **A dynamic period is PULLED BACK onto the start of the `no on-screen task` chain that touches it**
-  (`DynamicPeriods.chainStartTouching`, the ONE reading) — the requirements' last bullet in this section, and
-  their one sanctioned exception to the **frozen past**. Three clauses, each load-bearing: it is a **chain**,
-  so two periods that abut are one stretch exactly as they are for the bars; the chain must **end at or after
-  the now-line**, so a pause the user came back from is finished business and pulls nothing back; and it reads
-  the **environment**, never the walk's own output — a placed dynamic period is `no task allowed` and would
-  qualify as a chain of its own, where the *chain merge* is the rule instead. Without it the break rides the
-  line and never happens: any emptiness absorbs a period, so a break falling due inside a running pause is
-  pushed to the end of the stretch — which IS the now-line, and goes on being the now-line for as long as the
-  user stays away, which is why the period vanished from the past instead of staying in it. It is **refused in
-  exactly one case**, and refusing it there is mode 1's own rule rather than an exception to this one: a POSE
-  pulled back far enough to reach `t_p` would cover it, which mode 1 forbids, so the drag is kept. A pull-back
-  also **floors its own bar at the instant the period fell due**, or the walk can hand the label a bar below
-  the slot it just left and spin on it — that guard is what keeps the loop monotone, not `MAX_STEPS`.
+- **A `no on-screen task` chain TAKES the break that falls due in it, and the break is drawn at the chain's
+  START** (`DynamicPeriods.chainTaking`, the ONE reading) — the requirements' last bullet in this section, and
+  their one sanctioned exception to the **frozen past**. The pause the user spends away IS the break they were
+  told to take: the minutes already spent away count towards it, so the calendar draws the pause's first five
+  (or fifteen, or twenty) as the break and whatever reaches from its end to the line as the ordinary cover
+  below — the derived **Inactivity** band, or **Sleep** inside a §17 window. Clauses, each load-bearing:
+  - it is a **chain**, so two periods that abut are one stretch exactly as they are for the bars;
+  - it reads the **environment**, never the walk's own output — a placed dynamic period is `no task allowed`
+    and would qualify as a chain of its own, where the *chain merge* is the rule instead;
+  - the chain must have **taken the break**: one still reaching the now-line is one the user is inside, so the
+    break is still being taken (that is the requirements' own clause, in the present tense); one the line has
+    left took it exactly when it **outlasted** the break. That second half is a fact of the past and never
+    changes as the line advances, which is what the frozen past requires — read as the present-tense clause
+    alone, the break the user had just taken moved out of the pause the instant they came back. A chain
+    **shorter** than the break took nothing: the user came back too soon, so the break is owed again;
+  - a chain gives each of the three **one occurrence** and then bars them like any other rest stretch. One
+    pause is one break of each kind, which is all the chain merge would leave of two placed at the same
+    instant anyway — and without it the break's own re-anchor lands back inside the chain that just took it,
+    is taken again, and the walk crawls forward a millisecond at a time until `MAX_STEPS` stops it;
+  - it is **refused in exactly one case**, and refusing it there is mode 1's own rule rather than an exception
+    to this one: a POSE pulled back far enough to reach `t_p` would cover it, which mode 1 forbids, so the drag
+    is kept.
+- **A rest stretch does NOT bar the break it takes** (`DynamicPeriods.barStretch`'s `spared`). The
+  requirements' bar is about what comes **after** a stretch, and a break placed at the stretch's own start is
+  not after it. This is the whole of why the rule above reached almost nothing until 2026-09-10: a five-minute
+  pause is exactly long enough both to BE a 5-min pose and to bar one for an hour, so the bar cancelled the
+  break the pause was — the occurrence was pushed an hour past the pause, nothing touched it any more, and a
+  break the app had announced and the user had sat through was never drawn at all. The sparing has to be asked
+  **per label against every label's current bar**, not for the label whose turn round the walk it is: a stretch
+  bars labels other than that one, and both the 15-min pose's own turn and the re-anchor off a look-away placed
+  in the pause kicked the 5-min bar back out of it.
+- **The mode-1 drag puts an owed pose DOWN at the first stretch the line was not at a screen for**, rather than
+  carrying it to `t_p`. The line drags only while it is in mode 1, and a `no on-screen task` chain behind the
+  line is the timeline's own record that it was not — the user walked away, and the pose they owed is what they
+  walked away to take. Asked with one mode for the whole journey (which is what the past-side re-derivation
+  does: `takenScreenBreakPanels` passes the mode NOW), every pose the day owed piled onto the line and the
+  pause the user actually spent taking one was left with no period in it at all. Where the chain is too short
+  to take it, the drag picks it straight back up and carries on to the next one.
+- A pull-back also **floors its own bar at the instant the period fell due**, or the walk can hand the label a
+  bar below the slot it just left and spin on it — that guard is what keeps the loop monotone, not `MAX_STEPS`.
 - **Modes 2 and 3: `t_p` is covered**, so the gap back to the last such period's end is covered as `no on-screen
   task` — which the resilient tasks may still fill (`DynamicPeriods.awayCover`). Where the app has live
   evidence, that evidence IS the cover: an **ongoing** pause is `closedEnd`, so `liveRestPeriod` covers the

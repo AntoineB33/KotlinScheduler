@@ -121,14 +121,27 @@ class DynamicPeriodsTest {
     fun a_hand_drawn_rest_stretch_bars_the_periods_that_follow_it() {
         // A rest stretch is not only a dynamic period: an inactivity period the user drew is one too, and it
         // bars exactly the same way. This is what replaces the old "a pause re-anchors shorter pauses" rule.
+        //
+        // What it bars is what comes AFTER it. The one occurrence the stretch TAKES is not after it — the
+        // requirements' pull-back puts that one at the stretch's own start ([DynamicPeriods.chainTaking]) —
+        // so the bars are measured from the stretch's end over the periods that follow.
         val quiet = RestrictivePeriod(NOW, NOW + 30 * MIN, PeriodKinds.NO_TASK, "Inactivity")
         val panels = place(periods = listOf(quiet))
-        val firstLookAway = starts(panels, lookAway).minOrNull()
-        assertTrue(firstLookAway != null)
-        assertTrue(
-            firstLookAway >= 30 * MIN + DynamicPeriods.BAR_20S_AFTER_LONG_MILLIS,
-            "a 30-minute rest must bar the 20 s period for 20 minutes after it; got ${firstLookAway / 60000}min",
+        assertEquals(
+            0L,
+            starts(panels, lookAway).minOrNull(),
+            "the 20 s period the stretch takes starts where the stretch does",
         )
+        val firstLookAwayAfter = starts(panels, lookAway).filter { it >= 30 * MIN }.minOrNull()
+        assertTrue(firstLookAwayAfter != null)
+        assertTrue(
+            firstLookAwayAfter - 30 * MIN >= DynamicPeriods.BAR_20S_AFTER_LONG_MILLIS,
+            "a 30-minute rest must bar the 20 s period for 20 minutes after it; " +
+                "got ${(firstLookAwayAfter - 30 * MIN) / 60000}min",
+        )
+        // The 15 min pose is not taken by this stretch at all: the line is AT its start, so pulling a
+        // fifteen-minute period onto it would cover `t_p`, which mode 1 refuses. It is dragged, and the
+        // stretch bars it like any other.
         val first15 = starts(panels, pose15).minOrNull()
         assertTrue(first15 != null)
         assertTrue(

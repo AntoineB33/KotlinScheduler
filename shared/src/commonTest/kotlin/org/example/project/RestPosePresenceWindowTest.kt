@@ -37,6 +37,11 @@ class RestPosePresenceWindowTest {
         restBreak = true, key = SchedulerDomain.FIVE_MIN_BREAK_KEY,
     )
 
+    private fun lookAway() = ScreenBreak(
+        title = "look 20 feet away", intervalMillis = 20 * MIN, durationMillis = 20 * SEC,
+        key = SchedulerDomain.LOOK_AWAY_KEY,
+    )
+
     private fun pose15(interval: Long = 2 * HOUR) = ScreenBreak(
         title = "take a 15min pose", intervalMillis = interval, durationMillis = 15 * MIN,
         restBreak = true, key = SchedulerDomain.FIFTEEN_MIN_BREAK_KEY,
@@ -81,7 +86,10 @@ class RestPosePresenceWindowTest {
         // Asked without the standing periods the bars answer a different timeline — which is exactly how the
         // server ends up timing the cue to a break the user never sees. A long "no task allowed" period ahead
         // of the now-line is a rest stretch, so it bars the poses that follow it and pushes the next one out.
-        val breaks = listOf(pose5())
+        // With the look-away beside it, or the labels being POSITIONAL would put the 5-min break in the
+        // look-away's role — never dragged, and so taken by a stretch it falls due in rather than pushed past
+        // it (`DynamicPeriods.chainTaking`).
+        val breaks = listOf(lookAway(), pose5())
         val bare = SchedulerEngine.restPoseDueMillisByKey(breaks, NOW)[SchedulerDomain.FIVE_MIN_BREAK_KEY]
         val withRest = SchedulerEngine.restPoseDueMillisByKey(
             breaks,

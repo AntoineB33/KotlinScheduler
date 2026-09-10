@@ -510,7 +510,8 @@ answer, and it is stated as a rule about periods rather than about the line:
 > now starts at the start of this chain. If it means starting in the past, this is the only exception to the
 > **frozen past** rule.
 
-`DynamicPeriods.chainStartTouching` is the whole of it. The minutes already spent away COUNT towards the break
+`DynamicPeriods.chainTaking` is the whole of it (`chainStartTouching` until the post-mortem at the end of this
+file, which is where the clauses below were corrected). The minutes already spent away COUNT towards the break
 that falls due at the end of them, so the break is placed where they began, is over by the time the line has
 moved on, and stays drawn there. Three clauses, each doing work: a **chain**, so two periods that abut are one
 stretch exactly as they are for the recurrence bars; **ending at or after the line**, so a pause the user came
@@ -533,3 +534,61 @@ locked; in mode 3 the away button feeds its own layer, drawn dotted.
 
 Pinned by `ScreenBreakChainPullBackTest` (new), and by the rewritten mode cases in `DynamicPeriodsTest`,
 `TpModeTest` and `DraggedPoseNoIdlingTest`.
+
+---
+
+## The pause the break was taken IN was cancelling the break — 2026-09-10
+
+The report: *"I got a notification for a 5min screen break, did the 5min break, woke the app up, and saw in the
+calendar an inactivity period instead of the 5min break."* Confirmed from the release account's own
+diagnostics without asking what the screen looked like (`CLAUDE.md`): `17:36:20 notification [Screen break] take
+a 5min pose`, then `device sleep 6min (17:36:16 → 17:42:55): now-line swept in mode 2` — and nothing drawn over
+those six minutes but the derived grey band.
+
+The section above shipped the pull-back for exactly this case, and it turned out to reach almost nothing.
+Three separate rules were each enough on their own to erase the break, and the first two hid the third:
+
+**1. The stretch barred the break it was the taking of.** The bar is *"after any ≥ 5-minute stretch covered by
+'no on-screen task' without any task, no 5min period in the next 1 hour"*. A five-minute pause is exactly long
+enough both to BE a 5-min pose and to bar one — so the walk pushed the occurrence to `pauseEnd + 1h`, nothing
+touched its start any more, and the pull-back found nothing to pull back. The tell was that the break appeared
+and then vanished *while the user was still away*: under five minutes the stretch barred nothing and the break
+was drawn at the walk-away; at five minutes exactly it disappeared. The bar is about what comes **after** a
+stretch, and a break placed at the stretch's own start is not after it — so a stretch no longer bars the
+occurrence it takes (`barStretch`'s `spared`). It has to be asked per label against every label's current bar,
+not for the label whose turn round the walk it is: a stretch bars labels other than that one, and the first fix
+(skipping the span on that label's own turn) was still defeated by the 15-min pose's turn and by the re-anchor
+off a look-away placed in the same pause.
+
+**2. The drag carried the pose over the pause to the now-line.** `takenScreenBreakPanels` re-derives the past
+with the mode the account is in NOW, and the user is back at the screen, so mode 1 dragged every pose the day
+owed straight to `t_p` — over the pause, which is the one stretch the line was demonstrably *not* at a screen
+for. That is the same mistake `sweepMode` exists to prevent for the journey (*"the mode is the JOURNEY's, not
+the arrival's"*), reappearing in the display path. The drag now puts an owed pose **down** at the first
+`no on-screen task` chain it meets, and only carries it to the line when there is none: the line dragged it
+only for as long as it was in mode 1, and a chain behind the line is the timeline's own record of when it was
+not. Where the chain is too short to take the break, the drag picks it straight back up.
+
+**3. The pull-back was undone by the user coming back.** *"The chain ends somewhere in $[now line;+infinity)$"*
+was read as a question about where the line is now, so the break sat at the pause's start for the whole time
+the user was away and moved out of it the instant they returned. That is the **frozen past** broken by a mode
+flip. The clause is the present tense of "the chain took this break" — a chain reaching the line is one the
+user is still inside — and the past-tense half is that the chain **outlasted** the break, which never changes
+as the line advances. A chain shorter than the break took nothing: the user came back too soon, the break was
+not completed, and it is owed again.
+
+One rule fell out of fixing them: **a chain gives each of the three one occurrence**, and is an ordinary rest
+stretch to it afterwards. It is what the chain merge would leave of two placed at the same instant anyway — and
+without it the break's own re-anchor lands back inside the chain that just took it, is taken again, and the
+walk crawls forward a millisecond at a time until `MAX_STEPS` stops it (observed as the test suite going from
+20 s to over ten minutes).
+
+What the calendar draws now is what the section above always said it would: the pause's first five minutes as
+the break, the remainder as the derived **Inactivity** band behind it, and the same picture before and after
+the unlock. Pinned by `ScreenBreakTakenWhileAwayTest` (new — the report, the frozen past, the too-short pause,
+the pause with no break due in it, and that the stretch still bars what follows it), and by the rewritten cases
+in `ScreenBreakChainPullBackTest` and `DynamicPeriodsTest`.
+
+A consequence worth stating, because it is visible: a break falling due inside **any** `no on-screen task`
+chain is now drawn at that chain's start — a night, a long pause, a period the user drew. That is the
+requirements' rule rather than a new one; it was simply unreachable while the stretch's own bar fired first.

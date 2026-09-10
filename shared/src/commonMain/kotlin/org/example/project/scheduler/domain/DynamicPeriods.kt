@@ -39,13 +39,26 @@ package org.example.project.scheduler.domain
  * it is being done. The occurrence stays where the bars put it, the line walks across it, and behind the line
  * it goes on being drawn where it happened.
  *
- * ### A period is pulled back onto the chain it touches
+ * ### A chain of "no on-screen task" TAKES the break that falls due in it
  * `docs/scheduler_requirements.md`, last bullet of § *3 Dynamic Restrictive Period*: *"When a 'no on-screen
  * task' period touches the start of a dynamic restrictive period, and that this chain of 'no on-screen task'
  * periods ends somewhere in $[now line;+infinity)$, then the dynamic restrictive period now starts at the start
- * of this chain."* ([chainStartTouching]). The time already spent away COUNTS towards the break that falls due
- * at the end of it, which is what keeps a break from being owed all over again the moment the user comes back
- * — and it is the requirements' one sanctioned exception to the **frozen past**.
+ * of this chain."* ([chainTaking]). The time already spent away COUNTS towards the break that falls due inside
+ * it, which is what keeps a break from being owed all over again the moment the user comes back — and it is the
+ * requirements' one sanctioned exception to the **frozen past**.
+ *
+ * Three things follow, and each was a way the rule reached nothing at all until 2026-09-10:
+ * - **a stretch does not BAR the break it takes** ([barStretch]'s `spared`): the bar is about what comes after
+ *   a stretch, and a five-minute pause is exactly long enough both to be a 5-min pose and to bar one, so the
+ *   bar cancelled the break the pause WAS;
+ * - **the drag puts an owed pose DOWN at the first stretch the line was not at a screen for**, rather than
+ *   carrying every pose the day owed to `t_p` — the mode belongs to where the line WAS, and a chain behind the
+ *   line is the timeline's own record of it;
+ * - and **the chain goes on taking it once the line has left**, because whether a stretch outlasted a break is
+ *   a fact of the past. Read as "the chain must reach the line" alone, the break moved out of the pause the
+ *   instant the user came back, which is the frozen past broken by a mode flip.
+ *
+ * A chain gives each of the three ONE occurrence, and bars them like any other rest stretch after that.
  *
  * The timeline is taken to **start rested**, so the first 20 s may fall one bar after `t_pstart`, the first
  * 5 min an hour after it and the first 15 min two hours after it. Placing all three at the origin instead
@@ -350,11 +363,40 @@ object DynamicPeriods {
         // instant the user finished a look-away the line went straight back to dragging the next one.
         val dynamicSpans =
             mergeSpans(base.periods.filter { it.dynamic }.map { Span(it.startMillis, it.endMillis) })
+        // Hoisted out of the loop below, which asks them once per turn ([chainTaking], and the drag's own
+        // put-down): they are a function of the environment alone.
+        val noScreenChains = noScreenChains(base)
 
         val byLabel = dynamics.associateBy { it.label }
         val labels = dynamics.map { it.label }
         val bars = HashMap<String, Long>()
         for (spec in dynamics) bars[spec.label] = startMillis + spec.cadenceMillis
+        // **A chain gives each of the three ONE occurrence**, and is an ordinary rest stretch to it after
+        // that: one pause is one break of each kind, which is also all the chain merge would leave of two
+        // placed at the same instant. Without it the break's own re-anchor lands back inside the chain that
+        // just took it, is taken again, and the walk crawls forward a millisecond at a time until [MAX_STEPS]
+        // stops it.
+        val takenFrom = HashMap<String, Long>()
+        fun takingChain(label: String, spec: Spec, bar: Long): Span? =
+            chainTaking(noScreenChains, spec, bar, tpMillis, mode)
+                ?.takeIf { takenFrom[label] != it.startMillis }
+        // The README's stretch bars, with the ONE thing a stretch may not bar taken out of them: the
+        // occurrence that same stretch is about to TAKE. The bar is about what comes AFTER a stretch, and the
+        // break the stretch is the taking of is not after it — while the check has to be made HERE, against
+        // every label's current bar, because a stretch bars labels other than the one whose turn round the
+        // walk it is. (That is how the anomaly survived a first fix: the 15-min pose's own turn, and then the
+        // re-anchor off the look-away placed in the pause, each kicked the 5-min bar out of the pause it was
+        // about to be taken by.)
+        fun barRestStretch(a: Long, b: Long) {
+            val spared = HashSet<String>()
+            for (other in labels) {
+                val bar = bars[other] ?: continue
+                val otherSpec = byLabel[other] ?: continue
+                val chain = takingChain(other, otherSpec, bar) ?: continue
+                if (chain.startMillis < b && a < chain.endMillis) spared += other
+            }
+            barStretch(bars, a, b, spared)
+        }
         val out = mutableListOf<Instance>()
         var steps = 0
         while (true) {
@@ -369,6 +411,10 @@ object DynamicPeriods {
             val spec = byLabel[label] ?: break
             var start = bars[label] ?: break
             if (start >= horizonMillis) break
+            // The chain of "no on-screen task" that TOOK this occurrence, if one did ([chainTaking]) — asked
+            // BEFORE the bars get to move it, because the chain's own bar must not cancel the break the chain
+            // is the taking of. See the two skips below and the placement at the bottom of the loop.
+            val taken = takingChain(label, spec, start)
             // A rest stretch bars what comes AFTER it, and any emptiness at all absorbs what would fall
             // inside it — there is nothing for a break to interrupt where nothing is placed. Both are applied
             // in chronological order: a night on the third day cannot delay a break on the first.
@@ -376,7 +422,7 @@ object DynamicPeriods {
             for (span in restedSpans) {
                 if (span.endMillis <= start || (span.startMillis <= start && start < span.endMillis)) {
                     val before = HashMap(bars)
-                    barStretch(bars, span.startMillis, span.endMillis)
+                    barRestStretch(span.startMillis, span.endMillis)
                     if (bars != before) moved = true
                 }
             }
@@ -390,6 +436,14 @@ object DynamicPeriods {
                 }
             }
             for (span in blockedSpans) {
+                // The emptiness that TOOK the break does not also absorb it: the absorption exists to push a
+                // break out of a stretch there is nothing for it to interrupt, and this stretch is the break.
+                // (Skipping it also keeps the answer from depending on whether the surrounding emptiness
+                // reaches further than the no-screen chain does — pushed to the end of a LONGER blocked span,
+                // the slot would no longer touch the chain that took it.)
+                if (taken != null && span.startMillis < taken.endMillis && taken.startMillis < span.endMillis) {
+                    continue
+                }
                 if (span.startMillis <= start && start < span.endMillis && (bars[label] ?: 0L) < span.endMillis) {
                     bars[label] = span.endMillis
                     moved = true
@@ -422,8 +476,26 @@ object DynamicPeriods {
             // having been dragged than for having been placed there. A drag strictly increases the bar, so it
             // cannot spin — and it re-anchors that bar AT the line, which is what bounds the whole thing: at
             // most one occurrence per bar is ever swept, and the chain merge collapses those into one.
-            if (!lineIsCoveredAt(mode) && dragsAtLine(label) && start >= sweepFromMillis && start < tpMillis) {
-                bars[label] = tpMillis
+            //
+            // **A break a no-screen chain already TOOK is not dragged** ([chainTaking]): the line was covered
+            // while it crossed that stretch, so it dragged nothing there, and re-reading the past with the
+            // mode the line is in NOW is how a pose the user really took ended up parked on the line — the
+            // frozen past broken by a mode flip the stretch itself records.
+            //
+            // **And the drag PUTS THE POSE DOWN at the first stretch the line was not at a screen for**
+            // ([noScreenChains]). The line dragged it only for as long as it was in mode 1, and a "no
+            // on-screen task" chain behind the line is the timeline's own record that it was not: the user
+            // walked away, and the pose they owed is what they walked away to take. Carried all the way to
+            // `t_p` instead — which is what reading one mode for the whole journey does — every pose the day
+            // owed piled onto the line, and the pause the user actually spent taking one was left with no
+            // period in it at all, drawn as a plain "Inactivity" band. The chain still has to be able to TAKE
+            // it ([chainTaking], asked at the top of the next turn round the loop): where it is too short the
+            // break was not completed, so the drag picks it straight back up.
+            if (taken == null && !lineIsCoveredAt(mode) && dragsAtLine(label) &&
+                start >= sweepFromMillis && start < tpMillis
+            ) {
+                val putDown = chainAfter(noScreenChains, start)?.startMillis
+                bars[label] = putDown?.coerceAtMost(tpMillis) ?: tpMillis
                 continue
             }
             // It sits ON the line, and the line got here by SWEEPING (`sweepFrom < t_p`): this is the period
@@ -437,30 +509,25 @@ object DynamicPeriods {
             // and `floor + 1` in the next, and fire it twice.
             val openStart =
                 !lineIsCoveredAt(mode) && dragsAtLine(label) && start == tpMillis && sweepFromMillis < tpMillis
-            // The requirements' last bullet: a chain of "no on-screen task" periods that ENDS at this slot and
-            // reaches the line pulls the period back onto its own start ([chainStartTouching]) — the time
-            // already spent away counts towards the break that falls due at the end of it.
-            //
-            // It is refused in exactly one case, and refusing it there is the other rule rather than an
-            // exception to this one: in a mode that forbids the line to be covered, a pose pulled back far
-            // enough to reach `t_p` would cover it. The look-away is not that case in any mode — it is assumed
-            // taken, so the line is *meant* to walk through it — and neither away mode is, the line being
-            // covered there by definition. Where it is refused the period keeps the dragged form above.
-            val pulled = chainStartTouching(base, start, tpMillis)?.coerceAtLeast(startMillis)
-            val coversLine = pulled != null && pulled <= tpMillis && tpMillis < pulled + spec.durationMillis
-            val place = if (pulled != null && !(coversLine && !lineIsCoveredAt(mode) && dragsAtLine(label))) {
-                pulled
-            } else {
-                null
-            }
+            // The requirements' last bullet: a chain of "no on-screen task" periods that touches this slot
+            // pulls the period back onto its own start ([chainTaking], which is also where the two refusals
+            // live) — the time already spent away counts towards the break that falls due inside it.
+            val place = taken?.startMillis?.coerceAtLeast(startMillis)
             val inst = if (place != null) Instance(spec, place) else Instance(spec, start, openStart)
             out += inst
-            barInstance(bars, byLabel, restedSpans, inst)
+            barInstance(bars, byLabel, restedSpans, inst, ::barRestStretch)
             // A period pulled BACKWARD must not re-open the slots the walk has already passed: whatever its own
             // bar says, the next occurrence of it is looked for past the instant it fell due. Without this the
             // walk can hand the same label a bar below `start` and spin on it (the guard is what makes the loop
-            // monotone, not [MAX_STEPS]).
-            if (place != null) bars[label] = maxOf(bars.getValue(label), start + 1)
+            // monotone, not [MAX_STEPS]). Where a CHAIN took it, the next one is looked for past the chain as
+            // well: the chain has given this break its occurrence, so from here on it bars it like any other
+            // rest stretch (which is what recording it in [takenFrom] switches back on).
+            if (taken != null) {
+                takenFrom[label] = taken.startMillis
+                bars[label] = maxOf(bars.getValue(label), maxOf(start + 1, taken.endMillis))
+            } else if (place != null) {
+                bars[label] = maxOf(bars.getValue(label), start + 1)
+            }
         }
         return mergeChain(out)
     }
@@ -524,36 +591,119 @@ object DynamicPeriods {
     }
 
     /**
-     * `docs/scheduler_requirements.md` § *3 Dynamic Restrictive Period*, last bullet: **the start of the chain
-     * of "no on-screen task" periods that touches [startMillis] from behind**, or `null` where none does.
+     * `docs/scheduler_requirements.md` § *3 Dynamic Restrictive Period*, last bullet: **the chain of "no
+     * on-screen task" periods that TOOK the occurrence falling at [startMillis]**, or `null` where none did.
      *
      * *"When a 'no on-screen task' period touches the start of a dynamic restrictive period, and that this
      * chain of 'no on-screen task' periods ends somewhere in $[now line;+infinity)$, then the dynamic
      * restrictive period now starts at the start of this chain. If it means starting in the past, this is the
      * only exception to the **frozen past** rule."*
      *
-     * Three things it says, each load-bearing:
+     * It is the ONE reading of that bullet, and the walk asks it three questions with one answer: where the
+     * period is placed, which rest stretch may not bar it ([instances]' first loop), and whether the line
+     * drags it. Five things it says, each load-bearing:
      * - **A chain, not a period.** Two periods that abut are one stretch here exactly as they are for the
      *   recurrence bars ([growStretch]), so a pause running into a night is one chain — [mergeSpans] treats
      *   touching as chaining.
-     * - **It must reach the line.** A chain that ended before `t_p` is finished business behind a frozen past;
-     *   only one still running at the line (the pause the user is in the middle of) or ahead of it can pull a
-     *   period back. That is what makes this rule land where it is *for*: the break that falls due at the end
-     *   of a stretch the user has already spent away should count that stretch, not start over at the line.
+     * - **Touching or containing.** The bullet's own wording is a chain ending exactly at the slot, which is
+     *   what the absorption leaves behind (any emptiness pushes a break to the end of the stretch it fell
+     *   inside). Asking it of the raw slot too costs nothing and says the same thing one step earlier.
+     * - **It must have TAKEN the break, and that is a fact of the past.** The bullet's own clause is the
+     *   present tense of it — a chain reaching the line is one the user is still inside, so the break is
+     *   still being taken. A chain the line has left took the break exactly when it lasted at least as long
+     *   as the break did; **that answer never changes as the line advances, which is what the frozen past
+     *   requires**. Read as the bullet's clause alone, a pause the user came back from pulled nothing back,
+     *   so the 5-min pose the app announced at the walk-away — and the user sat through — moved to the end of
+     *   the pause and was then dragged onto the line by mode 1, leaving the calendar drawing the whole
+     *   stretch as one derived "Inactivity" band. A chain SHORTER than the break took nothing: the user came
+     *   back too soon, the break was not completed, so it is owed again and mode 1 goes back to dragging it.
+     * - **Mode 1 refuses a pull-back that would cover the line.** That is mode 1's own rule rather than an
+     *   exception to this one: a pose starting far enough back to still cover `t_p` would cover it, so the
+     *   chain does not take it and the drag above keeps it. The look-away is not that case in any mode — it
+     *   is assumed taken, so the line is *meant* to walk through it — and neither away mode is, the line
+     *   being covered there by definition.
      * - **It reads the ENVIRONMENT, never the walk's own output.** A dynamic period is [PeriodKinds.NO_TASK]
      *   and so would qualify as a chain of its own; where two of the three touch, the README's *chain merge*
      *   ([mergeChain]) is the rule, and letting both fire would be two answers to one question.
      */
-    fun chainStartTouching(base: Base, startMillis: Long, tpMillis: Long): Long? {
-        val chains =
-            mergeSpans(
-                base.periods
-                    .filter { PeriodKinds.coversNoScreen(it.kind) && it.endMillis > it.startMillis }
-                    .map { Span(it.startMillis, it.endMillis) },
-            )
-        val chain = chains.firstOrNull { it.endMillis == startMillis && it.endMillis >= tpMillis } ?: return null
-        return chain.startMillis.takeIf { it < startMillis }
+    fun chainTaking(base: Base, spec: Spec, startMillis: Long, tpMillis: Long, mode: Int): Span? =
+        chainTaking(noScreenChains(base), spec, startMillis, tpMillis, mode)
+
+    /** [chainTaking] over chains already merged — the walk hoists them out of its loop. */
+    private fun chainTaking(
+        chains: List<Span>,
+        spec: Spec,
+        startMillis: Long,
+        tpMillis: Long,
+        mode: Int,
+    ): Span? {
+        // The merged chains are disjoint, non-abutting and sorted, so the ONE candidate is the last chain
+        // beginning at or before the slot — found by bisection, because this is asked once per label on every
+        // turn of a walk that runs on the display's hot path (ADR 0009).
+        val chain = chainAtOrBefore(chains, startMillis)?.takeIf {
+            it.endMillis == startMillis || (it.startMillis <= startMillis && startMillis < it.endMillis)
+        } ?: return null
+        // Still being taken (the chain reaches the line), or taken in full (it outlasted the break).
+        if (chain.endMillis < tpMillis && chain.durationMillis < spec.durationMillis) return null
+        // Mode 1: `t_p` must not be covered by a pose.
+        if (!lineIsCoveredAt(mode) && dragsAtLine(spec.label) &&
+            chain.startMillis <= tpMillis && tpMillis < chain.startMillis + spec.durationMillis
+        ) {
+            return null
+        }
+        return chain
     }
+
+    /**
+     * The stretches of the timeline covered by "no on-screen task", chained (two that abut are one) and in
+     * order — the environment's own record of where the line was NOT at a screen.
+     *
+     * It is read for two things that are one rule: where a chain TAKES a break falling due in it
+     * ([chainTaking]), and where the mode-1 drag puts an owed pose DOWN ([instances]). It reads the
+     * ENVIRONMENT, never the walk's own output — a dynamic period is [PeriodKinds.NO_TASK] and would qualify
+     * as a chain of its own, and where two of the three touch the README's *chain merge* ([mergeChain]) is
+     * the rule instead.
+     */
+    /** The last of the sorted, disjoint [chains] that begins at or before [millis]; `null` if none does. */
+    private fun chainAtOrBefore(chains: List<Span>, millis: Long): Span? {
+        var lo = 0
+        var hi = chains.size - 1
+        var found: Span? = null
+        while (lo <= hi) {
+            val mid = (lo + hi) / 2
+            if (chains[mid].startMillis <= millis) {
+                found = chains[mid]
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        return found
+    }
+
+    /** The first of the sorted [chains] that begins strictly after [millis] — where a drag puts a pose down. */
+    private fun chainAfter(chains: List<Span>, millis: Long): Span? {
+        var lo = 0
+        var hi = chains.size - 1
+        var found: Span? = null
+        while (lo <= hi) {
+            val mid = (lo + hi) / 2
+            if (chains[mid].startMillis > millis) {
+                found = chains[mid]
+                hi = mid - 1
+            } else {
+                lo = mid + 1
+            }
+        }
+        return found
+    }
+
+    private fun noScreenChains(base: Base): List<Span> =
+        mergeSpans(
+            base.periods
+                .filter { PeriodKinds.coversNoScreen(it.kind) && it.endMillis > it.startMillis }
+                .map { Span(it.startMillis, it.endMillis) },
+        )
 
     /**
      * **Does the line DRAG this one when it reaches it?** — the two poses yes, the 20 s look-away no.
@@ -604,16 +754,25 @@ object DynamicPeriods {
         return Span(a, b)
     }
 
-    private fun barStretch(bars: MutableMap<String, Long>, a: Long, b: Long) {
+    /**
+     * The bars a rest stretch `[a, b)` sets, per the README's second and third clauses.
+     *
+     * [spared] is the labels this very stretch TAKES an occurrence of ([chainTaking]): a stretch bars what
+     * comes AFTER it, and the break it is the taking of is not after it. Barring those too is what pushed a
+     * pose an hour past the pause the user spent taking it, leaving the calendar to draw the whole absence as
+     * one "Inactivity" band — and it fired from two places, the stretch's own turn round the walk and the
+     * re-anchor off any period placed inside it ([barInstance]), which is why the sparing lives here.
+     */
+    private fun barStretch(bars: MutableMap<String, Long>, a: Long, b: Long, spared: Set<String> = emptySet()) {
         val length = b - a
-        if (length >= STRETCH_SHORT_MILLIS && bars.containsKey(LABEL_5MIN)) {
+        if (length >= STRETCH_SHORT_MILLIS && bars.containsKey(LABEL_5MIN) && LABEL_5MIN !in spared) {
             bars[LABEL_5MIN] = maxOf(bars.getValue(LABEL_5MIN), b + BAR_5MIN_AFTER_STRETCH_MILLIS)
         }
         if (length >= STRETCH_LONG_MILLIS) {
-            if (bars.containsKey(LABEL_20S)) {
+            if (bars.containsKey(LABEL_20S) && LABEL_20S !in spared) {
                 bars[LABEL_20S] = maxOf(bars.getValue(LABEL_20S), b + BAR_20S_AFTER_LONG_MILLIS)
             }
-            if (bars.containsKey(LABEL_15MIN)) {
+            if (bars.containsKey(LABEL_15MIN) && LABEL_15MIN !in spared) {
                 bars[LABEL_15MIN] = maxOf(bars.getValue(LABEL_15MIN), b + BAR_15MIN_AFTER_LONG_MILLIS)
             }
         }
@@ -624,6 +783,8 @@ object DynamicPeriods {
         byLabel: Map<String, Spec>,
         rested: List<Span>,
         inst: Instance,
+        /** [barStretch] with the walk's sparing already applied — see the walk's `barRestStretch`. */
+        barRestStretch: (Long, Long) -> Unit,
     ) {
         // Measured from the last instant the period COVERS, not from its nominal end: a dragged period is the
         // half-open `(t_p, t_p + duration]`, which in discrete time ends one millisecond later than
@@ -638,7 +799,7 @@ object DynamicPeriods {
         // The whole of a dynamic period counts as a rest stretch: its kind is "no task allowed", which covers
         // "no on-screen task" a fortiori and leaves nobody able to run.
         val grown = growStretch(rested, inst.coveredFromMillis, until)
-        barStretch(bars, grown.startMillis, grown.endMillis)
+        barRestStretch(grown.startMillis, grown.endMillis)
     }
 
     /**
