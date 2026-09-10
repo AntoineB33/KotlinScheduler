@@ -507,18 +507,25 @@ object SchedulerDomain {
     }
 
     /**
-     * PRD §4 Filtering: the set of task sub-trees a candidate must not collide with when assigned to
-     * [cellId] — the union of the structural sub-trees of all of the cell's non-root ancestors (the
-     * "parents set"), with [cellId] itself ignored. Assigning a candidate whose own sub-tree shares any
-     * task with this scope would place that shared task twice inside a single non-root sub-tree. Example:
-     * with a→c and b→c, editing a cell under b yields scope {b, c}; the candidate a (sub-tree {a, c})
-     * collides on c, so b cannot be made a parent of a. Root-level cells have no ancestors, so the same
-     * task may freely recur there.
+     * PRD §1 *Constraint 2* / PRD §4 *Filtering*: the tasks a candidate's own sub-tree must not contain
+     * when assigned to [cellId] — **the cell's ancestor path**, and nothing more. A candidate holding one of
+     * its own ancestors would be its own descendant, which is the infinite mirrored cycle Constraint 2
+     * exists to forbid. Root-level cells have no ancestors, so anything may be assigned there.
+     *
+     * It used to be the union of the ancestors' whole **sub-trees** (the "parents set"): with a→c and b→c,
+     * a cell under b was refused the candidate a, because c would then sit twice inside b's sub-tree. That
+     * is a fourth constraint the PRD never states — *Filtering* is "already in the same list, or in the
+     * cell's ancestor path", and Constraint 1 forbids a repeat within one **list**, which two different
+     * lists under one parent are not. Recurring under many parents is mirroring, the thing the tree is for
+     * (Constraint 3), and on a real account that rule hid the id menu for **a third** of the (empty cell,
+     * existing title) pairs in the tree — the user types a title that exists and gets no id row at all.
+     *
+     * It was also the second answer to a question the tree already answered: [canMoveTaskIntoList] asks
+     * exactly this one (the target's ancestors against the moving task's descendants), so the very layout
+     * the menu refused could be built by dragging the cell there instead. One rule, one funnel.
      */
     private fun assignCollisionScope(state: SchedulerState, cellId: CellId): Set<TaskId> =
-        ancestorTaskIds(state, cellId).flatMapTo(mutableSetOf()) {
-            structuralSubtreeTaskIds(state, it, excludeCellId = cellId)
-        }
+        ancestorTaskIds(state, cellId)
 
     /**
      * Whether [movingTaskId] (with its whole sub-tree) may be inserted into the list owning
@@ -5042,8 +5049,9 @@ object SchedulerDomain {
         if (isRootTask(taskId)) return false
         // "already in the sub-list": the same task can't appear twice in the cell's own list.
         if (taskId in siblingTaskIds(state, cellId)) return false
-        // "parents set": assigning a task whose sub-tree shares any task with an ancestor's sub-tree
-        // would duplicate that task within a single non-root sub-tree (subsumes the ancestor/cycle case).
+        // Constraint 2: a candidate whose own sub-tree holds one of the cell's ancestors would become its
+        // own descendant — the infinite mirrored cycle. Read against the ancestor PATH ([assignCollisionScope]),
+        // which is the same question [canMoveTaskIntoList] asks of a drop.
         val collisionScope = assignCollisionScope(state, cellId)
         if (structuralSubtreeTaskIds(state, taskId, excludeCellId = cellId).any { it in collisionScope }) {
             return false
@@ -5207,9 +5215,11 @@ object SchedulerDomain {
 
     /**
      * Task IDs eligible for "Change Task" on [cellId] while editing [text].
-     * Hides tasks already in the cell's list ("sub-list") and tasks that would duplicate a task within a
-     * non-root sub-tree (the "parents set" / shared-descendant rule, see [assignCollisionScope]); sorts
-     * by path length, path label, child titles (PRD §4).
+     * PRD §4 *Filtering* — "impossible IDs (already in the same list, or in the cell's ancestor path) are
+     * hidden": tasks already in the cell's list ("sub-list") and tasks whose own sub-tree holds one of the
+     * cell's ancestors (see [assignCollisionScope]) are dropped; sorts by path length, path label, child
+     * titles (PRD §4). A task already recurring elsewhere under the same ancestor IS offered — that is
+     * mirroring (Constraint 3), not a collision.
      */
     fun eligibleAssignTaskIds(
         state: SchedulerState,

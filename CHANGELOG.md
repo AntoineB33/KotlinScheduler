@@ -11,6 +11,73 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### A task's sub-list placeholder comes off the shared cell counter — 2026-09-10
+
+`scheduler/state/SchedulerReducer.kt` (`applySetCellTitle`, where a task is minted its sub-list).
+`SchedulerReducerTest`: `re_minting_a_sub_list_never_re_mints_a_live_cell_id`. PRD §1 *Constraint 1*.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy, no schema migration.**
+
+Anomaly: *the user can put the same task id several times in the same sub-list.*
+
+The sub-**list** id is derived from the task id (`<task>/children`) — one sub-list per task, for the life of
+the account, which is right. Its placeholder **cell** was derived the same way (`cell/<task>/children/0`)
+— which is not: a cell id must be minted once, ever, and `SchedulerState.allocateCellId` is the counter that
+says so. A cell **keeps its id when it is dragged elsewhere**, so the two rules collided:
+
+1. name a cell → its task gets `T/children` holding `cell/T/children/0`;
+2. name that placeholder and **drag it out** into another list — it keeps its id;
+3. empty the parent (a blank title is what deletes), so `pruneDetachedTree` collects `T/children` and puts
+   `T.childListId` back to `null`;
+4. name `T` again through any surviving cell ⇒ the sub-list is re-minted, and `cells[cell/T/children/0] =`
+   **overwrote the dragged-away cell where it now lived**.
+
+That cell was left in two lists' `cellIds` at once, blanked, with `parentListId` naming the new one. Every
+rule that asks *what is already in this cell's list* reads `parentListId` — `siblingTaskIds`, and through it
+`canAssignTaskId` and `eligibleAssignTaskIds` — so it answered about the wrong list and Constraint 1 stopped
+being enforced for the list the cell was actually drawn in: the same task id could then be assigned to
+several cells of one sub-list. (It also silently threw away that cell's task binding.)
+
+Found by fuzzing the reducer against the invariant rather than by reading: a randomized intent walk over
+`SchedulerState.empty()`, checking after every step that no list holds one task twice and that every cell in
+a list names that list as its `parentListId`. The mismatch always came first, and always from
+`SetCellTitle`. A read-only probe of `~/.omniapp-release/scheduler-state.db` (and of accounts 1 and 2)
+found **no persisted damage** — 420 cells, 0 duplicates, 0 mismatches — so no healing migration is needed.
+
+Still open, and **older than both** of these entries (it reproduces identically with the pre-2026-09-09
+rule): the cycle Constraint 2 forbids can still be closed in two moves, because each assignment is only
+checked against the ancestor path **as it stands at that instant**. Point a cell inside `T`'s sub-list at
+`T` while that sub-list's parent cell holds something else (legal — `T` is not an ancestor yet), then point
+the parent cell back at `T` (also legal — that cell's own ancestor path is empty). The tree is then
+reachable from itself and `visibleOccurrences` recurses until the stack overflows.
+
+### The Change Task id menu filters on the ancestor path, not the ancestors' whole sub-trees — 2026-09-09
+
+`scheduler/domain/SchedulerDomain.kt` (`assignCollisionScope`, and the two readers of it —
+`canAssignTaskId` / `eligibleAssignTaskIds`). `SchedulerReducerTest`:
+`eligible_assign_task_ids_hide_shared_descendant_parents_set` rewritten as
+`eligible_assign_task_ids_offer_a_shared_descendant_parent`, plus a new
+`typing_existing_title_in_an_empty_cell_offers_the_id_row_under_a_mirroring_ancestor`. PRD §1 *Constraints*,
+PRD §4 *Filtering*.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy, no schema migration.**
+
+Anomaly: *in an empty cell I type an existing task title and I don't get the id suggestion list.*
+
+The filter was the "parents set" / shared-descendant rule (added 2026-06-21, `f9e2b07`): a candidate whose
+own sub-tree shared **any** task with the union of the ancestors' whole sub-trees was hidden. That is a
+fourth constraint the PRD never states — §4 *Filtering* is "already in the same list, or in the cell's
+ancestor path", Constraint 1 forbids a repeat within one **list** (two sub-lists under one parent are not
+one), and recurring under many parents is Constraint 3's mirroring, which is what the tree is for. It was
+also a second answer to a question the tree already answered: `canMoveTaskIntoList` asks the target's
+ancestors against the moving task's descendants, so the very layout the menu refused could be built by
+**dragging** the cell there.
+
+Measured on the release account (a read-only probe of `~/.omniapp-release/scheduler-state.db`): of the
+24 168 (empty cell, existing title) pairs in the tree, **7 503 — a third — were hidden by that rule alone**,
+which is why the menu so often had nothing under "New task" and, with the exact title typed, no menu at all
+(Menu 2 drops the exact match by design). The scope is now the ancestor **path**, read against the
+candidate's own structural sub-tree, so Constraint 2's cycle (a candidate that holds one of the cell's
+ancestors) stays refused — 855 pairs — as do the 93 same-list ones. Nothing else moved.
+
 ### A weight-table pin is the account's, not the open window's — 2026-09-09
 
 `scheduler/model/TaskModels.kt` (new `PriorityWeightPin`), `scheduler/state/SchedulerState.kt`

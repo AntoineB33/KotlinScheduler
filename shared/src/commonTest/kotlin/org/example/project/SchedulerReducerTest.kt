@@ -10,6 +10,7 @@ import kotlin.test.assertTrue
 import org.example.project.scheduler.domain.RelativePriorityDomain
 import org.example.project.scheduler.domain.SchedulerDomain
 import org.example.project.scheduler.model.AlarmEntry
+import org.example.project.scheduler.model.CellId
 import org.example.project.scheduler.model.WellKnownIds
 import org.example.project.scheduler.persistence.PersistedSnapshot
 import org.example.project.scheduler.persistence.SchedulerStateCodec
@@ -1519,6 +1520,69 @@ class SchedulerReducerTest {
     }
 
     @Test
+    fun re_minting_a_sub_list_never_re_mints_a_live_cell_id() {
+        // The anomaly: the same task id could be put several times in ONE sub-list (PRD §1 Constraint 1).
+        // A cell KEEPS its id when it is dragged elsewhere, and a task's sub-list placeholder used to be a
+        // hand-built `cell/<task>/children/0` minted afresh every time that sub-list was re-minted — so
+        // re-titling a task whose sub-list had been pruned overwrote the dragged-away cell where it now
+        // lived. That left one cell id in two lists, with `parentListId` naming the wrong one, and every
+        // "what is already in this cell's list" rule then answered about the other list.
+        var s = SchedulerState.empty()
+        fun click(cellId: CellId) {
+            s = SchedulerReducer.reduce(
+                s,
+                SchedulerIntent.ClickCell(cellId, ctrl = false, shift = false, visibleOrder = SchedulerDomain.visibleCellOrder(s)),
+            )
+        }
+
+        val parentCell = s.lists[s.rootListId]!!.cellIds.first()
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(parentCell, "parent"))
+        val parentTask = s.cells[parentCell]!!.taskId!!
+        s = SchedulerReducer.reduce(s, SchedulerIntent.ToggleExpand(parentCell))
+        val childCell = s.lists[s.tasks[parentTask]!!.childListId!!]!!.cellIds.first()
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(childCell, "child"))
+        val childTask = s.cells[childCell]!!.taskId!!
+
+        // Drag the child out of its parent's sub-list, up into the root list. It keeps its cell id.
+        click(childCell)
+        s = SchedulerReducer.reduce(
+            s,
+            SchedulerIntent.MoveSelectedCells(s.lists[s.rootListId]!!.cellIds.last(), insertBefore = true),
+        )
+        assertEquals(s.rootListId, s.cells[childCell]!!.parentListId)
+
+        // Mirror the parent under the child, so emptying its root row leaves the task itself alive.
+        s = SchedulerReducer.reduce(s, SchedulerIntent.ToggleExpand(childCell))
+        val mirrorCell = s.lists[s.tasks[childTask]!!.childListId!!]!!.cellIds.first()
+        s = SchedulerReducer.reduce(s, SchedulerIntent.AssignTaskId(mirrorCell, parentTask))
+
+        // Empty the parent's root row: a blank title is what deletes, so its sub-list is pruned and the
+        // task goes back to holding none (`childListId == null`).
+        click(parentCell)
+        s = SchedulerReducer.reduce(s, SchedulerIntent.EmptySelectedCells)
+        assertEquals(null, s.tasks[parentTask]!!.childListId)
+
+        // Naming that task again mints it a fresh sub-list — which must not land on the cell that walked away.
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(mirrorCell, "parent again"))
+        assertEquals(childTask, s.cells[childCell]!!.taskId, "the dragged cell must keep its task")
+        assertEquals(s.rootListId, s.cells[childCell]!!.parentListId, "and stay in the list it was dropped in")
+        assertTrue(childCell in s.lists[s.rootListId]!!.cellIds)
+        assertTrue(childCell !in s.lists[s.tasks[parentTask]!!.childListId!!]!!.cellIds)
+
+        // The whole point: every cell is in exactly one list, and that list is its `parentListId` — which
+        // is what makes [SchedulerDomain.siblingTaskIds] the answer Constraint 1 is read from.
+        for ((listId, list) in s.lists) {
+            for (cellId in list.cellIds) {
+                assertEquals(listId, s.cells[cellId]!!.parentListId, "cell ${cellId.value} in ${listId.value}")
+            }
+        }
+        assertFalse(
+            SchedulerDomain.canAssignTaskId(s, s.lists[s.rootListId]!!.cellIds.last(), childTask),
+            "a task already in the root list must not be assignable to another of its cells",
+        )
+    }
+
+    @Test
     fun constraint_ancestor_task_id_is_detected() {
         var s = SchedulerState.empty()
         val parentId = s.lists[s.rootListId]!!.cellIds.first()
@@ -1634,11 +1698,13 @@ class SchedulerReducerTest {
     }
 
     @Test
-    fun eligible_assign_task_ids_hide_shared_descendant_parents_set() {
-        // PRD §4 Filtering — the "parents set" / shared-descendant rule. With a→c and b→c (c shared by
-        // both a and b), a cell under b must not offer a: assigning a there would make b a parent of a,
-        // placing c twice inside b's sub-tree. An unrelated task stays assignable, and so do recurrences
-        // at root (no ancestor), which is why c can sit under both a and b in the first place.
+    fun eligible_assign_task_ids_offer_a_shared_descendant_parent() {
+        // PRD §4 Filtering is "already in the same list, or in the cell's ancestor path" — and nothing
+        // wider. With a→c and b→c (c shared by both a and b), a cell under b IS offered a: c would then
+        // sit under b twice, but in two different lists, which Constraint 1 (a taskId twice in ONE list)
+        // does not forbid and Constraint 3 (mirroring) is the whole point of. The same layout is reachable
+        // by dragging a's cell into b's list ([canMoveTaskIntoList] allows it), so the menu must not refuse
+        // what a drop performs. An unrelated task is of course assignable too.
         var s = SchedulerState.empty()
 
         // a → c
@@ -1669,11 +1735,29 @@ class SchedulerReducerTest {
         val emptyUnderB = s.lists[bChildList]!!.cellIds.last()
         assertEquals(null, s.cells[emptyUnderB]!!.taskId)
 
-        // a shares descendant c with b's sub-tree → excluded; z is unrelated → eligible.
-        assertFalse(aTask in SchedulerDomain.eligibleAssignTaskIds(s, emptyUnderB, "a"))
+        // a merely shares descendant c with b's sub-tree → still offered; z is unrelated → offered.
+        assertTrue(aTask in SchedulerDomain.eligibleAssignTaskIds(s, emptyUnderB, "a"))
         assertTrue(zTask in SchedulerDomain.eligibleAssignTaskIds(s, emptyUnderB, "z"))
-        assertFalse(SchedulerDomain.canAssignTaskId(s, emptyUnderB, aTask))
+        assertTrue(SchedulerDomain.canAssignTaskId(s, emptyUnderB, aTask))
         assertTrue(SchedulerDomain.canAssignTaskId(s, emptyUnderB, zTask))
+        // The drop that builds the same layout is allowed, which is why the menu offering it is right.
+        assertTrue(SchedulerDomain.canMoveTaskIntoList(s, aTask, bChildList, emptyUnderB, setOf(aCell)))
+
+        // Constraint 2 still holds, and it is the ancestor PATH that carries it: b itself (an ancestor of
+        // the edited cell) and a candidate whose own sub-tree HOLDS b are both refused.
+        assertFalse(SchedulerDomain.canAssignTaskId(s, emptyUnderB, bTask))
+        val holderCell = s.lists[s.rootListId]!!.cellIds.last()
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(holderCell, "holder"))
+        val holderTask = s.cells[holderCell]!!.taskId!!
+        s = SchedulerReducer.reduce(s, SchedulerIntent.ToggleExpand(holderCell))
+        val holderChild = s.lists[s.tasks[holderTask]!!.childListId!!]!!.cellIds.first()
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(holderChild, "tmp2"))
+        s = SchedulerReducer.reduce(s, SchedulerIntent.AssignTaskId(holderChild, bTask))
+        val stillEmptyUnderB = s.lists[bChildList]!!.cellIds.last()
+        assertFalse(
+            SchedulerDomain.canAssignTaskId(s, stillEmptyUnderB, holderTask),
+            "holder → b, so putting holder under b would make b its own descendant (Constraint 2)",
+        )
     }
 
     @Test
@@ -1832,6 +1916,48 @@ class SchedulerReducerTest {
             s.tasks.values.filter { it.title == "g" }.map { it.id },
             "typing an existing title must reuse it, not create a second 'g' task",
         )
+    }
+
+    @Test
+    fun typing_existing_title_in_an_empty_cell_offers_the_id_row_under_a_mirroring_ancestor() {
+        // The anomaly: in an empty cell the user types a title the account already has and gets no id
+        // menu. It happened whenever that task (or any of its descendants) already appeared ANYWHERE
+        // under one of the cell's ancestors — mirroring, which PRD §4 Filtering does not forbid. Here
+        // "health" already sits under "long term" in one sub-list; typing it in the empty cell of another
+        // sub-list under the same ancestor must still offer the existing "health" as an id row.
+        var s = SchedulerState.empty()
+        val termCell = s.lists[s.rootListId]!!.cellIds.first()
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(termCell, "long term"))
+        val termTask = s.cells[termCell]!!.taskId!!
+        s = SchedulerReducer.reduce(s, SchedulerIntent.ToggleExpand(termCell))
+        val termList = s.tasks[termTask]!!.childListId!!
+
+        // long term → body → health
+        val bodyCell = s.lists[termList]!!.cellIds.first()
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(bodyCell, "body"))
+        val bodyTask = s.cells[bodyCell]!!.taskId!!
+        s = SchedulerReducer.reduce(s, SchedulerIntent.ToggleExpand(bodyCell))
+        val healthCell = s.lists[s.tasks[bodyTask]!!.childListId!!]!!.cellIds.first()
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(healthCell, "health"))
+        val healthTask = s.cells[healthCell]!!.taskId!!
+
+        // long term → routine, whose empty cell is where the user types "health".
+        val routineCell = s.lists[termList]!!.cellIds.last()
+        s = SchedulerReducer.reduce(s, SchedulerIntent.SetCellTitle(routineCell, "routine"))
+        val routineTask = s.cells[routineCell]!!.taskId!!
+        s = SchedulerReducer.reduce(s, SchedulerIntent.ToggleExpand(routineCell))
+        val emptyCell = s.lists[s.tasks[routineTask]!!.childListId!!]!!.cellIds.first()
+
+        s = SchedulerReducer.reduce(s, SchedulerIntent.BeginEdit(cellId = emptyCell, initialText = "health"))
+        val session = s.editSession!!
+        val entries =
+            SchedulerDomain.changeTaskMenuEntries(s, emptyCell, session.draftText, session.newTaskDraftId)
+        assertTrue(
+            entries.any { it.taskId == healthTask },
+            "the existing 'health' must be an id row: $entries",
+        )
+        assertEquals(healthTask, session.selectedAssignTaskId, "and it is the default selection (PRD §4)")
+        assertEquals(healthTask, s.cells[emptyCell]!!.taskId, "so the cell reuses it instead of a new id")
     }
 
     @Test

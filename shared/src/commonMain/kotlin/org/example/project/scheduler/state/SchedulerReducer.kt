@@ -4342,7 +4342,19 @@ private fun applySetCellTitle(
         if (updatedTask.childListId == null) {
             mintedSubList = true
             val subListId = CellListId("${taskId.value}/children")
-            val subPlaceholderId = CellId("cell/${subListId.value}/0")
+            // The LIST id is derived from the task id — one sub-list per task, for the life of the account.
+            // The placeholder CELL is not: it comes off the shared counter like every other cell, because
+            // a cell id must be minted once, ever. A hand-built `cell/<task>/children/0` was minted afresh
+            // every time a task's sub-list was re-minted, and a cell KEEPS ITS ID when it is dragged
+            // elsewhere — so re-titling a task whose sub-list had been pruned (its first child dragged out,
+            // the task then emptied) silently overwrote that child's cell where it now lived: one cell id
+            // in two lists, its task binding gone, and `parentListId` naming the wrong list. Every rule
+            // that asks "what is already in this cell's list" — [SchedulerDomain.siblingTaskIds] and so
+            // [SchedulerDomain.canAssignTaskId], [SchedulerDomain.eligibleAssignTaskIds] — then answered
+            // about the other list, which is how the same task id could be put twice in one sub-list
+            // (PRD §1 Constraint 1).
+            val (subPlaceholderId, afterSubPlaceholderId) = working.allocateCellId(subListId)
+            working = afterSubPlaceholderId
             val subPlaceholder =
                 Cell(
                     id = subPlaceholderId,

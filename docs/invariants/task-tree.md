@@ -85,6 +85,14 @@ Global rules that always apply: `CLAUDE.md`.
   blank-titled task is never a detached parent — that single rule is what still collects an emptied parent's
   sub-tree, and what keeps a peer's deletion sticking through `SnapshotMerge.repair`. Do not make the retention
   key on anything else.
+- **A sub-list's id is derived from the task id; its placeholder CELL is not.** `<task>/children` names one
+  list for the life of the account, but every cell — the placeholder a freshly minted sub-list carries
+  included — comes off `SchedulerState.allocateCellId`, because **a cell id is minted once, ever**. A cell
+  keeps its id when it is dragged elsewhere, so a hand-built `cell/<task>/children/0` re-minted with the
+  sub-list overwrote that cell where it now lived (drag a child out, empty the parent so `pruneDetachedTree`
+  takes the sub-list, name the task again): one cell id in two lists, blanked, its `parentListId` naming the
+  wrong one — and `siblingTaskIds`, so `canAssignTaskId` and `eligibleAssignTaskIds`, then answered about
+  the other list and let the same task id be put twice in one sub-list (Constraint 1).
 - **Naming a cell is also its ARRIVAL in its sub-list's weight table**, so `applySetCellTitle` seeds the
   cell's weight row from that list's **default row** (`priorities.md`) at the instant the cell stops being
   textually empty — never when the placeholder was minted, and never on a rename.
@@ -93,6 +101,15 @@ Global rules that always apply: `CLAUDE.md`.
   the cell where it **mints** that sub-list — a freshly minted sub-list is never shown expanded. A rename mints
   nothing and keeps its children on screen. Nothing puts the cell back: **creating a task never expands it**,
   the default-subtree graft included (below).
+- **What the Change Task menu hides is exactly PRD §4 *Filtering*: the cell's own list, and its ancestor
+  PATH** (`assignCollisionScope`). Not the ancestors' whole **sub-trees** — a task already recurring
+  elsewhere under the same ancestor is *mirroring* (Constraint 3), not a collision, and Constraint 1 forbids
+  a repeat within one **list**, which two sub-lists under one parent are not. The wider rule shipped for two
+  and a half months and hid the id menu for a **third** of the (empty cell, existing title) pairs of the
+  release tree, so typing a title the account has offered nothing to point at. What survives is Constraint
+  2: the candidate's own structural sub-tree must not hold one of the cell's ancestors, or it would become
+  its own descendant. `canMoveTaskIntoList` asks that same question of a drop — a menu that refuses what
+  dragging the cell there performs is the second copy of a rule, and it is the copy that was wrong.
 - **A Change Task menu row's PATH is walked over the cells, never over `Task.childTaskIds`**
   (`shortestTaskTreePaths` — one BFS, so the first path reached is the shortest, and each LIST is entered
   once). That denormalized field only tracks freshly-typed children, so a task that arrived by a move, a
