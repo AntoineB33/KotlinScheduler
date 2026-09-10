@@ -96,6 +96,22 @@ the desktop app signed in as account 1). Default dev run enables debug tooling (
 - [ ] Undo (Ctrl+Z) / Redo across each category (edit / selection / calendar); focus routing behaves
       (`scheduler-history-architecture` note).
 - [ ] Add a manual calendar panel, edit it, drag/resize, remove it (PRD §8–§12).
+- [ ] **The user's own blocks say so, and the pin box is a real switch (PRD §8/§9).**
+  - [ ] A panel the scheduler placed has NO blue outline and NO check box; the one you added by hand has
+        both, at the top right, with the box checked.
+  - [ ] **Resize a scheduler panel** by dragging its bottom edge. It gains the blue outline and a checked
+        box at once - and it is STILL there a few seconds later, after the re-plan the edit triggers (that
+        is what used to be undone silently).
+  - [ ] **Uncheck the box** on a panel an hour or two ahead of the now-line → the scheduler re-plans and
+        the panel is gone, its stretch filled with whatever the plan wants there.
+  - [ ] **Uncheck the box on the panel the now-line is standing in** → its elapsed half stays exactly
+        where it is (the past never moves); only the future tail is re-planned.
+  - [ ] Undo (Ctrl+Z with the calendar focused) puts the pin back.
+  - [ ] **Add a no-screen period** → a blue-outlined panel with NO grey fill, hatched with the oblique
+        lines of both layers, and a check box that is checked and does nothing when clicked (a period is
+        removed, never unpinned). An **inactivity** period keeps its grey and behaves the same way.
+  - [ ] Zoom out until a block is a few pixels tall: the box disappears rather than being clipped, and
+        zooming back in brings it back. Hovering the box shows the same bubble as hovering beside it.
 - [ ] **A task panel's menu reaches its task (PRD §8).** Right-click a task panel:
   - [ ] **"edit task"** opens the §13 edition window on that task — the same window the tree cell's own
         **"edit task"** opens (that entry is no longer called "edit").

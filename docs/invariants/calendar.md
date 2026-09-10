@@ -177,6 +177,49 @@ Global rules that always apply: `CLAUDE.md`.
   The sampler runs **only while the line is on screen**, so a column that is not today's, a grid scrolled to
   another week and a closed calendar all ask for no frames at all. The overdue reminder stack rides the same
   state — and the same fractional placement — or it is not on the line the user sees.
+- **WHAT THE USER PUT THERE WEARS A BLUE OUTLINE AND A PIN BOX; nothing else does.** One question,
+  `SchedulerDomain.isUserPlaced`, and it is asked as the COMPLEMENT of what the app lays down itself — not
+  `!auto && !chore && !screenBreak && !sleep && …`, which is the same list a fourth time and the reason a new
+  family of generated panel would quietly acquire an outline. A panel is the user's exactly when it is neither
+  `isRegeneratedPanel` (the fill's picks, the screen breaks, the derived sleep windows, the wind-down hours)
+  nor a §14 tag (which carries its own check box and is drawn as a chip, so the panel's box has nowhere to sit
+  and nothing left to say). The **outline** is `CalColors.accent` at `USER_PLACED_BORDER_DP`, a step thicker
+  than the 1 dp every other block wears: the fill still carries the task's own colour, so a blue that only
+  *sometimes* differed from the body would answer neither question the panel has to answer. The **box** is at
+  the TOP RIGHT, opposite the title at the top left — the "no two texts share a point" rule again — and it
+  gives way the same way (`PIN_BOX_MIN_HEIGHT` / `PIN_BOX_MIN_WIDTH`: a block is never stretched to hold what
+  is drawn on it, and the zoom is what brings the box back).
+- **The pin box IS the edit window's Existence switch, reached from the panel** (`SetPanelPinned` writes the
+  same `pins.existence`, through the same `derivePinned`). One rule, one field, three ways in — the window,
+  the box, and the gesture below. Unpinning is a **rule change**: `pinned` is in `schedulingSignature`, so the
+  watcher is what re-plans (never a dispatch site of the box's own), and the fill then stops seeing the panel
+  — cut where it lies ahead of the line, kept where it has wholly elapsed, truncated AT the line where it
+  straddles (`scheduler.md` § *frozen past*).
+- **A DRAG OR A RESIZE IS THAT PIN** (`SchedulerDomain.pinsAfterHandPlacement`, applied at the one
+  `onCommitBounds`). The gesture says *this occurrence, here*, and a panel the fill may still wipe cannot say
+  it: handing the reducer the panel's own (empty) pins made a dragged auto panel user-authored **and
+  unpinned**, which is precisely the shape the fill deletes — so the re-plan the edit itself triggers undid
+  the drag, silently. The other three pins are untouched: a drag is a statement about existence, not about
+  position, span or distance.
+- **A restrictive period's box is checked and INERT.** A period reaches the scheduler by its KIND, never by a
+  pin (`scheduler.md` § *What reaches the scheduler*), so it has no "the scheduler stops seeing it" state
+  short of not being there — "Remove" is that. Its `pins.existence` is still set when it is drawn, because the
+  sentence the outline and the box state is *the user put this here*; its `pinned` is **not**
+  (`derivePinned`'s period-aware overload), or `isSchedulerFixed` would enter it in the walk's **pre-placed
+  blocks** — a list of blocks owned by a task — on top of the period it already is.
+- **The box owes the bubble what it hides, and it is a cut of the block's own tiling, never a lid over it.**
+  Same rule as the resize strips and the §14 tag: it is opaque, and while it is interactive it is a
+  pointer-input node that wins the hit test against the block's tiles, so it carries a copy of them
+  (`PanelPinBox` → `CalendarHoverTiles` over the same `blockBubbleOverlays + contextOverlays`). It consumes
+  its own press so the block's move/resize/double-click gesture — which lives on an ancestor and therefore
+  stays on the hit path — knows the press was not for it, and it leaves a **secondary** press entirely
+  unconsumed for the day column's menu.
+- **A hand-drawn no-screen period has NO FILL at all** — outline and nothing else. It is not grey (it accepts
+  the off-screen tasks) and it draws no pattern of its own: it asserts both "nobody unlocked" LAYERS, and
+  those are ASSERTED regions, so `layerRegions` does not clip them to the now-line and the oblique lines of
+  both slopes are painted over it in the future exactly as in the past. A tint under them would be a third
+  statement nothing means. An inactivity period, by contrast, keeps its solid grey: nothing is scheduled
+  there at all.
 - **All three are MARKED one way: vertical lines, delimited** (`greyPeriodMarks`, the one place a grey period
   becomes something to paint). A screen break is drawn exactly like the inactivity band beside it — no blue
   outline, no `●`, no accent title: they are the same kind of period. **Lines, never a fill**, because a grey

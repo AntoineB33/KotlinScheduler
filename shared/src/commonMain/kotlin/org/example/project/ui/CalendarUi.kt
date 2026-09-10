@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculateZoom
@@ -83,6 +84,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -185,6 +187,29 @@ private object CalColors {
 /** Spacing between the vertical lines a grey period is marked with ([greyPeriodMarks]). */
 private val GREY_PERIOD_LINE_STEP = 7.dp
 
+/**
+ * PRD §8: the width of the accent-blue outline a **user-placed** block wears ([CalendarBlockBody]) — one step
+ * up from the 1 dp every other block is drawn with, so the outline reads as an outline on a task whose own
+ * colour is already close to the accent.
+ */
+private val USER_PLACED_BORDER_DP = 2.dp
+
+/** PRD §8: the side of the square pin box a user-placed block wears at its top right ([PanelPinBox]). */
+private val PIN_BOX_SIZE = 13.dp
+
+/**
+ * PRD §8: the smallest rendered block that still draws its pin box.
+ *
+ * Same rule as the band names and the panel labels (`docs/invariants/calendar.md`): **a block is never
+ * stretched to hold what is drawn on it**, so the mark is what gives way. Below this the box would be
+ * clipped to a sliver — the zoom is what brings it back, and the block's own contextual menu and edit window
+ * reach the pin at any height.
+ */
+private val PIN_BOX_MIN_HEIGHT = 17.dp
+
+/** PRD §8: the narrowest slice that still draws a pin box — below it the box would cover the whole column. */
+private val PIN_BOX_MIN_WIDTH = 34.dp
+
 private val WEEKDAY_SHORT = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 private val WEEKDAY_INITIAL = listOf("M", "T", "W", "T", "F", "S", "S")
 
@@ -213,6 +238,13 @@ data class CalendarRecord(
     val pinned: Boolean = false,
     /** PRD §8 the backing panel's four pin dimensions (head panel for a merged block); seeds the edit-window switches. */
     val pins: PanelPins = PanelPins(),
+    /**
+     * PRD §8: **the user put this block here** ([org.example.project.scheduler.domain.SchedulerDomain.isUserPlaced]) —
+     * a panel added from the menu, one of the scheduler's own since dragged or resized, or a period drawn by
+     * hand. It is what the blue outline and the pin box say, and it is a fact about the backing panel, never
+     * a reading of how the block happens to be drawn.
+     */
+    val userPlaced: Boolean = false,
     /** PRD §8 Overlap Mode: horizontal weight of the backing panel (head panel for a merged block). */
     val layoutWeight: Double = 1.0,
     /** PRD §14 Reminders: a zero-duration, checkable tag (not a height-proportional panel). */
@@ -497,6 +529,8 @@ data class PlacedRecord(
     val pinned: Boolean = false,
     /** PRD §8 the backing panel's four pin dimensions; seeds the edit-window switches. */
     val pins: PanelPins = PanelPins(),
+    /** PRD §8: the user put this block here — the blue outline and the pin box. See [CalendarRecord.userPlaced]. */
+    val userPlaced: Boolean = false,
     /** PRD §8 Overlap Mode: horizontal weight of the backing panel; drives [overlapLayout] widths. */
     val layoutWeight: Double = 1.0,
     /** PRD §14 Reminders: a zero-duration, checkable tag rendered at [startHour] (not a draggable block). */
@@ -644,6 +678,7 @@ fun recordsForDay(
             taskId = record.taskId,
             pinned = record.pinned,
             pins = record.pins,
+            userPlaced = record.userPlaced,
             layoutWeight = record.layoutWeight,
             reminder = record.reminder,
             checked = record.checked,
@@ -2877,6 +2912,11 @@ fun CalendarFloatingWindow(
     onRemoveEntry: (PlacedRecord) -> Unit = {},
     /** PRD §14 Reminders: a reminder tag was clicked → toggle its checked (done) state. */
     onToggleReminder: (PlacedRecord) -> Unit = {},
+    /**
+     * PRD §8: the **pin box** on a user-placed block was clicked → flip that block's existence pin. The
+     * handler acts on every backing panel of the (possibly merged) block, like every other block edit.
+     */
+    onTogglePin: (PlacedRecord) -> Unit = {},
     /** PRD §8 Overlap Mode: new horizontal weights for panels whose shared-width edge was dragged. */
     onAdjustWeights: (Map<String, Double>) -> Unit = {},
     /** PRD §8 Overlap Mode: whether overlap is currently armed (toggled by `O` while the calendar is focused). */
@@ -3081,6 +3121,7 @@ fun CalendarFloatingWindow(
                 onGoToTaskTree = onGoToTaskTree,
                 onRemoveEntry = onRemoveEntry,
                 onToggleReminder = onToggleReminder,
+                onTogglePin = onTogglePin,
                 onAdjustWeights = onAdjustWeights,
                 overlapArmed = overlapArmed,
                 jumpNonce = jumpNonce,
@@ -3392,6 +3433,8 @@ private fun WeekView(
     onGoToTaskTree: (TaskId?, String) -> Unit,
     onRemoveEntry: (PlacedRecord) -> Unit,
     onToggleReminder: (PlacedRecord) -> Unit,
+    /** PRD §8: the pin box on a user-placed block was clicked. See [CalendarFloatingWindow]. */
+    onTogglePin: (PlacedRecord) -> Unit,
     onAdjustWeights: (Map<String, Double>) -> Unit,
     overlapArmed: Boolean,
     jumpNonce: Int,
@@ -3931,6 +3974,7 @@ private fun WeekView(
                                     onGoToTaskTree = onGoToTaskTree,
                                     onRemoveEntry = onRemoveEntry,
                                     onToggleReminder = onToggleReminder,
+                                    onTogglePin = onTogglePin,
                                     onLockScroll = { scrollLocked = it },
                                     onAdjustWeights = onAdjustWeights,
                                     allBlocks = allBlocks,
@@ -4121,6 +4165,8 @@ private fun DayColumn(
     onGoToTaskTree: (TaskId?, String) -> Unit,
     onRemoveEntry: (PlacedRecord) -> Unit,
     onToggleReminder: (PlacedRecord) -> Unit,
+    /** PRD §8: the pin box on a user-placed block was clicked. See [CalendarFloatingWindow]. */
+    onTogglePin: (PlacedRecord) -> Unit,
     onLockScroll: (Boolean) -> Unit,
     onAdjustWeights: (Map<String, Double>) -> Unit,
     allBlocks: List<Pair<String, TaskTimeRange>>,
@@ -4695,6 +4741,7 @@ private fun DayColumn(
                 hoverScope = hoverScope,
                 tz = tz,
                 onEditEntry = onEditEntry,
+                onTogglePin = onTogglePin,
                 // A block opening at midnight writes its title below the day's own date badge. When a
                 // reminder stack sits at the same top edge, it must push the title down too, and when the
                 // block is too short the title is hidden instead of writing over the reminders.
@@ -5869,8 +5916,10 @@ internal fun alarmBubbleSection(marker: PlacedRecord, tz: TimeZone): CalendarBub
  * Right-click (the Edit/Remove menu) is handled by the enclosing day column, so a secondary press is
  * left unconsumed here for it to pick up. The live preview applies the SAME no-overlap snapping/
  * clamping the reducer commits with, so a block never visually overlaps another. Auto blocks
- * (records/scheduled) are pinned into manual entries when edited, so afterwards they are
- * indistinguishable. The title is written on the block and also shows on hover (PRD §8).
+ * (records/scheduled) become the USER's the moment one is dragged, resized or edited — the gesture IS the
+ * existence pin ([SchedulerDomain.pinsAfterHandPlacement]) — so from then on they are drawn like every other
+ * block the user placed: accent outline, pin box ([PanelPinBox]), and a block the §9 fill is bound by. The
+ * title is written on the block and also shows on hover (PRD §8).
  */
 @OptIn(ExperimentalComposeUiApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -5896,6 +5945,8 @@ private fun CalendarBlock(
     hoverScope: CalendarTitleHoverScope,
     tz: TimeZone,
     onEditEntry: (PlacedRecord) -> Unit,
+    /** PRD §8: the pin box at the block's top right was clicked — toggle the panel's existence pin. */
+    onTogglePin: (PlacedRecord) -> Unit,
     /** PRD §8: how far below its top this block writes its title — see [panelLabelTopInset]. */
     titleTopInset: Dp = 0.dp,
     /** False when the panel is too short to fit its title below the reserved top strip. */
@@ -5994,6 +6045,12 @@ private fun CalendarBlock(
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
 
+                            // PRD §8: the pin box is a DESCENDANT of this slice and consumes its own press,
+                            // so a press it took is not a move, a resize or a double-click. (The block's
+                            // gesture has to sit on the ancestor — that is what keeps the drag alive across
+                            // the rest↔preview swap — so the child says "mine" the only way it can.)
+                            if (down.isConsumed) return@awaitEachGesture
+
                             // Right-click → leave it unconsumed so the enclosing day column shows the
                             // Edit/Remove contextual menu for this block (PRD §8).
                             if (currentEvent.buttons.isSecondaryPressed) return@awaitEachGesture
@@ -6078,6 +6135,7 @@ private fun CalendarBlock(
                         titleTopInset = titleTopInset,
                         hatched = record.noScreen,
                         titleColor = taskColor ?: CalColors.event,
+                        userPlaced = record.userPlaced,
                     )
                     // The block's own section, one overlay per device-set segment, then re-tiled together
                     // with the grey periods and layers covering it so each tile reports one whole stack —
@@ -6124,11 +6182,48 @@ private fun CalendarBlock(
                                 },
                         )
                     }
+                    // PRD §8: the pin box, at the block's TOP RIGHT — on the first slice only, so a block
+                    // stepped across an overlap wears one box and not one per step (the title follows the
+                    // same rule, at the other corner). Drawn AFTER the hover tiles so it is on top of them,
+                    // which is the whole reason it carries a copy of them ([PanelPinBox]).
+                    //
+                    // A block too short or too narrow for it draws none: a block is never stretched to hold
+                    // what is written on it, and the zoom is what brings the box back — same rule as the
+                    // band names and the panel labels.
+                    if (isFirst && record.userPlaced &&
+                        sliceHeight >= PIN_BOX_MIN_HEIGHT &&
+                        colWidth * slice.widthFraction >= PIN_BOX_MIN_WIDTH
+                    ) {
+                        PanelPinBox(
+                            // A period's box is the "existence" pin too — it is simply never off there.
+                            // Read as a rule rather than off the field, so a period an OLDER build wrote
+                            // (before the reducer set the pin on one) still reads checked without a
+                            // migration: the panel IS the pre-placed thing, whatever its stored pins say.
+                            checked = record.pins.existence || isPeriodBlock(record),
+                            enabled = !isPeriodBlock(record),
+                            topHour = slice.topHour,
+                            hourHeight = hourHeight,
+                            overlays = blockBubbleOverlays(record, slice.topHour, slice.bottomHour, tz) +
+                                contextOverlays,
+                            hoverScope = hoverScope,
+                            modifier = Modifier.align(Alignment.TopEnd).padding(2.dp),
+                            onToggle = { onTogglePin(record) },
+                        )
+                    }
                 }
             }
         }
     }
 }
+
+/**
+ * PRD §8: is this displayed block a **restrictive period** rather than a task panel?
+ *
+ * The two the user can draw are the no-screen period and the inactivity period, and both are the same object
+ * under different scheduling rules — which is why they share one editor. It is asked here for the one thing
+ * that differs on a period: its pin box states a fact and is not a switch (see [PanelPinBox]).
+ */
+private fun isPeriodBlock(record: PlacedRecord): Boolean = record.noScreen || record.inactivity
 
 /** One hover tile of a block slice: `devices == null` means "no activity data here" (times-only bubble). */
 private data class DeviceHoverZone(val top: Float, val bottom: Float, val devices: List<String>?)
@@ -6247,6 +6342,101 @@ private fun Modifier.obliqueHatch(color: Color, reversed: Boolean, dotted: Boole
         }
     }
 
+/**
+ * PRD §8: the **pin box** — the check box a user-placed block wears at its **top right**, opposite the title
+ * at its top left (the "no two texts share a point" rule again: the two corners are the two marks a panel
+ * carries, and neither is ever moved to make room for the other).
+ *
+ * It is the calendar edit window's **Existence** switch, reached from the panel: one field, one meaning, two
+ * ways in ([SchedulerIntent.SetPanelPinned] writes the same `pins.existence` the window's Save does). Checked
+ * = the scheduler must keep this occurrence; unchecking it is a rule change, and the re-plan that follows is
+ * free to cut the panel where it lies ahead of the now-line.
+ *
+ * **A restrictive period's box is checked and INERT** ([enabled] = false). A period reaches the scheduler by
+ * its KIND, never by a pin (`docs/invariants/scheduler.md` § *What reaches the scheduler*), so it has no
+ * "the scheduler stops seeing it" state short of not being there: the way to take a period away is "Remove".
+ * The box is still drawn, because the sentence the calendar states is *the user put this here* and a
+ * hand-drawn period is exactly that.
+ *
+ * It **owes the bubble what it hides**, enabled or not (`docs/invariants/calendar.md`): it is opaque, and
+ * when it is enabled it is a pointer-input node that wins the hit test against the block's own tiles, so it
+ * carries a copy of them over its own rectangle — the same [overlays] the block reports, so the bubble reads
+ * the same on the box as an inch to the left of it.
+ */
+@Composable
+private fun PanelPinBox(
+    checked: Boolean,
+    enabled: Boolean,
+    /** Where the box is DRAWN, as an hour of the day — the top of the block's first slice. */
+    topHour: Float,
+    hourHeight: Dp,
+    /** The bubble stack the box sits on: the block's own sections plus everything drawn over the block. */
+    overlays: List<BubbleOverlay>,
+    hoverScope: CalendarTitleHoverScope,
+    modifier: Modifier = Modifier,
+    onToggle: () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .size(PIN_BOX_SIZE)
+            .then(
+                if (!enabled) {
+                    Modifier
+                } else {
+                    Modifier.pointerInput(checked) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            // A secondary press is the day column's contextual menu (PRD §8) and a pin box is
+                            // not a fourth menu: leave it entirely unconsumed for the ancestor to pick up.
+                            if (currentEvent.buttons.isSecondaryPressed) return@awaitEachGesture
+                            // Consumed so the block's own move/resize/double-click gesture — which lives on an
+                            // ANCESTOR and therefore stays on the hit path — knows this press was not for it.
+                            down.consume()
+                            val up = waitForUpOrCancellation()
+                            up?.consume()
+                            if (up != null) onToggle()
+                        }
+                    }
+                },
+            )
+            .clip(RoundedCornerShape(2.dp))
+            .background(if (checked) CalColors.accent else CalColors.menuBackground)
+            .border(1.dp, CalColors.accent, RoundedCornerShape(2.dp))
+            .drawBehind {
+                if (!checked) return@drawBehind
+                val stroke = 1.6.dp.toPx()
+                val elbow = Offset(size.width * 0.42f, size.height * 0.74f)
+                drawLine(
+                    Color.White,
+                    Offset(size.width * 0.22f, size.height * 0.52f),
+                    elbow,
+                    strokeWidth = stroke,
+                    cap = StrokeCap.Round,
+                )
+                drawLine(
+                    Color.White,
+                    elbow,
+                    Offset(size.width * 0.78f, size.height * 0.28f),
+                    strokeWidth = stroke,
+                    cap = StrokeCap.Round,
+                )
+            },
+    ) {
+        // The box's own rectangle, tiled by whatever covers each sub-range of it — one reporter per tile,
+        // never a nest ([bubbleHoverZones]). Its span in hours is its fixed height divided by the hour, so
+        // at the zoom ceiling it is a sliver of a minute and at zoom 1 the better part of an hour; either
+        // way what the bubble names under it is what is actually behind it.
+        val span = if (hourHeight > 0.dp) PIN_BOX_SIZE / hourHeight else 0f
+        CalendarHoverTiles(
+            top = topHour,
+            bottom = topHour + span,
+            overlays = overlays,
+            hourHeight = hourHeight,
+            hoverScope = hoverScope,
+        )
+    }
+}
+
 /** PRD §8: the coloured body + title of a calendar block (or one of its overlap slices). */
 @Composable
 private fun CalendarBlockBody(
@@ -6266,17 +6456,32 @@ private fun CalendarBlockBody(
      * unreadable on its own fill; those keep the event blue they have always been written in.
      */
     titleColor: Color = CalColors.event,
+    /**
+     * PRD §8: **the user put this block here.** Its outline is then the accent BLUE and a step thicker
+     * ([USER_PLACED_BORDER_DP]) whatever the block's own colour is, which is the whole of what the outline
+     * says — the fill still carries the task's colour, because who placed a panel and which task it is are
+     * two different questions and the panel has to answer both. A blue that only sometimes differed from the
+     * body colour would answer neither: hence the thickness, which reads on a blue task as well as on a red
+     * one, and on a period that has no task colour at all.
+     */
+    userPlaced: Boolean = false,
 ) {
     Box(
         modifier = Modifier
             .fillMaxSize()
             .clip(RoundedCornerShape(3.dp))
-            // PRD §8: a NO-SCREEN period ([hatched]) is drawn as a faint outlined region, not a filled
-            // block — it is not grey (it accepts the off-screen tasks) and it draws no pattern of its own
-            // any more: it asserts both "nobody unlocked" LAYERS, which the column paints over it. An
-            // INACTIVITY period, by contrast, is a solid grey block: nothing is scheduled there at all.
-            .background(color.copy(alpha = if (hatched) 0.10f else 0.30f))
-            .border(1.dp, color, RoundedCornerShape(3.dp)),
+            // PRD §8: a NO-SCREEN period ([hatched]) is drawn as an outlined region with NO FILL AT ALL — it
+            // is not grey (it accepts the off-screen tasks) and it draws no pattern of its own: it asserts
+            // both "nobody unlocked" LAYERS, and the column paints those over it as the oblique lines of both
+            // slopes, past and future alike (they are an *asserted* region, so the layer is not clipped to the
+            // now-line). A tint under them would be a third statement nothing means. An INACTIVITY period, by
+            // contrast, is a solid grey block: nothing is scheduled there at all.
+            .background(if (hatched) Color.Transparent else color.copy(alpha = 0.30f))
+            .border(
+                if (userPlaced) USER_PLACED_BORDER_DP else 1.dp,
+                if (userPlaced) CalColors.accent else color,
+                RoundedCornerShape(3.dp),
+            ),
     ) {
         if (showTitle) {
             Text(

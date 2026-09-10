@@ -11,6 +11,42 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### The user's own blocks say so: a blue outline and a pin box — 2026-09-10
+
+→ `docs/invariants/calendar.md`, `docs/invariants/scheduler.md`, PRD §8/§9. `shared`
+(`ui/CalendarUi.kt`, `App.kt`, `scheduler/domain/SchedulerDomain.kt`, `scheduler/state/`); new
+`CalendarPinBoxTest`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy, no schema migration.**
+
+Asked for as: everything manually placed by the user is outlined in blue with a pinned check box at the top
+right; resizing a scheduler panel makes it a pre-placed block; unpinning it hands the stretch back.
+
+- **`SchedulerDomain.isUserPlaced` is the one question**, asked as the COMPLEMENT of what the app lays down
+  itself (`!auto && !chore && !isRegeneratedPanel`) rather than as a list of what qualifies — the list would
+  be the fourth copy of the same enumeration, and a new family of generated panel would quietly acquire an
+  outline. It drives `CalendarBlockBody`'s accent border (`USER_PLACED_BORDER_DP`, a step thicker so it reads
+  on a task whose own colour is already blue) and the new `PanelPinBox` at the top right.
+- **A drag or a resize IS the existence pin** (`pinsAfterHandPlacement`). It was not: `onCommitBounds` handed
+  the reducer the panel's own pins, so dragging one of the fill's panels made it user-authored and
+  **unpinned** — exactly the shape `fillSchedule` deletes. The re-plan the edit itself triggers then wiped it,
+  so a resize on a scheduler panel had no lasting effect at all.
+- **The pin box is the edit window's Existence switch from the other side** — `SetPanelPinned` writes the same
+  `pins.existence` through the same `derivePinned`, as one undoable Calendar delta. Unpinning re-plans because
+  `pinned` is in `schedulingSignature`; nothing dispatches a fill of its own.
+- **The frozen past no longer reads `auto`.** `fillSchedule` kept the elapsed head of a straddling **auto**
+  panel only, so the other panel the cut takes — one the user has just unpinned — lost its elapsed half. The
+  head is now kept for any task panel and becomes an ordinary auto panel, which is what lets
+  `mergeSameTaskPanels` fuse the re-planned tail back onto it.
+- **A restrictive period is pinned in the box and never in the scheduler.** `derivePinned` gained a
+  period-aware overload: a hand-drawn period carries `pins.existence` (so the box reads checked) but never
+  `pinned`, or `isSchedulerFixed` would enter it in the walk's pre-placed blocks — a block owned by no task —
+  on top of the period it already is. The box is inert there: a period has no "still drawn, no longer obeyed"
+  state, and "Remove" is how it goes away.
+- **A hand-drawn no-screen period loses its fill**: outline only, with both layers' oblique lines over it.
+  Those are *asserted* regions, so `layerRegions` does not clip them to the now-line and a future period is
+  hatched exactly like a past one. The stale PRD line giving a **screen break** a blue outline of its own is
+  gone with it — a break is the app's period, not the user's.
+
 ### A ring names itself in the hover bubble — 2026-09-10
 
 → `docs/invariants/calendar.md`, `docs/invariants/alarms-and-timers.md`, PRD §8/§18. `shared`

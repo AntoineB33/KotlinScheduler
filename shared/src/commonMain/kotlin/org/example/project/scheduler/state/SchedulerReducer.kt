@@ -424,6 +424,7 @@ object SchedulerReducer {
             is SchedulerIntent.PinRecordAsPanel -> reducePinRecord(state, intent)
             is SchedulerIntent.RemoveTaskPanel -> reduceRemoveTaskPanel(state, intent.id)
             is SchedulerIntent.SetPanelWeights -> reduceSetPanelWeights(state, intent)
+            is SchedulerIntent.SetPanelPinned -> reduceSetPanelPinned(state, intent)
             is SchedulerIntent.RemoveTaskPanels -> reduceRemoveTaskPanels(state, intent.ids)
             is SchedulerIntent.ReplaceTaskPanels -> reduceReplaceTaskPanels(state, intent)
             is SchedulerIntent.RemoveRecordPeriod -> reduceRemoveRecordPeriod(state, intent)
@@ -1785,6 +1786,22 @@ object SchedulerReducer {
      */
     private fun derivePinned(pins: PanelPins): Boolean = pins.existence
 
+    /**
+     * PRD §8: the same flag for a panel that may be a **restrictive period**, which never carries it.
+     *
+     * A period reaches the scheduler by its KIND, not by a pin (`docs/invariants/scheduler.md` § *What
+     * reaches the scheduler*): [SchedulerDomain.fillSchedule] keeps every [TaskPanel.isRestrictivePeriod]
+     * panel whatever its pins, and [SchedulerDomain.isSchedulerFixed] is what puts a panel in the walk's
+     * **pre-placed blocks** — a list of blocks OWNED BY A TASK. Letting a hand-drawn period set `pinned`
+     * would enter it there as a block owned by nobody, on top of the period it already is.
+     *
+     * Its `pins.existence` is still set (and shown, checked, by the calendar's pin box): a period the user
+     * drew is a pre-placed thing, it is simply pre-placed as a period. The box is not a switch there — the
+     * way to make the scheduler stop seeing a period is to remove it.
+     */
+    private fun derivePinned(pins: PanelPins, panel: TaskPanel): Boolean =
+        derivePinned(pins) && !panel.isRestrictivePeriod
+
     private fun reduceAddTaskPanel(
         state: SchedulerState,
         intent: SchedulerIntent.AddTaskPanel,
@@ -1826,6 +1843,9 @@ object SchedulerReducer {
                 endEpochMillis = end,
                 noScreen = true,
                 periodKind = PeriodKinds.NO_SCREEN,
+                // PRD §8: a period the user drew is a pre-placed thing, so the calendar's pin box reads
+                // CHECKED on it. `pinned` stays false all the same — see [derivePinned]'s overload.
+                pins = PanelPins(existence = true),
             )
         val (resolved, resolvedPanels) = resolveScreenOverrides(allocated, allocated.panels + panel, panelId)
         return stripRecordsUnderPeriod(commitPanels(resolved, resolvedPanels, label = "Add no-screen period"), panel)
@@ -1853,6 +1873,8 @@ object SchedulerReducer {
                 endEpochMillis = end,
                 inactivity = true,
                 periodKind = PeriodKinds.NO_TASK,
+                // PRD §8: as for a no-screen period — the box is checked, `pinned` is not set.
+                pins = PanelPins(existence = true),
             )
         val (resolved, resolvedPanels) = resolveScreenOverrides(allocated, allocated.panels + panel, panelId)
         return stripRecordsUnderPeriod(
@@ -1962,7 +1984,7 @@ object SchedulerReducer {
                 title = intent.title,
                 startEpochMillis = intent.startEpochMillis,
                 endEpochMillis = end,
-                pinned = derivePinned(intent.pins),
+                pinned = derivePinned(intent.pins, existing),
                 pins = intent.pins,
                 auto = false,
                 layoutWeight = weight,
@@ -2017,6 +2039,32 @@ object SchedulerReducer {
         val panels = state.panels
         if (panels.none { it.id == id }) return state
         return commitPanels(state, panels.filterNot { it.id == id }, label = "Remove panel")
+    }
+
+    /**
+     * PRD §8 pin box: turn the **existence** pin of every panel behind one displayed block on or off.
+     *
+     * The same write the calendar edit window makes, reached from the panel itself — so it goes through the
+     * same [derivePinned], and a restrictive period keeps `pinned = false` there for the reason that overload
+     * gives. Nothing here re-plans: `pinned` is part of
+     * [SchedulerDomain.schedulingSignature], so the rule-change watcher is what asks for the new schedule
+     * (CLAUDE.md: anything that wants to re-plan belongs in the signature, never in a fresh dispatch site).
+     */
+    private fun reduceSetPanelPinned(
+        state: SchedulerState,
+        intent: SchedulerIntent.SetPanelPinned,
+    ): SchedulerState {
+        val idSet = intent.ids.toSet()
+        if (idSet.isEmpty()) return state
+        var changed = false
+        val updated = state.panels.map { panel ->
+            if (panel.id !in idSet) return@map panel
+            val pins = panel.pins.copy(existence = intent.pinned)
+            val next = panel.copy(pins = pins, pinned = derivePinned(pins, panel))
+            if (next != panel) changed = true
+            next
+        }
+        return if (changed) commitPanels(state, updated, label = "Pin panel") else state
     }
 
     /** PRD §8 Overlap Mode: re-divide shared width by setting the [layoutWeight] of the given panels. */

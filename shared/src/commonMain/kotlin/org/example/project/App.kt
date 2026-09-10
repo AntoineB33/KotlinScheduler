@@ -1845,11 +1845,30 @@ fun App(store: SchedulerStore? = createDefaultSchedulerStore(), host: AppSchedul
                                     PeriodDraft(CalendarPeriodKind.Inactivity, null, atMillis, atMillis + 3_600_000L)
                             },
                             // PRD §8 (uniform blocks): committing a drag/resize updates the panel
-                            // (auto blocks become user-authored), or pins a record into a panel.
+                            // (auto blocks become user-authored), or pins a record into a panel. The gesture
+                            // itself sets the EXISTENCE pin ([SchedulerDomain.pinsAfterHandPlacement]): the
+                            // user has just said "this occurrence, here", and a panel the fill may still wipe
+                            // cannot say that — without it the next re-plan quietly undid the drag.
                             onCommitBounds = { block, newStart, newEnd, allowOverlap ->
                                 commitBoundsIntent(
-                                    block, block.taskId, block.title, newStart, newEnd, block.pins, allowOverlap,
+                                    block,
+                                    block.taskId,
+                                    block.title,
+                                    newStart,
+                                    newEnd,
+                                    SchedulerDomain.pinsAfterHandPlacement(block.pins),
+                                    allowOverlap,
                                 )?.let(vm::dispatch)
+                            },
+                            // PRD §8 pin box: the check box a user-placed panel wears at its top right. It
+                            // is the edit window's Existence switch reached from the panel — one field, so
+                            // one intent — and unpinning is a rule change the signature picks up, which is
+                            // what makes the scheduler re-plan over the panel it may now cut.
+                            onTogglePin = { block ->
+                                val ids = block.entryIds.ifEmpty { listOfNotNull(block.entryId) }
+                                if (ids.isNotEmpty()) {
+                                    vm.dispatch(SchedulerIntent.SetPanelPinned(ids, !block.pins.existence))
+                                }
                             },
                             // PRD §8 "Edit": a sleep band's editable object is the §17 sleep schedule, so
                             // its Edit opens the sleep window; a no-screen / inactivity period has no task
@@ -2686,6 +2705,9 @@ private fun mergePanelsForDisplay(
                 taskId = head.taskId,
                 pinned = head.pinned,
                 pins = head.pins,
+                // PRD §8: the blue outline + pin box. Read off the head panel, which is what every other
+                // per-block attribute here is read off — a run only groups panels of one pin state anyway.
+                userPlaced = SchedulerDomain.isUserPlaced(head),
                 layoutWeight = head.layoutWeight,
                 // PRD §8/§9/§12: user-authored no-screen / inactivity periods stay real, removable blocks
                 // (drawn as decorative pattern / muted band) rather than task panels.

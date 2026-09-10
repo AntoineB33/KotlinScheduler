@@ -72,20 +72,39 @@ Global rules that always apply: `CLAUDE.md`.
 Only two things: **pre-placed blocks** (pinned/manual panels ahead of `now`, the kept head on an extension,
 the served past) and **restrictive periods**. Nothing else, by any other route.
 
+- **A pre-placed block is a block OWNED BY A TASK, and a period reaches the walk by its KIND** — the two
+  slots are not interchangeable, and a panel must never take both. `isSchedulerFixed` (= `TaskPanel.pinned`)
+  is what fills the first; `fillSchedule` keeps every `isRestrictivePeriod` panel whatever its pins, which is
+  the second. So a hand-drawn period carries the calendar's **existence pin** (`pins.existence`, the pin box
+  — `calendar.md`) and **not** `pinned`: `SchedulerReducer.derivePinned`'s period-aware overload is the one
+  place that says so, and without it a dragged no-screen period would enter `futureBlocks` as a block owned
+  by nobody, on top of the period it already is.
+- **A drag or a resize on the grid IS the existence pin** (`SchedulerDomain.pinsAfterHandPlacement`). The
+  gesture is the user placing a block, and an unpinned block is not something the fill keeps — so without it
+  the drag became a user-authored *unpinned* panel, exactly the shape the fill deletes, and the re-plan the
+  edit itself triggers undid it. The **pin box** is the same field from the other side: unpinning is what
+  makes the fill stop seeing a panel, and `pinned` being in `schedulingSignature` is what re-plans.
+
 ### The frozen past includes the block the line is STANDING IN
 
 → `side-dev/README.md` § *frozen past*: *"the schedule at `t < now line` never changes as `now line`
 increases."*
 
-- **A re-plan cuts the TAIL of the straddling auto panel and keeps its ELAPSED HEAD**, truncated at the line
+- **A re-plan cuts the TAIL of the straddling task panel and keeps its ELAPSED HEAD**, truncated at the line
   (`fillSchedule`'s `kept`). Cutting the whole panel is what shipped, and the head went nowhere: the advance
   banks a panel only once it has *wholly* elapsed (deliberately, so an in-progress one stays a panel), so work
   the app had told the user it was doing vanished from the timeline on every rule change — and, because
   `pastPeriodsForTask` reads those same panels, from the clock replay that seeds the walk, taking the resume
   contract with it.
-- **The head is an ordinary auto panel**: the next advance banks it, `mergeSameTaskPanels` fuses it back with
-  the tail (so it is folded into the merge input, not appended beside it), and it is behind the line so it is
-  never a `futureBlocks` obstacle.
+- **WHOEVER PLACED IT.** The branch reads *a task panel the cut is about to take*, never *an auto panel*: the
+  other panel the cut takes is one the user has just UNPINNED (`calendar.md`, the pin box), and that is the
+  one gesture whose whole purpose is to ask for a re-plan. Qualifying the head on `auto` deleted its elapsed
+  half — the frozen-past rule breaking on exactly the press that invokes it.
+- **The head is an ordinary auto panel** from there on, however it started (`auto = true` on the kept copy):
+  the next advance banks it, `mergeSameTaskPanels` fuses it back with the tail (so it is folded into the merge
+  input, not appended beside it — and it has to carry the same `auto`/`pinned` to fuse at all), it is behind
+  the line so it is never a `futureBlocks` obstacle, and it is no longer something the user placed, so the
+  calendar stops outlining it as one (`SchedulerDomain.isUserPlaced`).
 - **The chunk the line is in the middle of RESUMES; it is not re-picked** (`resumedHead` → `pending`, the
   reference's `Walk.run` `if head is not None and head[1] < minimum[head[0]]`). Without it, restoring the head
   makes `lastRun` refuse the very task that is running — "never twice in a row" firing on a run that never

@@ -21,6 +21,7 @@ import org.example.project.scheduler.model.ChoreEntry
 import org.example.project.scheduler.model.DEFAULT_MINIMUM_MINUTES
 import org.example.project.scheduler.model.ForcedTaskStart
 import org.example.project.scheduler.model.ForcedTaskSwitch
+import org.example.project.scheduler.model.PanelPins
 import org.example.project.scheduler.model.ScheduleUnitEntry
 import org.example.project.scheduler.model.ScreenBreak
 import org.example.project.scheduler.platform.DeviceKind
@@ -3700,6 +3701,41 @@ object SchedulerDomain {
             (panel.auto && !panel.pinned && !panel.chore)
 
     /**
+     * PRD §8: **the panel the USER put there** — the one question the blue outline and the pin box on the
+     * calendar answer, and the one reading of it.
+     *
+     * It is the complement of the two things the app lays down itself, so it is written as that complement
+     * rather than as a list of what qualifies: a panel is the user's exactly when it is neither
+     * scheduler-generated ([isRegeneratedPanel] — the auto fill's picks and the three period families a fill
+     * re-lays wholesale: the screen breaks, the derived sleep windows and the §17 wind-down hours) nor a §14
+     * reminder tag ([TaskPanel.chore], which carries its own check box and is drawn as a tag, not a panel).
+     * Everything left is something the user placed: a task panel added from the menu, a scheduler panel the
+     * user has since dragged or resized, and every restrictive period drawn by hand.
+     *
+     * It says **who placed it**, never whether the scheduler is bound by it — that is [isSchedulerFixed] for
+     * a task panel and the period's own kind for a period.
+     */
+    fun isUserPlaced(panel: TaskPanel): Boolean =
+        !panel.auto && !panel.chore && !isRegeneratedPanel(panel)
+
+    /**
+     * PRD §8: the pins a block carries once the user has **put it where it is** — dragged it or dragged one
+     * of its edges on the grid.
+     *
+     * Placing a block by hand IS the existence pin. The gesture says *this occurrence, here*, and a panel the
+     * scheduler is still free to wipe cannot say that: dragging one of the fill's own panels used to hand the
+     * reducer the panel's own (empty) pins, so the panel became user-authored and unpinned — which is
+     * precisely the shape [fillSchedule] deletes, and the next re-plan silently undid the drag. The pin the
+     * gesture sets is the same one the edit window's first switch holds, and the window is where the user says
+     * otherwise; the calendar's own pin box is the third way to the same field.
+     *
+     * The other three pins are left exactly as they were: a drag is a statement about existence, not about
+     * whether the position, the span or a distance is fixed from now on.
+     */
+    fun pinsAfterHandPlacement(pins: PanelPins): PanelPins =
+        if (pins.existence) pins else pins.copy(existence = true)
+
+    /**
      * PRD §9 Scheduling: regenerate the auto schedule with the **cyclic proportional-share** rules of
      * `side-dev/README.md` — [SchedulerPlanner] / [PlanWalk], the Kotlin port of the reference `side-dev/scheduler_logic.py`.
      * Every **non-pinned** panel in the window `[now, horizonMillis]` is cut and replaced; the only panels
@@ -3958,7 +3994,7 @@ object SchedulerDomain {
             when {
                 survives -> panel
                 // `side-dev/README.md` § *frozen past*: **"the schedule at t < $now line$ never changes as
-                // $now line$ increases."** An auto panel the line is standing IN is cut by the branch above
+                // $now line$ increases."** A task panel the line is standing IN is cut by the branch above
                 // and the plan is regenerated from `now` — so without this its ELAPSED HEAD, work the app has
                 // already told the user it was doing, silently disappears from the timeline on every re-plan
                 // (and, because [pastPeriodsForTask] reads these same panels, from the clock replay that seeds
@@ -3966,14 +4002,22 @@ object SchedulerDomain {
                 // [org.example.project.scheduler.state.SchedulerReducer]'s advance banks a panel only once it
                 // has wholly elapsed, precisely so an in-progress one stays a panel.
                 //
-                // So the head is KEPT, truncated at the line, and the tail alone is re-planned. It stays an
-                // ordinary auto panel: the next advance banks it like any other, [mergeSameTaskPanels] fuses
-                // it back with the new panel when the re-plan picks the same task again, and it is behind the
-                // line so it is never a [futureBlocks] obstacle.
-                panel.auto && !panel.chore && panel.taskId != null &&
+                // So the head is KEPT, truncated at the line, and the tail alone is re-planned. **Whoever
+                // placed the panel**: the branch above cuts an auto panel the fill owns and, exactly as
+                // deliberately, a panel the user has just UNPINNED (PRD §8 — unpinning is what makes the
+                // scheduler stop seeing it). The elapsed half of the second is the same frozen past as the
+                // first's, and reading only `auto` here deleted it, which is the frozen-past rule breaking on
+                // the one gesture that was asking the scheduler to re-plan.
+                //
+                // The kept head is an ordinary AUTO panel from here on, however it started: the next advance
+                // banks it like any other, [mergeSameTaskPanels] fuses it back with the new panel when the
+                // re-plan picks the same task again (it must carry the same `auto`/`pinned` to fuse), it is
+                // behind the line so it is never a [futureBlocks] obstacle, and it is no longer something the
+                // user placed — so the calendar stops drawing it as one ([isUserPlaced]).
+                !panel.chore && panel.taskId != null &&
                     panel.startEpochMillis < nowMillis && panel.endEpochMillis > nowMillis -> {
                     elapsedHeadIds += panel.id
-                    panel.copy(endEpochMillis = nowMillis)
+                    panel.copy(endEpochMillis = nowMillis, auto = true)
                 }
 
                 else -> null
