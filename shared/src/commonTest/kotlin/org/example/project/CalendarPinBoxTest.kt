@@ -16,6 +16,8 @@ import org.example.project.scheduler.model.TaskPanel
 import org.example.project.scheduler.state.SchedulerIntent
 import org.example.project.scheduler.state.SchedulerReducer
 import org.example.project.scheduler.state.SchedulerState
+import org.example.project.ui.PlacedRecord
+import org.example.project.ui.panelPinBoxSpec
 
 /**
  * PRD §8: **everything the user placed by hand wears a blue outline and a pin box**, and that box is the
@@ -109,6 +111,53 @@ class CalendarPinBoxTest {
         assertTrue(SchedulerDomain.isUserPlaced(s.panels.first { it.noScreen }))
         assertTrue(SchedulerDomain.isUserPlaced(s.panels.first { it.inactivity }))
         assertTrue(SchedulerDomain.isUserPlaced(s.panels.first { it.taskId == solo && !it.auto }))
+    }
+
+    // ----- which blocks wear a box at all -------------------------------------------------------
+
+    /** A displayed block, as the calendar builds one — only the fields the box's rule reads. */
+    private fun block(
+        userPlaced: Boolean = true,
+        noScreen: Boolean = false,
+        inactivity: Boolean = false,
+        existence: Boolean = true,
+    ) = PlacedRecord(
+        title = "block",
+        startHour = 9f,
+        endHour = 10f,
+        scheduled = false,
+        userPlaced = userPlaced,
+        noScreen = noScreen,
+        inactivity = inactivity,
+        pins = PanelPins(existence = existence),
+    )
+
+    @Test
+    fun only_a_user_placed_block_wears_a_box_and_it_is_that_blocks_own_pin() {
+        assertNull(panelPinBoxSpec(block(userPlaced = false)), "the app placed it: no box")
+        val spec = panelPinBoxSpec(block(existence = true))
+        assertNotNull(spec)
+        assertTrue(spec.checked)
+        assertTrue(spec.enabled, "on a task panel the box is a real switch")
+        assertEquals(false, panelPinBoxSpec(block(existence = false))?.checked)
+    }
+
+    @Test
+    fun a_no_screen_period_wears_no_box_at_all() {
+        // The user drew it, so it keeps the outline — but it is a DECORATIVE panel (it patterns the timeline
+        // rather than occupying it, and has no fill of its own), and the box it would wear could only ever be
+        // inert: a period is reached by its KIND and taken away with "Remove", never unpinned.
+        assertNull(panelPinBoxSpec(block(noScreen = true)))
+        assertNull(panelPinBoxSpec(block(noScreen = true, existence = false)))
+    }
+
+    @Test
+    fun an_inactivity_period_wears_an_inert_box() {
+        val spec = panelPinBoxSpec(block(inactivity = true, existence = false))
+        assertNotNull(spec)
+        assertFalse(spec.enabled, "a period has no 'still drawn, no longer obeyed' state")
+        // Checked as a RULE, not off the field, so a period an older build wrote needs no migration.
+        assertTrue(spec.checked)
     }
 
     // ----- a hand-drawn period's box states a fact ---------------------------------------------

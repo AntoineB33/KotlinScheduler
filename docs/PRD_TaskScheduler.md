@@ -388,14 +388,15 @@ occurrence, here* — so the gesture turns the Existence pin on by itself, and a
 becomes, from that moment, a blue-outlined block the scheduler is bound by. The other three pin switches
 (Position, Spanning, Distance) are left as they were: a drag is a statement about existence, not about
 whether the position, the span or a distance is fixed from now on.
-* **A hand-drawn period's box is checked and cannot be unchecked.** A restrictive period reaches the
-scheduler by *being a period of its kind* (§9), not by a pin, so there is no state in which the scheduler
-still draws it but no longer obeys it — the way to make the scheduler stop seeing a period is **"Remove"**.
-The box is still shown, because the sentence the blue outline and the box state is *the user put this here*,
-and a period the user drew is exactly that. A **no-screen** period drawn this way has **no fill at all**: an
-outline, and the oblique lines of both layers (§8, "a no-screen period is where both layers fall") drawn
-across it, ahead of the now-line as well as behind it. An **inactivity** period keeps its grey — grey is the
-statement that nothing is scheduled there.
+* **A hand-drawn period has no pin to give.** A restrictive period reaches the scheduler by *being a period
+of its kind* (§9), not by a pin, so there is no state in which the scheduler still draws it but no longer
+obeys it — the way to make the scheduler stop seeing a period is **"Remove"**. An **inactivity** period
+therefore shows the box checked and does nothing when it is clicked; a **no-screen** period shows **no box at
+all**, being a *decorative* panel (see the taxonomy above) with no body of its own for a mark to sit on. Both
+keep the blue outline: that says who drew them, which is still true. A no-screen period drawn this way has
+**no fill at all** — an outline, and the oblique lines of both layers (§8, "a no-screen period is where both
+layers fall") drawn across it, ahead of the now-line as well as behind it. An inactivity period keeps its
+grey, grey being the statement that nothing is scheduled there.
 * **The info surface is a stack of sections.** The calendar draws its elements over one another — a task inside a sleep period, a screen break over that task, a reminder tag over the lot, the two layers hatched across all of it — so the info surface (the hover bubble on desktop) names **every** one of them that covers the hovered instant, one section each, including **the layers** and a **§14 reminder**. The sections read top to bottom in this order: **reminder > alarm/timer ring > task = break > inactivity = sleep > no computer unlocked = no phone unlocked**; the pairs joined by "=" are equal, and keep the order the calendar found them in. The two **zero-duration markers** lead it — a §14 reminder tag and a §18 ring (§18) — because each is drawn *on top* of the panels and so is the thing the cursor is actually on. **When there is a break, there can't be a task** — a screen break suspends the task's chunk rather than cutting it, so the task panel spans the break, but the user is not on that task during it and it is not named.
 * **Inactivity periods are grey, and grey means nothing is scheduled there.** An **inactivity period** is drawn as a plain grey period, and it is the one thing that tells the §9 scheduler to place **nothing at all** — not even a task that needs no screen. Three things are the same period under different names: the ones the user **adds** from the contextual menu; the **sleep periods** (§17), which are inactivity periods labelled "Sleep"; and **all three screen breaks** (§15) end to end, drawn exactly like the inactivity band beside them — the
 blue outline is reserved for what the *user* placed (below), and a break is the app's own period. (Until 2026-08-28 the last was two: the look-away end to end and only the *closed first minute* of a 5-minute pose, because a break had a shape whose open tail was reserved for off-screen work rather than being a stop. All three now carry the one kind `no task allowed` end to end — see `docs/adr/0003-screen-breaks.md`.) A task the user has given a **non-zero resilience** to that kind may still work through one; that is the only thing ever placed inside a break.

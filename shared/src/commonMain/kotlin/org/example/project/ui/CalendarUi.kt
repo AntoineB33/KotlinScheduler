@@ -6184,23 +6184,22 @@ private fun CalendarBlock(
                     }
                     // PRD §8: the pin box, at the block's TOP RIGHT — on the first slice only, so a block
                     // stepped across an overlap wears one box and not one per step (the title follows the
-                    // same rule, at the other corner). Drawn AFTER the hover tiles so it is on top of them,
-                    // which is the whole reason it carries a copy of them ([PanelPinBox]).
+                    // same rule, at the other corner). Whether there is one at all, and whether it is a
+                    // switch, is [panelPinBoxSpec]'s answer and not decided here. Drawn AFTER the hover tiles
+                    // so it is on top of them, which is the whole reason it carries a copy of them.
                     //
                     // A block too short or too narrow for it draws none: a block is never stretched to hold
                     // what is written on it, and the zoom is what brings the box back — same rule as the
-                    // band names and the panel labels.
-                    if (isFirst && record.userPlaced &&
+                    // band names and the panel labels. That is the only part of the decision that is about
+                    // the DRAWING, which is why it is the only part that lives here.
+                    val pinBox = panelPinBoxSpec(record)
+                    if (isFirst && pinBox != null &&
                         sliceHeight >= PIN_BOX_MIN_HEIGHT &&
                         colWidth * slice.widthFraction >= PIN_BOX_MIN_WIDTH
                     ) {
                         PanelPinBox(
-                            // A period's box is the "existence" pin too — it is simply never off there.
-                            // Read as a rule rather than off the field, so a period an OLDER build wrote
-                            // (before the reducer set the pin on one) still reads checked without a
-                            // migration: the panel IS the pre-placed thing, whatever its stored pins say.
-                            checked = record.pins.existence || isPeriodBlock(record),
-                            enabled = !isPeriodBlock(record),
+                            checked = pinBox.checked,
+                            enabled = pinBox.enabled,
                             topHour = slice.topHour,
                             hourHeight = hourHeight,
                             overlays = blockBubbleOverlays(record, slice.topHour, slice.bottomHour, tz) +
@@ -6220,10 +6219,40 @@ private fun CalendarBlock(
  * PRD §8: is this displayed block a **restrictive period** rather than a task panel?
  *
  * The two the user can draw are the no-screen period and the inactivity period, and both are the same object
- * under different scheduling rules — which is why they share one editor. It is asked here for the one thing
- * that differs on a period: its pin box states a fact and is not a switch (see [PanelPinBox]).
+ * under different scheduling rules — which is why they share one editor. It is asked for the one thing that
+ * differs on a period: it is reached by its KIND, so its pin box could only ever state a fact (see
+ * [panelPinBoxSpec]).
  */
 private fun isPeriodBlock(record: PlacedRecord): Boolean = record.noScreen || record.inactivity
+
+/** PRD §8: the pin box a block wears — see [panelPinBoxSpec], which is where it is decided. */
+internal data class PanelPinBoxSpec(val checked: Boolean, val enabled: Boolean)
+
+/**
+ * PRD §8: **the pin box this block wears, or `null` for a block that wears none.** One reading, off the
+ * record alone, so the answer is the same wherever it is asked and can be pinned by a test.
+ *
+ * - **No box on anything the app placed** — the fill's own panels, the screen breaks, the sleep windows, the
+ *   wind-down hours, a derived band ([PlacedRecord.userPlaced]). The box says *the user put this here*, and
+ *   they did not.
+ * - **No box on a NO-SCREEN period either**, though the user did draw that one. It is a **decorative** panel
+ *   (PRD §8 panel taxonomy): it patterns the timeline rather than occupying it, and it has no fill of its own
+ *   for a box to sit on — while the box it would wear could only ever be inert, a period being reached by its
+ *   KIND and taken away with "Remove" rather than unpinned. A mark that cannot be pressed on a panel that is
+ *   not there to be occupied is two reasons for the same nothing.
+ * - **An inactivity period keeps a box, and it is INERT** (`enabled = false`). That one is a real panel — grey
+ *   is a statement about the timeline itself — so the mark has a body to sit on and says what the outline
+ *   around it says. It is checked as a RULE rather than off the field, so a period an older build wrote
+ *   (before the reducer set the pin on one) still reads checked with no migration: the panel IS the pre-placed
+ *   thing, whatever its stored pins happen to say.
+ * - **Every other user-placed block gets the real switch**, reading its own `pins.existence`.
+ */
+internal fun panelPinBoxSpec(record: PlacedRecord): PanelPinBoxSpec? = when {
+    !record.userPlaced -> null
+    record.noScreen -> null
+    isPeriodBlock(record) -> PanelPinBoxSpec(checked = true, enabled = false)
+    else -> PanelPinBoxSpec(checked = record.pins.existence, enabled = true)
+}
 
 /** One hover tile of a block slice: `devices == null` means "no activity data here" (times-only bubble). */
 private data class DeviceHoverZone(val top: Float, val bottom: Float, val devices: List<String>?)

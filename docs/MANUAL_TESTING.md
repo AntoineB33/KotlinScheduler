@@ -107,9 +107,10 @@ the desktop app signed in as account 1). Default dev run enables debug tooling (
   - [ ] **Uncheck the box on the panel the now-line is standing in** → its elapsed half stays exactly
         where it is (the past never moves); only the future tail is re-planned.
   - [ ] Undo (Ctrl+Z with the calendar focused) puts the pin back.
-  - [ ] **Add a no-screen period** → a blue-outlined panel with NO grey fill, hatched with the oblique
-        lines of both layers, and a check box that is checked and does nothing when clicked (a period is
-        removed, never unpinned). An **inactivity** period keeps its grey and behaves the same way.
+  - [ ] **Add a no-screen period** → a blue-outlined panel with NO grey fill and NO check box, hatched
+        with the oblique lines of both layers.
+  - [ ] **Add an inactivity period** → blue outline, its grey kept, and a box that is checked and does
+        nothing when clicked (a period is removed, never unpinned).
   - [ ] Zoom out until a block is a few pixels tall: the box disappears rather than being clipped, and
         zooming back in brings it back. Hovering the box shows the same bubble as hovering beside it.
 - [ ] **A task panel's menu reaches its task (PRD §8).** Right-click a task panel:

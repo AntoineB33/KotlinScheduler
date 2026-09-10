@@ -38,10 +38,14 @@ right; resizing a scheduler panel makes it a pre-placed block; unpinning it hand
   head is now kept for any task panel and becomes an ordinary auto panel, which is what lets
   `mergeSameTaskPanels` fuse the re-planned tail back onto it.
 - **A restrictive period is pinned in the box and never in the scheduler.** `derivePinned` gained a
-  period-aware overload: a hand-drawn period carries `pins.existence` (so the box reads checked) but never
-  `pinned`, or `isSchedulerFixed` would enter it in the walk's pre-placed blocks — a block owned by no task —
-  on top of the period it already is. The box is inert there: a period has no "still drawn, no longer obeyed"
-  state, and "Remove" is how it goes away.
+  period-aware overload: a hand-drawn period carries `pins.existence` but never `pinned`, or `isSchedulerFixed`
+  would enter it in the walk's pre-placed blocks — a block owned by no task — on top of the period it already
+  is. A period has no "still drawn, no longer obeyed" state, and "Remove" is how it goes away, so its box
+  cannot be a switch: an **inactivity** period shows it checked and inert, and a **no-screen** period shows
+  **none at all** — it is a decorative panel with no body of its own for a mark to sit on, so the box would be
+  two reasons for the same nothing. Both keep the outline, which still says who drew them.
+- **`panelPinBoxSpec` is the one place that decides which blocks wear a box**, off the record alone; the
+  composable decides only whether there is ROOM for it. A rule the drawing owns is a rule no test can reach.
 - **A hand-drawn no-screen period loses its fill**: outline only, with both layers' oblique lines over it.
   Those are *asserted* regions, so `layerRegions` does not clip them to the now-line and a future period is
   hatched exactly like a past one. The stale PRD line giving a **screen break** a blue outline of its own is

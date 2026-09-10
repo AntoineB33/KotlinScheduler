@@ -201,12 +201,24 @@ Global rules that always apply: `CLAUDE.md`.
   unpinned**, which is precisely the shape the fill deletes — so the re-plan the edit itself triggers undid
   the drag, silently. The other three pins are untouched: a drag is a statement about existence, not about
   position, span or distance.
-- **A restrictive period's box is checked and INERT.** A period reaches the scheduler by its KIND, never by a
-  pin (`scheduler.md` § *What reaches the scheduler*), so it has no "the scheduler stops seeing it" state
-  short of not being there — "Remove" is that. Its `pins.existence` is still set when it is drawn, because the
-  sentence the outline and the box state is *the user put this here*; its `pinned` is **not**
-  (`derivePinned`'s period-aware overload), or `isSchedulerFixed` would enter it in the walk's **pre-placed
-  blocks** — a list of blocks owned by a task — on top of the period it already is.
+- **WHICH BLOCKS WEAR A BOX AT ALL is `panelPinBoxSpec`, and nothing else decides it.** One reading off the
+  record, so the drawing cannot answer it differently from a test; the composable decides only whether there
+  is ROOM (`PIN_BOX_MIN_HEIGHT` / `PIN_BOX_MIN_WIDTH`), which is the only part of it that is about drawing.
+  Three answers:
+  - **no box on anything the app placed** — the box says *the user put this here*, and they did not;
+  - **no box on a NO-SCREEN period either**, though the user did draw that one. It is a **decorative** panel
+    (PRD §8 taxonomy): it patterns the timeline rather than occupying it and has no fill of its own for a mark
+    to sit on, and the box it would wear could only ever be inert. A mark that cannot be pressed on a panel
+    that is not there to be occupied is two reasons for the same nothing. It keeps the blue **outline** — that
+    one still says who drew it;
+  - **an inactivity period keeps a box and it is INERT.** That one is a real panel (grey is a statement about
+    the timeline itself), so the mark has a body to sit on. `enabled = false`, because a period reaches the
+    scheduler by its KIND, never by a pin (`scheduler.md` § *What reaches the scheduler*): there is no "still
+    drawn, no longer obeyed" state, and "Remove" is how a period goes away. It is **checked as a rule, not off
+    the field**, so a period an older build wrote decodes right with no migration.
+- **A hand-drawn period carries `pins.existence` but never `pinned`** (`derivePinned`'s period-aware
+  overload), or `isSchedulerFixed` would enter it in the walk's **pre-placed blocks** — a list of blocks owned
+  by a task — on top of the period it already is.
 - **The box owes the bubble what it hides, and it is a cut of the block's own tiling, never a lid over it.**
   Same rule as the resize strips and the §14 tag: it is opaque, and while it is interactive it is a
   pointer-input node that wins the hit test against the block's tiles, so it carries a copy of them
