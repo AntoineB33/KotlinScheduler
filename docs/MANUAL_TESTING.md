@@ -176,6 +176,12 @@ the desktop app signed in as account 1). Default dev run enables debug tooling (
         instant is persisted, the countdown is derived from it).
   - [ ] An alarm due sooner than a running timer, and the reverse → whichever is sooner rings first, and both
         ring (one OS slot, one merged sweep).
+  - [ ] **Hover the ⏳ marker a running timer draws on the calendar (PRD §8/§18)** → the bubble leads with the
+        ring: `⏳ <label or duration>` and the time it goes off at. Whatever the marker covers (the task
+        panel, a grey band, the layers) is named UNDER it, in that order — the ring is inert, not silent.
+        Same for an alarm's ⏰ marker. Start a timer and set an alarm to ring within a minute of it so the
+        two markers **stack**: each is still named at its own instant, not at the row it was pushed down to.
+        Hover a reminder tag drawn over a ring → the reminder leads and the ring follows it.
 - [ ] Close and relaunch → the task tree, records, and pinned panels are exactly as left (local SQLite,
       ~400 ms save debounce — **no** sync involved).
 - [ ] **A weight-table pin outlives its window.** In a sub-list's **Priority weights** table, pin a cell's

@@ -7,6 +7,7 @@ import kotlinx.datetime.TimeZone
 import org.example.project.ui.CalendarBubbleSection
 import org.example.project.ui.CalendarBubbleSection.Kind
 import org.example.project.ui.PlacedRecord
+import org.example.project.ui.alarmBubbleSection
 import org.example.project.ui.orderedBubbleSections
 import org.example.project.ui.reminderBubbleSection
 
@@ -18,11 +19,14 @@ import org.example.project.ui.reminderBubbleSection
  * These tests pin the user's two rules for that stack:
  *
  * 1. the order, top to bottom:
- *    `reminder > task = break > inactivity = sleep > no computer unlocked = no phone unlocked`;
+ *    `reminder > alarm/timer ring > task = break > inactivity = sleep > no computer unlocked = no phone
+ *    unlocked`;
  * 2. **when there is a break, there can't be a task**.
  *
- * A §14 REMINDER leads the order because the tag is the top-most thing the column draws — it is what the
- * cursor is actually on, and it hides the panel and the layers under it, which stack below it in the bubble.
+ * The two ZERO-DURATION MARKERS lead the order — a §14 reminder tag and a §18 alarm/timer ring — because
+ * they are the top-most things the column draws: each is what the cursor is actually on, and each hides the
+ * panel and the layers under it, which stack below it in the bubble. The tag outranks the ring, being drawn
+ * over it.
  */
 class CalendarBubbleSectionTest {
 
@@ -147,6 +151,62 @@ class CalendarBubbleSectionTest {
         assertEquals("Take the pills", section.title)
         assertEquals("09:30", section.times)
     }
+
+    // ----- a ring's own section ------------------------------------------------------------------------
+
+    @Test
+    fun a_ring_leads_the_stack_over_what_it_hides() {
+        // Reported as: hovering a timer's end named the task panel under it and never the timer. A ring is
+        // INERT — it registers no click — so nothing about drawing it forced the omission to show.
+        assertEquals(
+            listOf(Kind.Alarm, Kind.Task, Kind.Sleep, Kind.NoPhoneUnlocked),
+            kindsOf(Kind.NoPhoneUnlocked, Kind.Task, Kind.Sleep, Kind.Alarm),
+        )
+    }
+
+    @Test
+    fun a_reminder_outranks_a_ring_and_a_ring_outranks_a_break() {
+        // Draw order read back out of the bubble: a tag goes over a break band, which goes over a ring —
+        // and the ring, being the instant the cursor is pointing at, still comes above the spans below it.
+        assertEquals(
+            listOf(Kind.Reminder, Kind.Alarm, Kind.Break, Kind.Inactivity),
+            kindsOf(Kind.Inactivity, Kind.Break, Kind.Alarm, Kind.Reminder),
+        )
+    }
+
+    @Test
+    fun a_ring_section_names_the_instant_it_goes_off_at() {
+        // Not where the marker is DRAWN: coinciding rings stack downward, so a marker can sit below its own
+        // time, and "when does this go off" is the whole of what hovering it asks.
+        val tz = TimeZone.UTC
+        val due = Instant.parse("2026-09-10T16:45:00Z").toEpochMilliseconds()
+        val section = alarmBubbleSection(ring("5:00", due, timer = true), tz)
+        assertEquals(Kind.Alarm, section.kind)
+        assertEquals("16:45", section.times)
+    }
+
+    @Test
+    fun the_icon_is_what_tells_a_timer_from_an_alarm_in_the_bubble_too() {
+        // The marker's icon is the ONLY thing that tells the two apart (the labels fall back to a duration
+        // and a time of day, which are not reliably distinguishable), so the bubble carries it rather than
+        // naming a ring less precisely than the marker it stands in for.
+        val tz = TimeZone.UTC
+        val due = Instant.parse("2026-09-10T16:45:00Z").toEpochMilliseconds()
+        assertEquals("⏳ Tea", alarmBubbleSection(ring("Tea", due, timer = true), tz).title)
+        assertEquals("⏰ Wake up", alarmBubbleSection(ring("Wake up", due, timer = false), tz).title)
+    }
+
+    private fun ring(title: String, dueMillis: Long, timer: Boolean) =
+        PlacedRecord(
+            title = title,
+            startHour = 16.75f,
+            endHour = 16.75f,
+            scheduled = false,
+            alarm = true,
+            timer = timer,
+            fullStartMillis = dueMillis,
+            fullEndMillis = dueMillis,
+        )
 
     @Test
     fun the_title_and_times_of_each_section_are_carried_through() {

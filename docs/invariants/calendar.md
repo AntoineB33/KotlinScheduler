@@ -60,13 +60,25 @@ Global rules that always apply: `CLAUDE.md`.
   and the ∞-start is asked of the MERGED regions, so splitting a band can never move it.
 - Layers are non-interactive overlays: they displace nothing and register no pointer input. A layer is
   *named* by the hover bubble anyway — its section rides whatever the cursor is over, or the bottom-most
-  hover pickup where that is nothing.
+  hover pickup where that is nothing. (An **alarm/timer ring** is inert in the other sense — it registers no
+  *click* — but it is opaque, so unlike a layer it carries hover tiles of its own; see below.)
 - **The hover bubble is a STACK of sections**, one per thing true at the instant under the cursor, ordered
-  `reminder > task = break > inactivity = sleep > no computer unlocked = no phone unlocked` (equal ranks are
-  ties, kept in collection order). **When there is a break there can't be a task.** Both rules live in
-  `orderedBubbleSections`, applied in the one funnel `Modifier.calendarTitleHover` — never at a call site.
-  A **§14 reminder leads** it for the same reason it is emitted last: the tag is the top-most thing the
-  column draws, so it is what the cursor is on and it is what hides everything below it.
+  `reminder > alarm/timer ring > task = break > inactivity = sleep > no computer unlocked = no phone unlocked`
+  (equal ranks are ties, kept in collection order). **When there is a break there can't be a task.** Both rules
+  live in `orderedBubbleSections`, applied in the one funnel `Modifier.calendarTitleHover` — never at a call
+  site. The **two zero-duration markers lead** it for the same reason they are emitted last: a §14 reminder tag
+  and a §18 alarm/timer ring are the top-most things the column draws, so each is what the cursor is on and
+  each is what hides everything below it (the tag over the ring, which is the order they are drawn in).
+- **AN INERT ELEMENT OWES THE BUBBLE WHAT IT HIDES JUST AS MUCH AS A CLICKABLE ONE**, and it is the case that
+  goes unnoticed. A §14 tag is a pointer-input node, so leaving it silent showed at once as a bubble naming
+  *nothing*; a §18 ring registers no input at all, so the tiles under it went on reporting and the bubble
+  named the task panel the ring was sitting on — right-looking, and never once mentioning the ring the cursor
+  was on. That shipped, and it is what `alarmBubbleSection` + `AlarmMarker`'s own `CalendarHoverTiles` fix.
+  The test is opacity, not interactivity: if it is drawn over something, it names it.
+- **A ring's section names the INSTANT, its tiles ride the DRAWN rectangle** — the same split as the reminder
+  tag's, and for the same reason: coinciding rings are pushed downward by the stacking sweep, so a marker can
+  sit below its own time. `alarmPlacements` is that sweep, derived **once** and read by both the marker and
+  `alarmOverlays`; a second copy is how the bubble starts naming a ring where the calendar does not draw it.
 - **Hover is TILED, never nested**: two reporters at one position race (the parent's Move wins). Cut the
   element at every covering section's boundary (`bubbleHoverZones`) and give each tile one reporter.
 - **A CURSOR SHAPE rides the hover tile; it is never a lid over it.** A Box carrying only
@@ -87,8 +99,9 @@ Global rules that always apply: `CLAUDE.md`.
   on the hit path of whatever descendant is hit. `calendarTitleHover` never consumes.
 - **A REMINDER TAG IS THE TOP-MOST THING THE DAY COLUMN DRAWS**, and that is the same rule as the one above
   read from the other side. It is the one marker on the calendar the user has to be able to **hit**; every
-  other element there is decorative (the grey marks, the layers, the now-line, the band labels, an alarm
-  ring) or reports only hover. So the tags are emitted LAST and nothing goes after them. Drawn earlier they
+  other element there is decorative (the grey marks, the layers, the now-line, the band labels) or reports
+  only hover (a `ScreenBreakBand`'s tiles, an alarm/timer ring's). So the tags are emitted LAST and nothing
+  goes after them. Drawn earlier they
   were covered at exactly the position that matters most — the now-line, where the overdue stack accumulates
   and where mode 1 parks an owed pose: an opaque alarm marker hid one, and a `ScreenBreakBand`'s hover tiles,
   being pointer-input nodes, won the hit test against the tag underneath so the click that checks a reminder
@@ -98,9 +111,11 @@ Global rules that always apply: `CLAUDE.md`.
   — it has to be, it is clicked — so it wins the hit test against every tile beneath it and those tiles stop
   reporting: a hovered tag named *nothing at all*. It therefore carries hover tiles of its own over its own
   drawn rectangle (`ReminderTag` → `CalendarHoverTiles`), with its own section (`reminderBubbleSection`) over
-  `underReminderOverlays` — the screen breaks plus the one `underPanelOverlays` list a `ScreenBreakBand`
-  reads for the same purpose. **One list, not two readings**, for the same reason `blockBubbleOverlays` is
-  shared with the width handle drawn over a block. Two rules hold it:
+  `underReminderOverlays` — the screen breaks, the `alarmOverlays`, plus the one `underPanelOverlays` list a
+  `ScreenBreakBand` reads for the same purpose. **One list, not two readings**, for the same reason
+  `blockBubbleOverlays` is shared with the width handle drawn over a block. **Three** elements are drawn over
+  the panels and each stacks whatever of the other two is below it: the §18 markers add nothing, a
+  `ScreenBreakBand` adds `alarmOverlays`, a tag adds both. Two rules hold it:
   - the **click lives on the ancestor** the tiles hang under, never beside them. A sibling tile layer is the
     "lid over the tile" mistake with the roles swapped — it would eat the one click on the calendar that has
     to land. `Box(clickable) { Row(the chip); CalendarHoverTiles(…) }`.

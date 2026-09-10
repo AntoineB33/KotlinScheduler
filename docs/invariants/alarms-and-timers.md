@@ -18,7 +18,7 @@ cross-device presence.
 - The boundary is `LocalDateTime(day, hh:mm).toInstant(tz)` — **not** `startOfDay + minutes`, which skews on
   DST days.
 - Every ring is drawn on the calendar as an inert zero-duration marker, projected over the displayed span
-  only.
+  only — and **inert is not silent**: it names itself in the hover bubble over what it hides (below).
 - The tone is synthesized in commonMain (`AlarmTone.loopPcm()`, deterministic) so every device rings
   identically with no loadable resource. Android falls back to the system alarm ringtone if the PCM track
   fails — an alarm must never fail silently. The desktop uses its own thread, never the voice-cue worker.
@@ -109,6 +109,15 @@ arming loop, a second sweep, a second ring path or a second notification funnel.
   - The label falls back to the timer's **duration** where an alarm's falls back to its time of day — the
     thing each one is. `TimerDomain.formatDuration` / `formatCountdown` are that spelling, and they are the
     Alarms window's own: the window delegates to them so the two readouts cannot disagree.
+  - **A marker is inert, NOT silent: it names itself in the hover bubble** (`alarmBubbleSection`,
+    `AlarmMarker`'s own `CalendarHoverTiles` — `docs/invariants/calendar.md`). Inert means nothing to check
+    off, drag or edit; it does not mean the one question a ring exists to answer goes unanswered. It shipped
+    silent precisely *because* it is inert — a §14 tag left silent shows up at once as a bubble naming
+    nothing, whereas a ring registers no pointer input, so the tiles under it went on reporting and the
+    bubble named the task panel beneath, looking right while never mentioning the ring the cursor was on.
+    The section carries the ring's **instant** (not the position the stacking sweep pushed the marker to) and
+    the **icon**, through the one `alarmMarkerIcon` the marker itself reads: the icon is the only thing that
+    tells an alarm from a timer, so a bubble without it would say less than the marker it stands in for.
 
 ### Both lists are Undo/Redo history, and the run state is not
 

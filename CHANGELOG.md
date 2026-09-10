@@ -11,6 +11,36 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### A ring names itself in the hover bubble — 2026-09-10
+
+→ `docs/invariants/calendar.md`, `docs/invariants/alarms-and-timers.md`, PRD §8/§18. `shared`
+(`ui/CalendarUi.kt`); new cases in `CalendarBubbleSectionTest`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy, no schema migration.**
+
+Reported as: hovering a timer's end on the calendar shows no information about it at the top of the bubble.
+
+- **An INERT element owes the bubble what it hides just as much as a clickable one, and it is the case that
+  goes unnoticed.** A §14 reminder tag is a pointer-input node, so leaving it silent showed up at once as a
+  bubble naming *nothing at all* — which is how that got fixed. A §18 ring registers no input, so the hover
+  tiles under it went on reporting: the bubble named the task panel the marker was sitting on and never the
+  ring, which looks like a working bubble rather than a broken one. The test is opacity, not interactivity.
+- **`alarmBubbleSection`, and the marker carries its own `CalendarHoverTiles`** over `underPanelOverlays` —
+  the same funnel a `ScreenBreakBand` and a `ReminderTag` read, not a fourth reading of "what is under the
+  cursor here". The three elements drawn over the panels now each stack what is below them: the markers add
+  nothing, the bands add `alarmOverlays`, the tags add both.
+- **The section names the INSTANT; the tiles ride the DRAWN rectangle.** Rings coinciding within a marker's
+  height stack downward, so a marker can sit below its own time — the same split as a tag's (an overdue one
+  rides the now-line). The stacking sweep moved out of the drawing pass into `alarmPlacements`, derived once
+  and read by both, rather than being repeated for the overlays.
+- **The section carries the icon** (⏳ / ⏰), through the one `alarmMarkerIcon` the marker itself reads. It is
+  the only thing that tells an alarm's ring from a timer's — the labels fall back to a time of day and a
+  duration, which do not reliably differ — so a bubble without it would say less than the marker it stands in
+  for.
+- **The order gains one rank**: `reminder > alarm/timer ring > task = break > inactivity = sleep > layers`.
+  The two zero-duration markers lead it, the tag over the ring, which is the order they are drawn in.
+- Also corrects PRD §18's stale *"Not drawn on the calendar"* bullet, left behind by *A running timer marks
+  the calendar* (2026-08-29).
+
 ### Modes 2 and 3 are one placement; the difference is the cue — 2026-09-10
 
 `scheduler/domain/DynamicPeriods.kt` (`lineIsCoveredAt`, `breaksAreNotifiedAt`, `chainStartTouching`,
