@@ -395,7 +395,8 @@ rows, and re-derive right after each reconcile.
 
 ## 4b. The two `t_p` modes — an owed POSE slides at the screen, happens when you leave
 
-The mode is **which devices are unlocked** (mode 1 = at least one; mode 2 = none), read off the same
+The mode is two questions: **is any device of the account unlocked** (if so, mode 1), and where none is,
+**has one said "I'm away"** (mode 3 if so, mode 2 if not). The first is read off the same
 account-wide pause §4 draws as its Inactivity band — so the two can never disagree, and the band is how you
 read the mode off the screen. Enable the screen-break display switch in the calendar window first, and use a
 fast-break script (`*-fast-break*.bat`) so the bars fire in seconds rather than in hours.
@@ -424,9 +425,25 @@ fast-break script (`*-fast-break*.bat`) so the bars fire in seconds rather than 
 - [ ] **Serving it clears it.** Use "Look away now" (`Ctrl+Shift+Alt+E`) and let it complete → the conducted
       break is recorded as a real period where it happened, the 20-second bar re-arms from it, and the line is
       free again. A 5- or 15-minute period is cleared only by an actual rest of that length.
-- [ ] **Mode 2: leaving makes the break happen.** Press "I'm away" (`Ctrl+Shift+Alt+A`) or lock the machine →
-      the Inactivity band opens at the now-line, the mode flips, the plan **re-plans once** (not per tick) and
-      the periods sit where the bars put them instead of on the line.
+- [ ] **Modes 2 and 3: leaving makes the break happen, and the two place it identically.** Lock the machine
+      (mode 2) or press "I'm away" (`Ctrl+Shift+Alt+A`, mode 3) → the Inactivity band opens at the now-line,
+      the mode flips, the plan **re-plans once** (not per tick) and the periods sit where the bars put them
+      instead of on the line. Nothing about *where* the three fall may differ between the two.
+- [ ] **A break the line crossed while away STAYS in the past.** Let the line run past the end of a
+      20 s / 5 min / 15 min band while away → the band is still drawn where it happened, at its own length. It
+      must **not** be stretched forward to keep touching the now-line, and it must not vanish. What fills the
+      gap from its end to the line is a grey **Inactivity** band (or **Sleep**, if you are inside a §17 sleep
+      window), hatched by **both** oblique layers — solid in mode 2, and dotted for this device's layer in
+      mode 3, which is what the "I'm away" button draws.
+- [ ] **A break falling due while you are already away is credited to the time you have been away.** Walk away,
+      then let a break fall due → it does not start at the now-line: it starts where the pause did, so it may
+      already be over by the time you look. (Before 2026-09-10 it was pushed to the end of the pause, which
+      while the pause is running IS the now-line — so it rode the line and never happened.)
+- [ ] **Mode 2 announces NOTHING; mode 3 does.** With the machine merely locked, a break that falls due must
+      raise **no** notification and **no** voice cue — it is placed and drawn silently. Press "I'm away" for
+      the same stretch and the break is announced again. Check the History window's **Notifications** source:
+      in mode 2 there must be no record either, the crossing being dropped rather than muted. The wind-down
+      cue is not a screen break and is unaffected.
 - [ ] **Unlocking returns to mode 1**, because the unlock clears "I'm away" (§15) and closes the pause. One
       re-plan, then the owed pose is back on the line.
 - [ ] **The Sleep/Work toggle changes none of this.** Switching to Sleep with the machine unlocked must leave

@@ -216,6 +216,11 @@ what makes that pose go away there is the ordinary bar rule (a locked stretch is
 stretch bars the breaks after it), never the line walking through it. Mode 3 is the account *saying* the break
 is being taken, so the pose elapses under the line.
 
+> **Superseded 2026-09-10** — see *Modes 2 and 3 are one placement; the difference is the cue* at the end of
+> this ADR. The requirements were restated to give the two away modes one placement rule, and the paragraph
+> above is kept for the reasoning it records, not as a current rule. Everywhere below that says mode 2 drags,
+> or that mode 3 alone lets a dynamic period cover the line, reads the same way.
+
 It is *not* the Sleep/Work toggle, which is what the code read until 2026-08-28 — that toggle says the user
 has gone to bed, not that no screen is in use, and a machine left unlocked while its owner naps is squarely
 mode 1. The "I'm away" button reaches **both** questions: it declares this device idle the way a lock does,
@@ -264,7 +269,8 @@ derive shrinks; that is the same bound the band itself carries.
   `Instance.coveredFromMillis`. The line goes on delaying it: in mode 1 it places tasks where it stood, in
   mode 2 the away cover holds it, and either way a stretch crossed like that holds no pose. **The 20 s
   look-away is exempt in both** — see below. `DynamicPeriods.breaksAreTakenAt` is the ONE predicate that says
-  which modes drag.
+  which modes drag. *(Superseded 2026-09-10: mode 2 no longer drags, and the predicate is gone —
+  `lineIsCoveredAt` is the one the placement reads.)*
 - **Modes 2 and 3 — the line must be covered by `no on-screen task`.** The gap between the last such period's
   end and the line is covered as **`no on-screen task`** — not `no task allowed` — which is what the README's
   own example asks for: the gap is filled with the tasks resilient to that kind, and left empty if none are.
@@ -466,3 +472,64 @@ one: the stretch was crossed in mode 2, or the app conducted it and recorded it 
   clipped by a clock jump.
 - A dynamic period **suspends** a chunk rather than cutting it (PRD §15), and does not count against "does
   the minimum fit?".
+
+---
+
+## Modes 2 and 3 are one placement; the difference is the cue — 2026-09-10
+
+The user restated § *$now line$ and 3 Dynamic Restrictive Period* in `docs/scheduler_requirements.md`. Three
+things changed, and they are one change seen from three sides.
+
+**Mode 2's clause was merged into mode 3's.** It used to read *"Mode 2: $now line$ must be covered by the
+period 'no on-screen task' but not one of the three dynamic periods"*; it now reads *"Mode 2 & 3: $now line$
+must be covered by the period 'no on-screen task'"*. A dynamic period's kind is `no task allowed`, which
+covers "no on-screen task" a fortiori — so under the restated rule *being covered* and *being coverable by one
+of the three* stopped being two questions, and the second predicate (`breaksAreTakenAt`) had mode 2 placing
+the three where mode 3 did not. It is deleted. `lineIsCoveredAt` is the one predicate the placement reads the
+mode through, and the two away modes are byte-for-byte one plan.
+
+**So the difference had to move somewhere, and the user put it on the CUE.** *"In $now line$ mode 2 only, the
+screen breaks are not notified."* `DynamicPeriods.breaksAreNotifiedAt` is the one place it is decided and
+`SchedulerDomain.cueCrossings` the one place it is read: in mode 2 every screen of the account is locked and
+nobody has said they are taking a break, so a break that falls due is placed, drawn and counted by the bars —
+and never announced. Modes 1 and 3 announce. The crossing is *dropped* rather than swallowed downstream, so
+nothing marks it announced and a mode that flips back inside the same scan window still says what it crossed.
+This is deliberately not a second reading of the lock: `deviceUnlocked()` answers *may this device say
+anything*, per cue and per device, and is asked as it always was; this answers *does the account's mode make
+this an announced break*, which is a fact about the schedule and belongs beside the placement.
+
+**And the reported symptom was the third side of it.** *"When the $now line$ reaches the end of a 20s/5min/15min
+screen break in mode 2 or 3, then it stays in the past (it currently disappears)."* It disappeared because a
+break falling due inside a running pause was pushed past it: any emptiness absorbs a dynamic period, and while
+the pause is ongoing the end of that emptiness IS the now-line — and goes on being the now-line for as long as
+the user stays away. The break rode the line and never happened. The requirements' new last bullet is the
+answer, and it is stated as a rule about periods rather than about the line:
+
+> When a "no on-screen task" period touches the start of a dynamic restrictive period, and that this chain of
+> "no on-screen task" periods ends somewhere in $[now line;+infinity)$, then the dynamic restrictive period
+> now starts at the start of this chain. If it means starting in the past, this is the only exception to the
+> **frozen past** rule.
+
+`DynamicPeriods.chainStartTouching` is the whole of it. The minutes already spent away COUNT towards the break
+that falls due at the end of them, so the break is placed where they began, is over by the time the line has
+moved on, and stays drawn there. Three clauses, each doing work: a **chain**, so two periods that abut are one
+stretch exactly as they are for the recurrence bars; **ending at or after the line**, so a pause the user came
+back from is finished business and the exception to the frozen past stays confined to the case it is written
+for; and read off the **environment**, never the walk's own output — a placed dynamic period is `no task
+allowed` and would qualify as a chain of its own, where the chain merge is already the rule.
+
+Two things it is *not* allowed to do. It may not cover the line in a mode that forbids that, so a **pose**
+pulled back far enough to reach `t_p` in mode 1 keeps the drag instead — refusing it there is mode 1's own rule,
+not an exception to this one. And it may not re-open the slots the walk has already passed: a pulled-back
+period floors its own bar at the instant it fell due, which is what keeps the placement loop monotone.
+
+What follows from all of it, and needed no code: the break is **never stretched** to keep covering the line. It
+keeps its own length, and what reaches from its end to the line is the ordinary `awayCover` — which the
+calendar draws as the derived **Inactivity** band, or as **Sleep** where the stretch is inside a §17 window
+(`sleepPanels` returns a window in progress whole, past part included, and `pastCoveredRegions` counts a sleep
+band as covered so no Inactivity is derived under it). Both oblique layers hatch that stretch by their own
+rule: in mode 2 this device's OS lock scan hatches its own layer and a peer that cannot be asked is assumed
+locked; in mode 3 the away button feeds its own layer, drawn dotted.
+
+Pinned by `ScreenBreakChainPullBackTest` (new), and by the rewritten mode cases in `DynamicPeriodsTest`,
+`TpModeTest` and `DraggedPoseNoIdlingTest`.

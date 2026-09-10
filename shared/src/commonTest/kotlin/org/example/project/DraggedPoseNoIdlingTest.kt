@@ -29,9 +29,9 @@ import org.example.project.scheduler.state.SchedulerState
  * derived grey "Inactivity" band, which is what the user saw growing behind the now-line on account 3 —
  * while a device was unlocked and every task was free to run, which is precisely what § *No idling* forbids.
  *
- * Modes 2 and 3 are the controls: mode 3 does not drag at all (the account said the break is being taken, so
- * it really happens), and mode 2 drags but covers the line with "no on-screen task" — there the passing
- * creates coverage rather than task panels, so the grey band behind the line is correct.
+ * Modes 2 and 3 are the controls, and they are one control: the requirements state them in one clause, so
+ * neither drags — the line must BE covered there, the pose elapses under it and really happens, and an
+ * on-screen task may no more run in it than in any other period of "no task allowed".
  */
 class DraggedPoseNoIdlingTest {
 
@@ -202,20 +202,24 @@ class DraggedPoseNoIdlingTest {
     }
 
     @Test
-    fun mode_two_keeps_the_drag_as_an_obstacle() {
-        // Mode 2 drags the pose exactly as mode 1 does, but its own rule is that the line IS covered by "no
-        // on-screen task" — so the passing creates COVERAGE, not task panels, and an on-screen task must not
-        // be planned into the stretch behind the line (that grey band is what "no device is unlocked" looks
-        // like). This is the one place the two modes' answers to the drag differ.
+    fun mode_two_does_not_drag_either_so_its_break_obstructs_like_mode_threes() {
+        // `docs/scheduler_requirements.md` § *$now line$ 3 modes* states the two away modes in ONE clause —
+        // *"Mode 2 & 3: $now line$ must be covered by the period 'no on-screen task'"* — so mode 2 drags
+        // nothing either. It used to drag exactly as mode 1 does, on the reading that a locked screen is not a
+        // break TAKEN; what tells the two apart now is the CUE
+        // ([DynamicPeriods.breaksAreNotifiedAt]), never the placement.
         val panels = fill(account(), NOW, DynamicPeriods.MODE_AWAY)
-        val pose = draggedPose(panels)
-        assertTrue(pose != null, "mode 2 drags the pose too")
+        assertTrue(panels.none { SchedulerDomain.isDraggedScreenBreak(it) }, "mode 2 drags nothing")
+        val bands = panels.filter { it.screenBreak }
+        assertTrue(bands.isNotEmpty(), "the case needs a break to be about")
         val work = panels.filter { it.auto }
-        assertTrue(
-            work.none {
-                it.startEpochMillis < pose.endEpochMillis && it.endEpochMillis > pose.startEpochMillis
-            },
-            "no on-screen task may be planned into the pose mode 2 is dragging",
-        )
+        for (band in bands) {
+            assertTrue(
+                work.none {
+                    it.startEpochMillis < band.endEpochMillis && it.endEpochMillis > band.startEpochMillis
+                },
+                "no on-screen task may be planned into a break the line is crossing in mode 2",
+            )
+        }
     }
 }

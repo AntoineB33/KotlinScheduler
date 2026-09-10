@@ -2248,10 +2248,12 @@ object SchedulerDomain {
      *  * otherwise **mode 3** if the user has pressed **"I'm away"**, and **mode 2** if they have not.
      *
      * The second question is what mode 3 adds, and it is the difference between *no screen is in use* and *a
-     * break is being taken*. A locked machine says only the first: the user may be reading at their desk, or
-     * the screen may have locked itself while they thought. So mode 2 goes on pushing a pose ahead of the line
-     * exactly as mode 1 does — what makes that pose go away there is the ordinary bar rule, a locked stretch
-     * being a rest stretch — while mode 3 lets the pose elapse under the line, because the user said so.
+     * break is being taken*. It no longer changes where the three dynamic periods GO — the requirements state
+     * modes 2 and 3 in one clause, so both cover the line and neither drags
+     * ([DynamicPeriods.lineIsCoveredAt]). What it decides is whether a break is ANNOUNCED
+     * ([DynamicPeriods.breaksAreNotifiedAt]): a locked machine with no declaration behind it has nobody to
+     * tell, while mode 3 is the account saying a break is being taken and is the mode the server cues the end
+     * of one from.
      *
      * It is not the Sleep/Work toggle (which is a statement about the night, not about a screen). The "I'm
      * away" button reaches BOTH halves: it declares its own device idle, which is how it reaches
@@ -2652,11 +2654,11 @@ object SchedulerDomain {
      * breaks it should. Instances ending at or before the now-line are dropped: the past is frozen and is
      * drawn from what really happened ([takenScreenBreakPanels]), never re-derived.
      *
-     * [mode] is the README's `t_p` mode, and it lands on a control the app already has: the "I'm away"
-     * toggle. At the screen ([DynamicPeriods.MODE_AT_SCREEN]) the now-line may not be covered by a POSE, so a
-     * pose it has reached is pushed ahead of it and goes on being pushed; away ([DynamicPeriods.MODE_AWAY]) it
-     * must be covered, so the gap back to the last period's end is covered by a "no on-screen task" period the
-     * resilient tasks may still fill.
+     * [mode] is the requirements' `t_p` mode. At the screen ([DynamicPeriods.MODE_AT_SCREEN]) the now-line may
+     * not be covered by a POSE, so a pose it has reached is pushed ahead of it and goes on being pushed; in
+     * either AWAY mode it must be covered ([DynamicPeriods.lineIsCoveredAt]), so nothing is dragged and the
+     * gap back to the last period's end is covered by a "no on-screen task" period the resilient tasks may
+     * still fill.
      *
      * The 20 s look-away is dragged by neither mode (`DynamicPeriods.dragsAtLine`): it is assumed taken as it
      * falls due, so it stays where the bars put it and the line crosses it.
@@ -2779,7 +2781,7 @@ object SchedulerDomain {
 
     /**
      * The suffix a dynamic period's panel id carries when the now-line is **DRAGGING** it — the half-open
-     * `(t_p, t_p + d]` that modes 1 and 2 push ahead of the line ([DynamicPeriods.Instance.openStart]).
+     * `(t_p, t_p + d]` that mode 1 pushes ahead of the line ([DynamicPeriods.Instance.openStart]).
      *
      * It is in the id and not in a field of its own because a dynamic period's panel is DERIVED: every fill
      * cuts the three and regenerates them ([fillSchedule]'s `kept` filter), so nothing persisted ever has to
@@ -2958,7 +2960,8 @@ object SchedulerDomain {
      * Which is why a stretch the line crossed in **mode 1** holds no POSE: a pose the line reached was pushed
      * ahead of it and never happened, and "the passing of the $t_p$ line creates task panels not covered by
      * the period" is the README's own account of what is drawn there instead. A pose shows in the past when it
-     * really was one — the stretch was crossed in mode 2 (no device unlocked).
+     * really was one — the stretch was crossed in mode 2 or mode 3 (no device unlocked), where the line is
+     * covered by the break instead of dragging it, so the break elapses and stays drawn where it happened.
      *
      * A **20 s look-away always shows**, in either mode. It is never dragged (`DynamicPeriods.dragsAtLine`):
      * the app assumes the user looked away as it fell due, so the line crossed it and it is a fact of the past
@@ -3304,6 +3307,14 @@ object SchedulerDomain {
      * A pose start already in [alreadyNotifiedPoseDues] is omitted, so a sweep that revisits a window
      * announces once; a look-away carries its resume instant (start + duration) as [CueCrossing.endInstant].
      *
+     * **In `t_p` mode 2 a screen break is not announced at all** ([DynamicPeriods.breaksAreNotifiedAt]) — the
+     * user's rule, and the whole of what tells mode 2 from mode 3. Every screen of the account is locked and
+     * nobody has said they are taking a break, so there is neither anybody to tell nor a break being taken.
+     * The break is still PLACED and still drawn: this drops the crossing, it does not move the period. It is
+     * dropped rather than swallowed downstream so nothing marks it announced — a mode that flips back to 1
+     * inside the same scan window announces what it crossed. The **wind-down** is not a screen break and is
+     * unaffected.
+     *
      * Staleness (real age), the screen-active gate and the once-only de-dupe stay in the engine, which owns
      * the clock and the fired-boundary memory; this is a pure function of the schedule and the window.
      */
@@ -3323,9 +3334,15 @@ object SchedulerDomain {
         val out = mutableListOf<CueCrossing>()
         val byTitle = screenBreaks.associateBy { it.title }
         // The window's right edge IS the now-line here: the sweep asks about `[scanFloor, now]`.
-        for (panel in screenBreakCueOccurrencesBetween(
-            screenBreaks, fromMillis, toMillis, toMillis, basePeriods, blocks, tasks, mode,
-        )) {
+        val announcedBreaks =
+            if (DynamicPeriods.breaksAreNotifiedAt(mode)) {
+                screenBreakCueOccurrencesBetween(
+                    screenBreaks, fromMillis, toMillis, toMillis, basePeriods, blocks, tasks, mode,
+                )
+            } else {
+                emptyList()
+            }
+        for (panel in announcedBreaks) {
             val side = byTitle[panel.title] ?: continue
             val start = panel.startEpochMillis
             if (side.restBreak) {
@@ -3467,7 +3484,7 @@ object SchedulerDomain {
      * This is the one query the server's whole copy of the schedule comes out of, and both readings of it are
      * taken here so they cannot name different breaks:
      *  * the **windows** themselves, which the mode-3 evaluation compares the now-line against — legitimate
-     *    there and only there, because mode 3 is the mode in which nothing drags a pose, so where the bars put
+     *    there and only there, because mode 3 is a mode in which nothing drags a pose, so where the bars put
      *    one IS where it happens;
      *  * the **two dues**, which are the first window of each kind (`SchedulerEngine.restPoseDueMillisByKey`),
      *    and which the walk-away gate asks a question about the PAST with.
@@ -4061,12 +4078,10 @@ object SchedulerDomain {
         // (`RecordConductedBreak`), a pre-placed period nothing drags — so nothing is lost by refusing to
         // obstruct on one that never happened.
         //
-        // Modes 2 and 3 keep the drag as an obstacle, each for its own reason. **Mode 3** does not drag at
-        // all: the account said the break is being taken, so the pose elapses under the line and really
-        // happens. **Mode 2** drags exactly as mode 1 does, but its rule is that `t_p` IS covered by "no
-        // on-screen task" — the passing there creates COVERAGE, not task panels, so the stretch behind the
-        // line is the grey band that no device being unlocked is supposed to look like, and an on-screen
-        // task must not be planned into it.
+        // **Neither away mode drags at all**, so neither has anything to drop here: the requirements state
+        // modes 2 and 3 in one clause and the line is covered in both, which means the pose elapses under the
+        // line and really happens. The filter is written as a mode-1 test rather than as "drop the dragged
+        // ones" so it stays true if a later mode ever drags again.
         val obstructingSidePanels =
             if (tpMode == DynamicPeriods.MODE_AT_SCREEN) sidePanels.filterNot { isDraggedScreenBreak(it) }
             else sidePanels

@@ -105,37 +105,27 @@ class TpModeTest {
     }
 
     @Test
-    fun mode_two_is_not_mode_three_and_the_pose_is_what_tells_them_apart() {
-        // The reason mode 3 exists at all. Both modes agree that no device is unlocked and that the line is
-        // covered by "no on-screen task"; they disagree about the ONE thing the README makes their definitions
-        // differ by — whether the line may be covered by a dynamic period.
-        //
-        // A LOCKED screen is not a break taken (the user may be reading at their desk), so mode 2 goes on
-        // pushing an owed pose ahead of the line exactly as mode 1 does. Pressing "I'm away" is the statement
-        // that turns the same silence into a break, and mode 3 then lets the pose elapse under the line.
+    fun the_two_away_modes_plan_identically_through_the_seam() {
+        // `docs/scheduler_requirements.md` § *$now line$ 3 modes* states them in ONE clause — *"Mode 2 & 3:
+        // $now line$ must be covered by the period 'no on-screen task'"* — so nothing the fill does may tell
+        // them apart. Mode 2 used to drag an owed pose onto the line exactly as mode 1 does, on the reading
+        // that a locked screen is not a break TAKEN; what tells the two apart now is whether the break is
+        // ANNOUNCED (`DynamicPeriods.breaksAreNotifiedAt`), which the fill has no part in.
         val (s, _) = oneTask()
 
         SchedulerReducer.tpMode = { DynamicPeriods.MODE_AWAY }
         val locked = SchedulerReducer.reduce(s, SchedulerIntent.RefreshSchedule(NOW)).panels
-            .filter { it.screenBreak && it.title == "5min" }
-        assertTrue(locked.isNotEmpty(), "there must be poses for this to be about")
+            .filter { it.screenBreak }.map { it.title to it.startEpochMillis }
+        assertTrue(locked.isNotEmpty(), "there must be breaks for this to be about")
         assertTrue(
-            locked.none { it.startEpochMillis <= NOW && NOW < it.endEpochMillis },
-            "mode 2: an owed pose is still pushed ahead of the line",
-        )
-        assertEquals(
-            NOW + 1,
-            locked.minOf { it.startEpochMillis },
-            "…as the half-open (t_p, t_p + duration], exactly as in mode 1",
+            locked.none { (title, start) -> title == "5min" && start == NOW + 1 },
+            "mode 2: nothing is dragged onto the line any more: $locked",
         )
 
         SchedulerReducer.tpMode = { DynamicPeriods.MODE_ON_BREAK }
         val onBreak = SchedulerReducer.reduce(s, SchedulerIntent.RefreshSchedule(NOW)).panels
-            .filter { it.screenBreak && it.title == "5min" }
-        assertTrue(
-            onBreak.none { it.startEpochMillis == NOW + 1 },
-            "mode 3: nothing is dragged — the pose is where the bars put it: $onBreak",
-        )
+            .filter { it.screenBreak }.map { it.title to it.startEpochMillis }
+        assertEquals(onBreak, locked, "the two away modes are one plan")
     }
 
     @Test

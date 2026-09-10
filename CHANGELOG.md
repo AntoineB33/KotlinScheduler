@@ -11,6 +11,43 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### Modes 2 and 3 are one placement; the difference is the cue — 2026-09-10
+
+`scheduler/domain/DynamicPeriods.kt` (`lineIsCoveredAt`, `breaksAreNotifiedAt`, `chainStartTouching`,
+`instances`), `scheduler/domain/SchedulerDomain.kt` (`cueCrossings`, `fillSchedule`).
+`ScreenBreakChainPullBackTest` (new), `DynamicPeriodsTest`, `TpModeTest`, `DraggedPoseNoIdlingTest`.
+`docs/scheduler_requirements.md` § *$now line$ and 3 Dynamic Restrictive Period*, restated by the user.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy, no schema migration.**
+
+Three deltas, all from the restated requirements:
+
+1. **Mode 2's placement is mode 3's, verbatim.** The requirements now state them in one clause — *"Mode 2 &
+   3: $now line$ must be covered by the period 'no on-screen task'"* — where mode 2 used to read *"covered
+   ... but not one of the three dynamic periods"*. A dynamic period's kind is `no task allowed`, which covers
+   "no on-screen task" a fortiori, so the second predicate (`breaksAreTakenAt`, mode 3 only) had mode 2
+   placing the three where mode 3 did not. It is deleted; `lineIsCoveredAt` is the one predicate the
+   placement reads the mode through, and **mode 2 no longer drags an owed pose onto the line**.
+
+2. **What tells the two apart is the CUE** (`breaksAreNotifiedAt`, read once, in `cueCrossings`): in mode 2 a
+   screen break is placed and drawn but **never announced** — every screen of the account is locked and
+   nobody has said they are taking a break. Modes 1 and 3 announce. The crossing is dropped rather than
+   swallowed downstream, so nothing marks it announced. The wind-down is not a screen break and is unaffected.
+
+3. **A dynamic period is pulled back onto the start of the `no on-screen task` chain that touches it**
+   (`chainStartTouching`) — the requirements' new last bullet, and their one sanctioned exception to the
+   frozen past. The reported symptom was the other side of it: with the line moving in mode 2 or 3, a break
+   *disappeared* instead of staying in the past. Any emptiness absorbs a period, so a break falling due inside
+   a running pause was pushed to the end of the stretch — which IS the now-line, and goes on being the
+   now-line for as long as the user stays away, so the break rode the line and never happened. Pulled back, the
+   minutes already spent away count towards it, it is over and frozen where it began, and what reaches from its
+   end to the line is the ordinary cover — an **Inactivity** band, or **Sleep** inside a §17 window. The break
+   is never STRETCHED. Refused in one case, which is mode 1's own rule and not an exception to this one: a
+   pose pulled back far enough to cover `t_p` keeps the drag instead.
+
+Nothing was needed for the two oblique layers over that stretch: in mode 2 this device's OS lock scan hatches
+its own layer and a peer that cannot be asked is assumed locked, and in mode 3 the away button feeds its own
+layer, drawn dotted.
+
 ### A task's sub-list placeholder comes off the shared cell counter — 2026-09-10
 
 `scheduler/state/SchedulerReducer.kt` (`applySetCellTitle`, where a task is minted its sub-list).
