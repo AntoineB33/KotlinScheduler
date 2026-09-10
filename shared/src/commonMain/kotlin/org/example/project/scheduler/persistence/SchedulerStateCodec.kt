@@ -164,8 +164,17 @@ object SchedulerStateCodec {
      * The decoded state with the PRD §2 root shape healed onto it — the ONE place a payload becomes a live
      * state, so a tree that predates the root cell (or the root task's current id) can never reach the app
      * unhealed. See [SchedulerDomain.withRoot].
+     *
+     * PRD §8 is healed here too: **overlapping "No screen" periods are one period**
+     * ([SchedulerDomain.unifyNoScreenPeriods]), so a payload a build before that rule wrote — two periods
+     * that would draw as two blocks splitting the day column's width — loads as the union rather than
+     * surfacing a shape the current invariants forbid (CLAUDE.md § *Persisted-DB compatibility*).
      */
-    private fun PersistedState.toHealedState(): SchedulerState = SchedulerDomain.withRoot(toState())
+    private fun PersistedState.toHealedState(): SchedulerState =
+        SchedulerDomain.withRoot(toState()).let { state ->
+            val panels = SchedulerDomain.unifyNoScreenPeriods(state.panels)
+            if (panels === state.panels) state else state.copy(panels = panels)
+        }
 
     private fun migrateLegacyRoot(element: JsonElement): JsonElement =
         when (element) {

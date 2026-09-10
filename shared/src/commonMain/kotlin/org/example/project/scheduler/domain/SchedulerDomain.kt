@@ -1526,6 +1526,58 @@ object SchedulerDomain {
     }
 
     /**
+     * PRD §8: **two overlapping "No screen" periods are ONE period — their union.** A no-screen period is
+     * not an object that owns a slice of the timeline the way a task panel does; it is the statement *no
+     * screen was in use here*, and two overlapping statements of it say one thing. So they must never be
+     * drawn as two blocks splitting the day column's width between them (`overlapLayout`) — that is the
+     * shape for two panels genuinely competing for the same hours, which these are not: the scheduler
+     * already reads them merged (`mergeOccupied`, `noScreenRangesFor`) and so does the layer assertion.
+     *
+     * Fuses every **strictly overlapping** run of [TaskPanel.noScreen] panels into one panel spanning the
+     * run; the rest of [panels] is returned untouched, in place. Two periods that merely **abut** are left
+     * alone: they already draw full-width and each is still an object the user can remove on its own.
+     * Within a run the survivor is the panel named by [keepId] if it is there — the one the user just laid,
+     * moved or resized, which the caller goes on to apply the override rule for — else the run's earliest;
+     * it keeps its id, its pins and its layout weight, and only its bounds grow.
+     *
+     * Identity-stable: returns [panels] itself when there is nothing to fuse, which is the common case.
+     *
+     * The one funnel for the rule: [org.example.project.scheduler.state.SchedulerReducer]'s
+     * `resolveScreenOverrides` runs it at every point a period is laid or moved, and
+     * [org.example.project.scheduler.persistence.SchedulerStateCodec] runs it on decode, so a state an
+     * older build wrote with overlapping periods in it is healed rather than surfaced (CLAUDE.md).
+     */
+    fun unifyNoScreenPeriods(panels: List<TaskPanel>, keepId: String? = null): List<TaskPanel> {
+        val periods = panels.filter { it.noScreen }
+        if (periods.size < 2) return panels
+        val runs = mutableListOf<MutableList<TaskPanel>>()
+        for (panel in periods.sortedBy { it.startEpochMillis }) {
+            // Strictly `<`: sorted by start, so a run's frontier is its widest end so far and a panel that
+            // only touches it (start == frontier) opens a new run.
+            val run = runs.lastOrNull()
+            if (run != null && panel.startEpochMillis < run.maxOf { it.endEpochMillis }) {
+                run.add(panel)
+            } else {
+                runs.add(mutableListOf(panel))
+            }
+        }
+        if (runs.size == periods.size) return panels
+        val fused = HashMap<String, TaskPanel>()
+        val absorbed = HashSet<String>()
+        for (run in runs) {
+            if (run.size < 2) continue
+            val keeper = run.firstOrNull { it.id == keepId } ?: run.first()
+            fused[keeper.id] =
+                keeper.copy(
+                    startEpochMillis = run.minOf { it.startEpochMillis },
+                    endEpochMillis = run.maxOf { it.endEpochMillis },
+                )
+            run.forEach { if (it.id != keeper.id) absorbed.add(it.id) }
+        }
+        return panels.mapNotNull { fused[it.id] ?: it.takeIf { p -> p.id !in absorbed } }
+    }
+
+    /**
      * PRD §8 same-task merge (display grouping): the runs the calendar shows as single blocks. Walking
      * the [panels] in start order, consecutive panels of the same (non-null) task with the same
      * [TaskPanel.pinned] flag that touch or overlap are grouped together; a different task, a pin-state

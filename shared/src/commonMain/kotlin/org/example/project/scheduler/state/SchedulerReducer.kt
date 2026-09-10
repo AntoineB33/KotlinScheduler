@@ -1848,7 +1848,11 @@ object SchedulerReducer {
                 pins = PanelPins(existence = true),
             )
         val (resolved, resolvedPanels) = resolveScreenOverrides(allocated, allocated.panels + panel, panelId)
-        return stripRecordsUnderPeriod(commitPanels(resolved, resolvedPanels, label = "Add no-screen period"), panel)
+        // PRD §8: the period this add really produced — the union, when it overlapped periods that have now
+        // been fused into it ([SchedulerDomain.unifyNoScreenPeriods]). The record strip is about the span the
+        // user ends up with, not the span they typed.
+        val laid = resolvedPanels.firstOrNull { it.id == panelId } ?: panel
+        return stripRecordsUnderPeriod(commitPanels(resolved, resolvedPanels, label = "Add no-screen period"), laid)
     }
 
     /**
@@ -1912,12 +1916,19 @@ object SchedulerReducer {
      * turn. A covered panel is
      * deleted; one covered at an edge is trimmed; one covered in the middle is split (the far piece gets a
      * fresh id). Pieces shorter than [SchedulerDomain.MIN_MANUAL_ENTRY_MILLIS] are dropped as slivers.
+     *
+     * The step BEFORE the trim is the one thing that is not an override: **two overlapping "No screen"
+     * periods do not compete, they unify** ([SchedulerDomain.unifyNoScreenPeriods]) — the union is what the
+     * trim below then applies, so a period laid across two others overrides the on-screen work under the
+     * whole fused span. No exception list: it runs whatever [changedId] is, so a state that somehow holds
+     * overlapping periods is fused by the next edit rather than kept.
      */
     private fun resolveScreenOverrides(
         state: SchedulerState,
-        panels: List<TaskPanel>,
+        rawPanels: List<TaskPanel>,
         changedId: String,
     ): Pair<SchedulerState, List<TaskPanel>> {
+        val panels = SchedulerDomain.unifyNoScreenPeriods(rawPanels, keepId = changedId)
         val changed = panels.firstOrNull { it.id == changedId } ?: return state to panels
         val trimTarget: (TaskPanel) -> Boolean =
             when {
@@ -1993,9 +2004,12 @@ object SchedulerReducer {
             resolveScreenOverrides(allocated, allocated.panels.toMutableList().also { it[index] = updated }, panelId)
         val committed = commitPanels(resolved, resolvedPanels, label = "Edit panel")
         // PRD §8/§9: moving/resizing a no-screen or inactivity period re-applies its rule over its NEW span,
-        // exactly as laying it did — a period dragged over a past task must strip that work too.
-        return if (updated.noScreen || updated.inactivity) {
-            stripRecordsUnderPeriod(committed, updated)
+        // exactly as laying it did — a period dragged over a past task must strip that work too. The NEW span
+        // is the resolved one: a no-screen period dragged onto another has swallowed it (PRD §8 unify), and
+        // the work under the whole union is what the drag says did not happen.
+        val moved = resolvedPanels.firstOrNull { it.id == panelId } ?: updated
+        return if (moved.noScreen || moved.inactivity) {
+            stripRecordsUnderPeriod(committed, moved)
         } else {
             committed
         }

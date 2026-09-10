@@ -242,6 +242,19 @@ Global rules that always apply: `CLAUDE.md`.
 - **Grey refuses everybody on the calendar too, not only in the fill.** A hand-added inactivity period
   overrides **every** task panel it covers (a no-screen period only the on-screen ones — §9 lets an
   off-screen task run inside one), and any task panel overrides it in turn.
+- **Two overlapping "No screen" periods are ONE period — their union — and never two blocks sharing the
+  column's width.** A period is not an object owning a slice of the timeline the way a task panel is; it is
+  the statement *no screen was in use here*, and two overlapping statements of it say one thing. Splitting
+  the width is Overlap Mode's answer for panels genuinely competing for the same hours, which these are not:
+  the scheduler has always read them merged (`mergeOccupied` in `noScreenRangesFor`) and so has the layer
+  assertion, so the display was the only place they were still two. `SchedulerDomain.unifyNoScreenPeriods`
+  is the whole rule and it runs **before the trim** in `resolveScreenOverrides` — so the override and the
+  record strip above act on the fused span, not on the span the user typed — with no exception list: it
+  runs whatever panel changed, and `decode` runs it too so a state an older build wrote is healed rather
+  than surfaced. Two periods that only **abut** are left alone (they already draw full-width, and each is
+  still an object the menu can remove), and a no-screen period never fuses with an **inactivity** one:
+  different kinds are different statements. Within a fused run the survivor is the panel the user is
+  holding — it keeps its id, its pins and its weight, and only its bounds grow.
 - **A period LAID or DRAGGED over the past clears the work banked under it** — the on-screen tasks' records
   for a no-screen period, everybody's for a grey one. Same rule as `StripNoScreenRecords` (`stripRecords`,
   `onScreenOnly`), applied at once rather than at the next engine start; outside Undo/Redo like every write

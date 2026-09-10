@@ -11,6 +11,34 @@ Newest first within each section.
 
 Check here before assuming the code matches the docs.
 
+### Overlapping "No screen" periods unify instead of splitting the column — 2026-09-10
+
+→ `docs/invariants/calendar.md`, PRD §8. `shared` (`scheduler/domain/SchedulerDomain.kt`,
+`scheduler/state/SchedulerReducer.kt`, `scheduler/persistence/SchedulerStateCodec.kt`); new
+`NoScreenPeriodUnifyTest`.
+**Client only — an app rebuild (`account{1,2,3}-*deploy*.bat`); no Supabase deploy, no schema migration.**
+
+Asked for as: a manually added no-screen period that overlaps another must not share the width of the day
+column — they simply unify.
+
+- **The bug was that two periods reached `overlapLayout` at all.** Nothing merged them: `resolveScreenOverrides`
+  only ever trims across the *screen* boundary (a period vs. the task panels), and the display merge
+  (`groupSameTaskPanelsForDisplay`) requires a non-null `taskId`, which no period has. So two overlapping
+  periods were two blocks, and Overlap Mode's width split — the answer for panels genuinely competing for
+  the same hours — was applied to two statements of the same fact.
+- **`SchedulerDomain.unifyNoScreenPeriods` is the rule, and it is one funnel.** It fuses every strictly
+  overlapping run of `noScreen` panels into the union (identity-stable when there is nothing to fuse, so the
+  common edit pays nothing). `resolveScreenOverrides` runs it **first**, whatever panel changed, so the
+  override and the record strip act on the fused span; `SchedulerStateCodec.toHealedState` runs it on decode,
+  so a DB an older build wrote is healed rather than surfaced (CLAUDE.md § *Persisted-DB compatibility*).
+- **Deliberately not fused:** periods that only **abut** (they already draw full-width, and each stays
+  separately removable) and a no-screen period against an **inactivity** one (different kinds, different
+  statements). Everything generated is out of reach by construction — `AddNoScreenPeriod` is the only
+  producer of `noScreen = true`, so no sleep band, screen break or conducted break can be swallowed.
+- Within a run the survivor is the panel named by `keepId` — the one the user is holding — so a drag onto
+  another period does not vanish under them; it keeps its id, pins and layout weight, and only its bounds grow.
+  The whole fuse is one Calendar history unit, so Undo restores both periods.
+
 ### The user's own blocks say so: a blue outline and a pin box — 2026-09-10
 
 → `docs/invariants/calendar.md`, `docs/invariants/scheduler.md`, PRD §8/§9. `shared`
